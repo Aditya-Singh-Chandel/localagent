@@ -1,10 +1,21 @@
 [project]
 name = "localagent"
-version = "0.5.0"
-description = "A verifying coding agent (Gemini or local models) with a Docker sandbox"
+dynamic = ["version"]                  # read from localagent/__init__.py (one place to change)
+description = "A verifying coding agent for Gemini or a local model, online or offline, with a Docker sandbox"
 readme = "README.md"
+license = "MIT"                        # see LICENSE; third-party parts: THIRD_PARTY_NOTICES.md
+license-files = ["LICENSE"]
+authors = [{name = "Aditya Singh Chandel"}]
 requires-python = ">=3.10"
 dependencies = []                      # standard library only
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+]
 
 [project.optional-dependencies]
 dev = ["ruff", "mypy"]                 # extra verification layers
@@ -13,11 +24,14 @@ dev = ["ruff", "mypy"]                 # extra verification layers
 localagent = "localagent.cli:main"     # installs a `localagent` command
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]          # 77+ understands the license = "MIT" form above
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["localagent*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "localagent.__version__"}
 
 [tool.ruff]
 line-length = 100
