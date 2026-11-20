@@ -37,28 +37,56 @@ the server's 429 replies are still handled by `resilient.py` (it waits as long a
 
 ## Module header
 @@ localagent/ratelimit.py header @@
-- `json` reads/writes the usage file; `threading` gives a lock so two threads cannot update counters at once; `time`
-  supplies the real clock; `deque` is a list that is fast to trim from the front (the per-minute windows);
-  `datetime`/`timezone`/`tzinfo` compute the Pacific date. `LLMError` is the base class for our error.
-- `WINDOW = 60.0`: both per-minute limits look at the last 60 seconds ("sliding window").
+- `json` reads/writes the usage file; `os` replaces files in one step; `threading` gives a lock so two threads cannot
+  update counters at once; `time` supplies the real clock; `deque` is a list that is fast to trim from the front (the
+  per-minute windows); `datetime`/`timedelta`/`timezone` compute the Pacific date. `LLMError` is the base class for
+  our error.
+- `WINDOW = 60.0`: both per-minute limits look at the last 60 seconds ("sliding window"). `WAIT_NOTICE`: waits of 3
+  seconds or more are announced.
 
 ## `QuotaExhausted`
 @@ localagent/ratelimit.py QuotaExhausted @@
 - A special `LLMError` meaning "this model is done for today". Because it is an `LLMError`, any code that already
   handles model errors handles it too; `resilient.py` catches it specifically to switch models.
 
-## `pacific_day`
+## Pacific time
+@@ localagent/ratelimit.py _pacific_offset @@
+- California's distance from UTC at a moment: 7 hours behind during daylight saving time, else 8. The US rule since
+  2007: summer time starts on the **second Sunday of March** at 2 a.m. (10:00 UTC) and ends on the **first Sunday of
+  November** at 2 a.m. (09:00 UTC). `weekday()` counts Monday as 0 and Sunday as 6, so `(6 - weekday) % 7` days after
+  a date is the first Sunday on or after it; the second Sunday of March is the first one on or after the 8th.
+
 @@ localagent/ratelimit.py pacific_day @@
 - Converts a timestamp (seconds since 1970) into a date string such as `2026-11-04` in California time.
-- `ZoneInfo("America/Los_Angeles")` knows daylight-saving time. Some Windows Pythons lack time-zone data; then we fall
-  back to a fixed UTC−8, which can be one hour off in summer (harmless: at worst a day starts an hour early or late).
+- `ZoneInfo("America/Los_Angeles")` knows the time zone's whole history. Windows has no time-zone data for Python (it
+  needs the `tzdata` package, which this stdlib-only project does not install), and the old fallback was a fixed UTC−8:
+  from March to November the agent's "new day" came an hour late, so for an hour each day a model Google had already
+  reset still looked used up. The fallback now applies the real rule (`_pacific_offset`).
+
+## Writing the usage file safely
+@@ localagent/ratelimit.py _write_atomic @@
+- Writes the text to a temporary file next to the real one, then **replaces** the real file in one step
+  (`os.replace`). Another agent — a second terminal, or the HTTP server's sessions — reading at that moment sees the
+  old file or the new one, never half a file. (Before 0.6 a half-written file read as "no counts at all", which wiped
+  every model's daily counts and "used up" flags.)
+- On Windows the replace can fail for a moment while someone else has one of the files open — another agent, or a virus
+  scanner looking at the new file — so it is tried eight times with a growing pause (about 2 seconds in all). Counting
+  is advisory: if writing fails anyway the error is swallowed instead of stopping a model call, and the temporary file
+  is removed (also retried, so no `.tmp` files pile up next to `usage.json`).
+
+@@ localagent/ratelimit.py after__write_atomic @@
+@@ localagent/ratelimit.py shared_limiter @@
+- `shared_limiter` returns **the one limiter** for a model (and its limits and usage file) in this program, creating
+  it the first time. Why: the HTTP server builds a model chain for every session; with a limiter each, ten sessions
+  each believed they could send the whole per-minute limit, and together sent ten times too much. `_SHARED` holds them;
+  `_SHARED_LOCK` makes creating one safe when two sessions start at the same moment.
 
 ## `RateLimiter`
 @@ localagent/ratelimit.py RateLimiter @@
 @@ localagent/ratelimit.py RateLimiter.__init__ @@
 - Stores the model name, the three limits and the usage-file path (`None` = keep counts only in memory, used by tests).
 - `clock` and `sleep` are **injectable**: real code uses `time.time`/`time.sleep`; tests pass a fake clock so a
-  "60-second wait" takes no real time.
+  "60-second wait" takes no real time. `on_wait` is told about long waits (see `before_call`).
 - `_requests` holds the send times of recent requests; `_tokens` holds `(time, tokens)` pairs of recent replies.
 
 ## Daily counters
@@ -71,8 +99,8 @@ the server's 429 replies are still handled by `resilient.py` (it waits as long a
   that is how the daily reset happens, with no timer needed.
 
 @@ localagent/ratelimit.py RateLimiter._store @@
-- Writes this model's counters back. If the stored day is old, the record is replaced by a fresh one for today. Other
-  models' counters for the same day are kept, because all limiters share one file.
+- Writes this model's counters back (with `_write_atomic`). If the stored day is old, the record is replaced by a
+  fresh one for today. Other models' counters for the same day are kept, because all limiters share one file.
 
 ## Public API
 @@ localagent/ratelimit.py RateLimiter.set_rpm @@
@@ -94,7 +122,8 @@ the server's 429 replies are still handled by `resilient.py` (it waits as long a
   `learned_rpm` saved earlier today (possibly by another run).
 - The loop: drop entries older than 60 s from both windows; if the request window is full, or the tokens already used
   plus this request's estimate would exceed `tpm`, compute how long until the oldest entry expires and sleep that
-  long (at least 0.05 s), then check again.
+  long (at least 0.05 s), then check again. A wait of 3 s or more is announced once (`told`), e.g.
+  `[gemini-3.5-flash-lite: waiting 41s for the per-minute limit]` — before 0.6 the agent simply went silent.
 - When allowed: remember the send time and add 1 to today's count. The count goes up **before** the request is sent,
   so failed requests count too — conservative, so we never overshoot the daily limit.
 

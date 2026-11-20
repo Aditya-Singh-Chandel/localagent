@@ -103,36 +103,117 @@ a session cap (HTTP 429) and idle expiry.
 | Hooks (`after_edit` feeds failures back to the model, `after_request`) | `tools.py`, `cli.py`, `settings.py` |
 | Complete user manual | `05-user-manual.md` |
 
-### Next 🔜
-1. **Git-based checkpoints** (commit before each request) for projects too large for in-memory snapshots.
-2. **More hook points** (before a tool runs, able to block it).
-3. **MCP over HTTP** (remote servers) in addition to local stdio servers.
-4. **Images** (screenshots) as input, for models that accept them.
-5. **Java and C# checks** (they need a whole project to compile, so a per-file check gives false alarms today).
+### Phase 10 ✅ Version 0.6: a product you can rely on — fixes, online/offline, Claude-Code habits
+Every item started from a problem that was **reproduced first** (see `03-build-log.md`, section 6g).
 
-### Phase 3 leftovers 🔜 Measure, then tune
-1. Run `python -m evals.run_evals` for each candidate model; keep a table of pass-rate / time. **Pick the model with
-   data, not hunches.**
-2. Nine eval tasks exist now; keep adding tasks from your real work (the harness takes any seed files plus a check function).
-3. Tune using the evals: `num_ctx`, `temperature`, system-prompt wording, tool descriptions, `max_fix_attempts`.
-4. An import smoke-test (`python -c "import module"`) after writes.
-5. A unified-diff `apply_patch` tool (`multi_edit` already covers the common case).
+| Area | Built | Where |
+|---|---|---|
+| **Online / offline** | Modes `auto` / `online` / `offline`; `/model` (+ `/online`, `/offline`, `/auto`) switches mid-conversation; `--online`, `--offline`, `--mode`, `LOCALAGENT_MODE` | `cli.py`, `agent.py` |
+| | The local model as a backend: uses a running llama.cpp / LM Studio / Ollama, or **starts llama.cpp itself** (GPU fitted automatically), stops it on exit — even when the window is closed | `localserver.py` |
+| | Offline detection: no internet → Gemini skipped for 60 s, local model answers at once (was 28 s of retries per step); "back online" by itself | `resilient.py`, `llm.py` |
+| | Conversations fitted to the local 8K window; Gemini-only fields never sent to other servers | `llm.py`, `openai_compat.py` |
+| **Security** | Hook file names quoted (a file name could run a command); permission rules checked per command of a `&&`/`;`/`|` chain; saved rules exact; no keyboard for programs | `sandbox.py`, `settings.py`, `tools.py` |
+| **Data integrity** | Line breaks and byte-order marks kept on every edit and rollback; empty `old` refused; exact-byte rollback | `tools.py` |
+| **Correctness** | `search` covers all languages and honours `.gitignore`; binary files refused; JSONC (`tsconfig.json`) accepted; C++ `.h` headers accepted; Rust checked without its modules; tests found in plain `tests/` folders; pytest / npm / go / cargo test detection; the project's own `.venv` used; history counts tool arguments | `tools.py`, `verify.py`, `runners.py`, `agent.py` |
+| **Robustness** | Timeouts kill the whole process tree; empty replies retried; cut-off replies explained (and answers rescued); `--resume` respects `/clear` and `/compact`, survives a broken log line; atomic usage file; one rate limiter per model across server sessions; correct Pacific midnight on Windows; friendly errors for typos in variables | `sandbox.py`, `agent.py`, `session.py`, `ratelimit.py`, `config.py` |
+| **Claude-Code habits** | `-p` (one answer, for scripts), `-c`, `/resume` list, `/clear`, `/permissions`, `/doctor`, `/exit`; `!command`; `# note` → `AGENT.md`; `@file` attachments; coloured diffs; `--version`; who answered after every request | `cli.py` |
+| **Undo** | Per-request steps, quiet requests skipped, your later edits kept, contents stored once | `checkpoint.py` |
+| **Context** | Overview summarises crowded folders (this project: from 32 DLL names to the real code) | `context.py`, `sandbox.py` |
+| **Publishing** | `.gitignore`, `.gitattributes`, commit guard (size, keys, `.env`, private author e-mail), version in one place | `tools/check_commit.py`, `.githooks/`, `pyproject.toml` |
 
-### Phase 4 📋 Smarter context
-* Model-written summaries when history nears the limit (instead of just blanking old tool output).
-* Planner/worker split: a small fast model for search and summarising, a bigger one for editing (subagents).
-* Hooks (run a command before/after a tool) and an MCP client so tools can be added without code changes.
+Result: 201 tests (60 new); with Phase 11: 216, lint and types clean, docs audit 35 pages, live checks with Gemini and the real
+`llama-server.exe`.
 
-### Phase 5 📋 Run it as a service
-* Streaming (WebSocket/SSE) replies, per-client request-rate limits, HTTPS and persistence across restarts for the HTTP server.
-* A job queue; per-session sandbox containers are possible already (`--sandbox docker` on the server).
-* Model serving on a GPU machine with vLLM or llama.cpp via the existing `openai` backend; request batching there.
-* Telemetry (tokens, latency, pass-rate over time) and dashboards; log retention policy.
+### Phase 11 ✅ Ready to download (product readiness)
+| Built | Where |
+|---|---|
+| MIT license, third-party notices, package metadata (the wheel carries them) | `LICENSE`, `THIRD_PARTY_NOTICES.md`, `pyproject.toml` |
+| `localagent setup`: the guided first run (key checked then saved, model sized to memory, Docker) | `models.py` |
+| `localagent models`: list / download / use, with a catalog of three Qwen3 sizes | `models.py` |
+| Verified, resumable downloads; safe unpacking of zip and tar.gz | `fetch.py` |
+| Portable Windows zip with Python 3.14 included, `install.cmd`/`uninstall.cmd`; wheel; `SHA256SUMS.txt` | `tools/build_release.py` |
+| `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`; CI on Python 3.10-3.14 and Windows | repository root, `ci.yml` |
+| Advice points to `localagent setup` instead of a docs file a download does not contain | `localserver.py`, `doctor.py`, `cli.py` |
 
-### Phase 6 📋 Breadth
-* Language plug-ins for the verifier: TypeScript (`tsc`, `eslint`), Go (`go vet`), Rust (`cargo check`).
-* IDE extension, CI integration (run the agent on failing builds), team-shared `AGENT.md` conventions.
-* Optional: fine-tune a small model on your own *successful* logged sessions (`session.py` already records them).
+Tested as a user would: the zip unzipped into an empty folder ran `--version`, found its own ruff and mypy, rejected
+broken code, reported correctly in `--doctor`, and answered a real request in 1 call.
+
+---
+## Everything that could come next (the full backlog)
+Collected from a review of the whole project. ⭐ = high value for its cost. Ordered within each area by priority.
+
+### A. Before the download website (product readiness)
+1. ✅ A license — MIT (Phase 11).
+2. ✅ One-step Windows download — the portable zip with Python included (Phase 11). Still open: a signed `.exe`
+   installer (Windows SmartScreen warns about unsigned downloads; a code-signing certificate costs money).
+3. ✅ First-run setup — `localagent setup` (Phase 11).
+4. ✅ Model manager — `localagent models` (Phase 11).
+5. Publish to PyPI so `pipx install localagent` works on every system; then winget / Scoop packages.
+6. `install.sh` for macOS and Linux; test there (CI already runs Linux).
+7. Releases on GitHub with notes (✅ `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md` exist; the release itself
+   needs a public place for the files — the repository is private, see B).
+8. ✅ CI on Windows too, and Python 3.14 (Phases 10-11).
+9. Update check (`localagent --version` says when a newer release exists), uninstaller.
+
+### B. The website (next)
+0. ⭐ **Where the files live** — a decision: the repository is private, so its releases cannot be downloaded by the
+   public. Options: make it public; a second, public repository only for releases and the site; or a host such as
+   Cloudflare Pages / Netlify for the site plus a storage bucket for the zip.
+1. Landing page: what it does, a short demo (recorded terminal), online vs offline, privacy.
+2. Download page per operating system, with checksums and install steps.
+3. Documentation site generated from `docs/` (it is already Markdown); search.
+4. Changelog and FAQ pages; a contact or issue link.
+
+### C. Claude Code parity, still missing
+1. ⭐ **Git workflow commands**: `/commit` (the agent writes the message from the diff), `/diff`, `/review` of the
+   current changes, `/pr` through the `gh` tool.
+2. ⭐ **Interactive terminal polish**: a spinner while the model thinks, a status line (mode, model, tokens), Esc to
+   stop, syntax-highlighted code, accept/reject per diff hunk.
+3. **More hook points**: `before_tool` (may block an action), `after_tool`, `on_start`, `notification`.
+4. **Permission modes** switchable in the chat (plan / accept-edits / ask-everything), like Claude Code's Shift+Tab.
+5. **Subagents from files** (`.localagent/agents/*.md` with their own instructions and tools).
+6. **Web search** tool (needs a search service; `fetch_url` covers known addresses today).
+7. **Images as input** (screenshots of an error) for models that accept them.
+8. **Remote MCP servers** (HTTP/SSE) and MCP resources and prompts.
+9. Git-based checkpoints for projects too big for in-memory `/undo`.
+10. Session export to Markdown, search across past sessions, `/cost` with a per-request budget limit.
+11. Background tasks: start a long command, keep chatting, check on it later.
+
+### D. Smarter agent
+1. ⭐ **A self-review step** (opt-in): before finishing a task, a cheap model reads the diff and looks for mistakes.
+2. ⭐ **Outlines for every language** (JavaScript, TypeScript, Go, Rust, Java) — today `outline` reads Python only.
+3. A unified-diff `apply_patch` tool; an AST-aware "rename symbol everywhere" for Python.
+4. Planner/worker split: the local model summarises and searches, Gemini edits.
+5. Per-model prompt tuning, measured with the evals.
+6. Java and C# checks (they need a whole project to compile).
+7. An import smoke test after Python writes (`python -c "import module"`).
+
+### E. Models and providers
+1. ⭐ **More providers** through the existing OpenAI-style client: Claude (Anthropic API), OpenAI, OpenRouter, Groq,
+   Mistral — a provider table instead of Gemini-only settings.
+2. Choose one model by name (`/model gemini-3.5-flash`), not only a mode.
+3. Gemini's explicit context caching (cheaper long sessions on the paid tier).
+4. Two local models (a small fast one, a bigger careful one); speculative decoding for speed.
+5. Quota history and charts (`/stats` over days).
+
+### F. Safety
+1. Network allow-list inside the sandbox (only `pypi.org`, `registry.npmjs.org` ...) instead of all-or-nothing.
+2. Warn before the model writes something that looks like a key into a file (the commit guard's patterns).
+3. A Windows Sandbox or WSL runner for people without Docker.
+4. Changes across several files kept or undone together (transactions).
+5. `--debug` with full traces written to a log for bug reports.
+
+### G. Integrations
+1. VS Code extension (a chat panel talking to `localagent.server`).
+2. A GitHub Action that runs the agent on a failing build and opens a pull request.
+3. HTTP server: streamed answers (SSE), sessions kept across restarts, a small web page to chat in.
+4. Slack or Discord bot on top of the server.
+
+### H. Measuring quality
+1. More eval tasks: larger projects, refactors across files, JavaScript/Go/Rust projects with dependencies.
+2. Run the evals on a schedule and keep a table of pass-rate, calls and tokens per model over time.
+3. Property tests for the JSONC stripper and the shell-command splitter.
+4. Re-measure the local model (12/15 in 0.5) with 0.6's fitted context and offline detection.
 
 ## Where the optimisations come from (and where each one lives)
 | Technique | Saves | Status |

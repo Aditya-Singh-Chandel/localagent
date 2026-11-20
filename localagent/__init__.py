@@ -1,1 +1,3 @@
-"""localagent: a small coding agent that runs on a local Ollama model."""
+"""localagent: a verifying coding agent for Gemini or a local model (llama.cpp, Ollama)."""
+
+__version__ = "0.6.0"

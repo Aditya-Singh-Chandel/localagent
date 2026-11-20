@@ -17,8 +17,9 @@ ok    server reachable at http://127.0.0.1:8080/v1
 
 ## Module header
 @@ localagent/doctor.py header @@
-- `importlib.util` tells whether a package is installed; `urllib` performs simple HTTP GETs; `RateLimiter` reads today's
-  quota use; `model_limits` gives per-model limits; `docker_available` and `run_command` check Docker.
+- `importlib.util` tells whether a package is installed; `urllib` performs simple HTTP GETs; `__version__` is shown
+  first; `RateLimiter` reads today's quota use; `model_limits` gives per-model limits; the `localserver` functions find
+  the local model; `docker_available` and `run_command` check Docker. `SETUP_DOC` is the guide named in local-model advice.
 
 ## Helpers
 @@ localagent/doctor.py _get_json @@
@@ -43,17 +44,26 @@ ok    server reachable at http://127.0.0.1:8080/v1
 @@ localagent/doctor.py _check_openai @@
 - Asks the OpenAI-style server for its model list (`GET /models`); any answer means it is running.
 
+@@ localagent/doctor.py _check_local @@
+- The check for offline work (backend `local`, and the backup of `auto` mode). A running local server is fine. So are
+  llama.cpp's server program plus a model file, when a server may be started for `api_base` — the line shows the model
+  and its size and which program will start it, e.g. `ok    local model: Qwen3-8B-Q4_K_M.gguf (5027 MB), started with
+  ...\bin\llamacpp-vulkan\llama-server.exe when needed`. Otherwise one `FAIL` line per missing piece, each pointing to the
+  setup guide.
+
 @@ localagent/doctor.py _check_gemini @@
 - No key → FAIL with a pointer to the beginner guide.
 - Lists the models offered to your key (this does not use generation quota). HTTP error → the key was rejected.
 - Each model in the chain must be in that list; for each it prints today's usage from `usage.json` (with that model's
   own limits, see `model_limits`).
-- If a local fallback is configured, that server is checked too — into a separate list `found`. Reachable → its `ok`
-  lines are shown. Not reachable → one `note` line ("the backup model is not reachable (optional - Gemini works
-  without it)") with the details indented below it (`line[6:]` cuts the 6-character `FAIL  ` prefix), and the
-  result stays healthy. Found in the final verification: the agent's Docker image always configures the local
-  backup, so its doctor printed `FAIL` whenever `serve.ps1` was not running — although the agent works without it.
+- If a local fallback is configured (`local`, `openai` or `ollama`), it is checked too — into a separate list `found`.
+  Available → its `ok` lines are shown. Not available → one `note` line ("the offline backup is not available
+  (optional - Gemini works without it)") with the details indented below it (`line[6:]` cuts the 6-character `FAIL  `
+  prefix), and the result stays healthy. Found in the final verification of 0.5: the agent's Docker image always
+  configures the local backup, so its doctor printed `FAIL` whenever `serve.ps1` was not running — although the agent
+  works without it. In `auto` mode without any backup, a `note` says that nothing will answer without internet.
 
 ## `run_doctor`
 @@ localagent/doctor.py run_doctor @@
-- Python version, tools, sandbox, then the backend check chosen by name. Healthy = sandbox OK and backend OK.
+- Version and Python, the mode and backend, tools, sandbox, then the backend check chosen by name. Healthy = sandbox OK
+  and backend OK. When no model can be set up at all, the CLI still runs the doctor and puts the reason first.

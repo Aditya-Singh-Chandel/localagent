@@ -1,7 +1,7 @@
 """The tools the model may call, plus the verify-before-write/run gates.
 
 Core rule: broken code never stays on disk and never gets executed (Python,
-JSON, TOML and JavaScript are checked; see verify.py).
+JSON, TOML, JavaScript and many more are checked; see verify.py).
   * write_file / edit_file write, verify, and ROLL BACK if verification fails.
   * run_python / run_tests re-verify first (a second, independent check).
 Every tool returns a plain string; failures are returned, never raised, so the
@@ -23,8 +23,8 @@ from typing import Callable
 from .config import Config
 from .mcp import MCPError, MCPServer, clean_schema
 from .runners import make_runner
-from .sandbox import (SKIP_DIRS, SandboxError, resolve_inside, run_command, shell_argv, truncate,
-                      walk_files)
+from .sandbox import (SKIP_DIRS, SandboxError, looks_binary, project_files, quote_for_shell,
+                      resolve_inside, run_command, shell_argv, skip_dir, truncate, walk_files)
 from .settings import PROJECT_SETTINGS, Permissions
 from .verify import CHECKED_SUFFIXES, _installed, verify_file, verify_python
 from .web import fetch_text
@@ -32,10 +32,16 @@ from .web import fetch_text
 __all__ = ["SKIP_DIRS", "READ_ONLY", "Approval", "Tool", "ToolBox"]   # SKIP_DIRS re-exported
 MAX_SEARCH_HITS = 40
 MAX_SEARCH_FILES = 20_000
+MAX_SEARCH_BYTES = 2_000_000          # bigger files (logs, data, bundles) are not searched
+MAX_READ_BYTES = 8_000_000            # bigger files are only read in parts (start/end)
 TOGETHER_HINT = ("Hint: if this name is defined by another edit you have not made yet (for example "
                  "a rename), send ALL related edits together in ONE multi_edit call, or use "
                  "edit_file with all=true.")
+EMPTY_OLD = ("ERROR: 'old' must not be empty: copy the exact text to replace from the file "
+             "(to write a whole file, use write_file)")
 READ_ONLY = frozenset({"list_files", "read_file", "search", "outline"})
+TextStyle = tuple[str, bool]          # (line break "\n" or "\r\n", starts with a byte-order mark)
+CRLF_SUFFIXES = frozenset({".bat", ".cmd"})   # Windows batch files need CRLF line breaks
 
 
 DONE_MARKS = ("(done)", "[done]", "(completed)", "- done", "✓", "✔")
@@ -51,6 +57,37 @@ def _todo_item(item: object) -> dict:
     if text.lstrip().lower().startswith("[x]"):
         text, done = text.lstrip()[3:].lstrip(), True
     return {"text": text, "done": done}
+
+
+def text_style(raw: str) -> TextStyle:
+    """How a text file is written: its usual line break and whether it has a byte-order mark."""
+    crlf = raw.count("\r\n")
+    return ("\r\n" if crlf > raw.count("\n") - crlf else "\n"), raw.startswith("﻿")
+
+
+def read_text(path: Path) -> tuple[str, TextStyle]:
+    """A UTF-8 file's text with plain "\\n" line breaks (no mark), plus its style to write back."""
+    with path.open(encoding="utf-8", newline="") as handle:     # newline="": see "\r\n" as is
+        raw = handle.read()
+    style = text_style(raw)
+    text = raw.replace("\r\n", "\n")
+    return (text[1:] if style[1] else text), style
+
+
+def write_text(path: Path, text: str, style: TextStyle) -> None:
+    """Write ``text`` in ``style``, so an edit never changes a file's line breaks or mark."""
+    newline, mark = style
+    path.write_text(("﻿" if mark else "") + text.replace("\r\n", "\n"),
+                    encoding="utf-8", newline=newline)
+
+
+def _globs(pattern: str) -> list[str]:
+    """``*.{js,ts}`` -> ``["*.js", "*.ts"]`` (fnmatch itself knows no braces)."""
+    found = re.search(r"\{([^{}]*)\}", pattern)
+    if not found:
+        return [pattern]
+    return [expanded for option in found.group(1).split(",")
+            for expanded in _globs(pattern[:found.start()] + option + pattern[found.end():])]
 
 
 class Approval(str):
@@ -110,6 +147,7 @@ class ToolBox:
         self._tools = {t.name: t for t in self._build()}
         self._start_mcp((settings or {}).get("mcpServers", {}))
         self.hooks: dict = dict((settings or {}).get("hooks", {}))   # your own commands (see run_hook)
+        self.test_command = str((settings or {}).get("test_command") or "")   # "" = detect
 
     # ----- public API used by the agent -------------------------------------
     def specs(self) -> list[dict]:
@@ -157,6 +195,9 @@ class ToolBox:
             return tool.func(args)
         except SandboxError as exc:
             return f"ERROR: {exc}"
+        except UnicodeDecodeError:
+            return ("ERROR: that file is not UTF-8 text (binary, or another encoding), so it "
+                    "cannot be edited safely")
         except (KeyError, TypeError, ValueError) as exc:
             return f"ERROR: bad arguments for {name}: {exc!r}"
         except OSError as exc:
@@ -168,15 +209,17 @@ class ToolBox:
             Tool("list_files", "List files and folders in a workspace folder.",
                  _schema({"path": {"type": "string", "description": "folder, default '.'"}}, []),
                  self._list_files),
-            Tool("read_file", "Read a file with line numbers. Use start/end to read part of it.",
+            Tool("read_file", "Read a text file with line numbers. Use start/end to read part of it.",
                  _schema({"path": {"type": "string"}, "start": {"type": "integer"},
                           "end": {"type": "integer"}}, ["path"]),
                  self._read_file),
-            Tool("search", "Find lines matching a regular expression in workspace files "
-                 "(like grep). Returns file:line: text. Much cheaper than reading files.",
+            Tool("search", "Find lines matching a regular expression in workspace files (like "
+                 "grep; files that .gitignore excludes are skipped). Returns file:line: text. "
+                 "Much cheaper than reading files.",
                  _schema({"pattern": {"type": "string"},
-                          "path": {"type": "string", "description": "folder, default '.'"},
-                          "glob": {"type": "string", "description": "file pattern, default '*.py'"}},
+                          "path": {"type": "string", "description": "folder or file, default '.'"},
+                          "glob": {"type": "string", "description": "file pattern such as '*.py', "
+                                   "'src/*.ts' or '*.{js,ts}'; default: all text files"}},
                          ["pattern"]),
                  self._search),
             Tool("outline", "List the classes and functions (with line numbers) of one Python "
@@ -184,8 +227,8 @@ class ToolBox:
                  _schema({"path": {"type": "string", "description": "file or folder, default '.'"}},
                          []),
                  self._outline),
-            Tool("write_file", "Create or overwrite a file. Python files are verified first "
-                 "and rejected with the errors if they do not pass.",
+            Tool("write_file", "Create or overwrite a file. Code and config files are verified "
+                 "first (syntax, undefined names) and rejected with the errors if they do not pass.",
                  _schema({"path": {"type": "string"}, "content": {"type": "string"}},
                          ["path", "content"]),
                  self._write_file),
@@ -208,7 +251,8 @@ class ToolBox:
                  _schema({"path": {"type": "string"},
                           "args": {"type": "array", "items": {"type": "string"}}}, ["path"]),
                  self._run_python),
-            Tool("run_tests", "Verify all Python files, then run unittest discovery.",
+            Tool("run_tests", "Verify the changed files, then run the project's tests (pytest, "
+                 "unittest, npm test, go test or cargo test: whichever the project uses).",
                  _schema({}, []), self._run_tests),
             Tool("todo", "Show the user your plan as a checklist. Send the whole list each "
                  "time and set done=true on finished items. Use it for tasks with 3 or more steps.",
@@ -227,64 +271,91 @@ class ToolBox:
 
     # ----- read-only tools ---------------------------------------------------
     def _list_files(self, args: dict) -> str:
-        folder = resolve_inside(self._root, args.get("path", "."))
+        folder = resolve_inside(self._root, args.get("path") or ".")
         if not folder.is_dir():
             return f"ERROR: '{args.get('path', '.')}' is not a folder"
         rows = [p.name + ("/" if p.is_dir() else "")
-                for p in sorted(folder.iterdir()) if p.name not in SKIP_DIRS]
+                for p in sorted(folder.iterdir()) if not (p.is_dir() and skip_dir(p.name))]
         return "\n".join(rows) or "(empty folder)"
 
     def _read_file(self, args: dict) -> str:
         path = resolve_inside(self._root, args["path"])
         if not path.is_file():
             return f"ERROR: file '{args['path']}' does not exist"
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        start = max(int(args.get("start", 1)), 1)
-        end = min(int(args.get("end", len(lines))), len(lines))
+        size = path.stat().st_size
+        if looks_binary(path):
+            return f"ERROR: '{args['path']}' is a binary file ({size} bytes), not text"
+        start = max(int(args.get("start") or 1), 1)
+        if size > MAX_READ_BYTES:
+            return self._read_part(path, args, start)
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        if lines and start > len(lines):
+            return f"(the file has only {len(lines)} lines)"
+        end = min(int(args.get("end") or len(lines)), len(lines))
         body = "\n".join(f"{n}: {lines[n - 1]}" for n in range(start, end + 1))
+        if body and (start > 1 or end < len(lines)):             # tell the model there is more
+            body += f"\n(lines {start}-{end} of {len(lines)})"
         return truncate(body, self._cfg.max_output_chars) or "(empty file)"
+
+    def _read_part(self, path: Path, args: dict, start: int) -> str:
+        """Lines ``start`` to ``end`` of a file too big to load whole (read line by line)."""
+        if not args.get("end"):
+            return (f"ERROR: '{args['path']}' is {path.stat().st_size // 1_000_000} MB, too big to "
+                    "read whole; use search to find the lines you need, then read_file with start "
+                    "and end")
+        end, rows = int(args["end"]), []
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            for number, line in enumerate(handle, start=1):
+                if number > end:
+                    break
+                if number >= start:
+                    rows.append(f"{number}: {line.rstrip(chr(13) + chr(10))}")
+        return truncate("\n".join(rows), self._cfg.max_output_chars) or "(no such lines)"
 
     def _search(self, args: dict) -> str:
         try:
             pattern = re.compile(args["pattern"])
         except re.error as exc:
             return f"ERROR: invalid regular expression: {exc}"
-        folder = resolve_inside(self._root, args.get("path", "."))
+        target = resolve_inside(self._root, args.get("path") or ".")
+        files = [target] if target.is_file() else project_files(target)
+        globs = _globs(args.get("glob") or "*")
         hits: list[str] = []
-        glob = args.get("glob", "*.py")
-        for scanned, path in enumerate(walk_files(folder), start=1):
+        for scanned, path in enumerate(files, start=1):
             if scanned > MAX_SEARCH_FILES:
                 hits.append(f"... stopped after looking at {MAX_SEARCH_FILES} files; "
                             "narrow 'path' or 'glob'")
                 break
-            relative = path.relative_to(self._root)
-            if not fnmatch.fnmatch(path.name, glob):
+            relative = path.relative_to(self._root).as_posix()
+            if not any(fnmatch.fnmatch(path.name, g) or fnmatch.fnmatch(relative, g) for g in globs):
                 continue
             try:
+                if path.stat().st_size > MAX_SEARCH_BYTES or looks_binary(path):
+                    continue                          # data, bundles, models: not code to grep
                 lines = path.read_text(encoding="utf-8").splitlines()
-            except UnicodeDecodeError:
-                continue                              # binary file: skip
+            except (UnicodeDecodeError, OSError):
+                continue                              # another encoding, or gone: skip
             for number, line in enumerate(lines, start=1):
                 if pattern.search(line):
-                    hits.append(f"{relative.as_posix()}:{number}: {line.strip()[:120]}")
+                    hits.append(f"{relative}:{number}: {line.strip()[:120]}")
                     if len(hits) >= MAX_SEARCH_HITS:
                         return "\n".join(hits) + f"\n... stopped at {MAX_SEARCH_HITS} matches"
         return "\n".join(hits) or "no matches"
 
     def _outline(self, args: dict) -> str:
-        target = resolve_inside(self._root, args.get("path", "."))
+        target = resolve_inside(self._root, args.get("path") or ".")
         if target.is_file():
             files = [target]
         elif target.is_dir():
-            files = [p for p in walk_files(target) if p.suffix == ".py"]
+            files = [p for p in project_files(target) if p.suffix == ".py"]
         else:
             return f"ERROR: '{args.get('path', '.')}' does not exist"
         rows: list[str] = []
         for path in files:
             rows.append(path.relative_to(self._root).as_posix() + ":")
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError):
+                tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+            except (SyntaxError, UnicodeDecodeError, ValueError):
                 rows.append("  (cannot parse)")
                 continue
             for node in tree.body:
@@ -308,49 +379,67 @@ class ToolBox:
 
     # ----- write tools (verified, rolled back on failure) -------------------
     def _write_file(self, args: dict) -> str:
-        return self._commit(args["path"], args["content"])
+        return self._commit(args["path"], str(args["content"]))
 
     def _edit_file(self, args: dict) -> str:
         path = resolve_inside(self._root, args["path"])
         if not path.is_file():
             return f"ERROR: file '{args['path']}' does not exist"
-        text = path.read_text(encoding="utf-8")
-        count = text.count(args["old"])
+        old, new = str(args["old"]).replace("\r\n", "\n"), str(args["new"]).replace("\r\n", "\n")
+        if not old:
+            return EMPTY_OLD
+        text, style = read_text(path)
+        if old.startswith("﻿") and style[1]:      # the edit names the byte-order mark itself:
+            text, style = "﻿" + text, (style[0], False)   # it is text now, and may go
+        count = text.count(old)
         if args.get("all") is True and count >= 1:
-            return self._commit(args["path"], text.replace(args["old"], args["new"]))
+            return self._commit(args["path"], text.replace(old, new), style)
         if count != 1:
             return (f"ERROR: 'old' text must match exactly once, but matched {count} times"
                     + (" (use all=true to replace every occurrence)" if count > 1 else ""))
-        return self._commit(args["path"], text.replace(args["old"], args["new"]))
+        return self._commit(args["path"], text.replace(old, new), style)
 
     def _multi_edit(self, args: dict) -> str:
         path = resolve_inside(self._root, args["path"])
         if not path.is_file():
             return f"ERROR: file '{args['path']}' does not exist"
-        text = path.read_text(encoding="utf-8")
         edits = args["edits"]
         if not isinstance(edits, list) or not edits:
             return "ERROR: 'edits' must be a non-empty list of {old, new}"
+        text, style = read_text(path)
         for number, edit in enumerate(edits, start=1):
-            count = text.count(edit["old"])
+            old = str(edit["old"]).replace("\r\n", "\n")
+            if not old:
+                return f"{EMPTY_OLD}. Edit {number} is empty; nothing was changed."
+            count = text.count(old)
             if count != 1:
                 return (f"ERROR: edit {number}: 'old' text must match exactly once, "
                         f"but matched {count} times. Nothing was changed.")
-            text = text.replace(edit["old"], edit["new"])
-        return self._commit(args["path"], text)
+            text = text.replace(old, str(edit["new"]).replace("\r\n", "\n"))
+        return self._commit(args["path"], text, style)
 
     def _format(self, path: Path) -> None:
         """Best-effort ``ruff format`` of a file that already passed verification."""
         if self._cfg.auto_format and _installed("ruff"):
             run_command([sys.executable, "-m", "ruff", "format", str(path)], self._root, 30, 500)
 
-    def _commit(self, relative: str, text: str) -> str:
+    @staticmethod
+    def _style_of(path: Path, previous: bytes | None) -> TextStyle:
+        """The style to write in: the file's own, else LF (CRLF for batch files)."""
+        if previous is not None:
+            try:
+                return text_style(previous.decode("utf-8"))
+            except UnicodeDecodeError:
+                pass
+        return ("\r\n" if path.suffix.lower() in CRLF_SUFFIXES else "\n"), False
+
+    def _commit(self, relative: str, text: str, style: TextStyle | None = None) -> str:
         """Write ``text``; verify checkable files and roll back on failure."""
         path = resolve_inside(self._root, relative)
         key = path.relative_to(self._root).as_posix()
-        previous = path.read_text(encoding="utf-8") if path.exists() else None
+        previous = path.read_bytes() if path.is_file() else None   # exact bytes, for rollback
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        write_text(path, text, style or self._style_of(path, previous))
         if path.suffix.lower() not in CHECKED_SUFFIXES:
             self.writes += 1
             self._remember_diff(key, previous, path)
@@ -367,7 +456,7 @@ class ToolBox:
         if previous is None:                      # roll back: undo the bad write
             path.unlink()
         else:
-            path.write_text(previous, encoding="utf-8")
+            path.write_bytes(previous)            # byte for byte, as it was
         count = self._failures.get(key, 0) + 1
         self._failures[key] = count
         if count >= self._cfg.max_fix_attempts:
@@ -378,13 +467,13 @@ class ToolBox:
         return (f"REJECTED ({count}/{self._cfg.max_fix_attempts}): {key} NOT written. "
                 f"Fix these errors and call write_file again:\n{report.render()}{hint}")
 
-    def _remember_diff(self, key: str, previous: str | None, path: Path) -> None:
+    def _remember_diff(self, key: str, previous: bytes | None, path: Path) -> None:
         """Keep a unified diff of the change so the user can see what was edited."""
         try:
-            now = path.read_text(encoding="utf-8").splitlines()
+            now = path.read_text(encoding="utf-8-sig").splitlines()
         except (OSError, UnicodeDecodeError):
             now = []
-        before = previous.splitlines() if previous is not None else []
+        before = previous.decode("utf-8-sig", "replace").splitlines() if previous is not None else []
         diff = list(difflib.unified_diff(before, now, f"a/{key}", f"b/{key}", n=1, lineterm=""))
         self._diff = diff[2:]                     # drop the ---/+++ header: the file is named already
 
@@ -393,12 +482,13 @@ class ToolBox:
         """Run the hook ``name`` from the settings (``{file}`` = the changed file); None if unset.
 
         Hooks are commands YOU wrote in settings.json, so they run without a question, on this
-        computer, in the project folder, with the normal time limit.
+        computer, in the project folder, with the normal time limit. The file name is chosen
+        by the model, so it is quoted: a name can never smuggle in a command of its own.
         """
         command = self.hooks.get(name)
         if not command:
             return None
-        argv = shell_argv(str(command).replace("{file}", file))
+        argv = shell_argv(str(command).replace("{file}", quote_for_shell(file) if file else ""))
         return run_command(argv, self._root, self._cfg.command_timeout, self._cfg.max_output_chars)
 
     def _after_edit(self, key: str) -> str:
@@ -426,7 +516,7 @@ class ToolBox:
         report = verify_python(path, self._root, self._cfg.type_check)
         if not report.ok:
             return f"NOT RUN: verification failed:\n{report.render()}"
-        extra = [str(a) for a in args.get("args", [])]
+        extra = [str(a) for a in args.get("args") or []]
         relative = path.relative_to(self._root).as_posix()
         denied = self._permitted("run_python", relative, f"run python {relative} {' '.join(extra)}")
         if denied:
@@ -438,10 +528,11 @@ class ToolBox:
         problems = self.check_workspace(since=self.started)   # files changed this session
         if problems:
             return "NOT RUN: verification failed:\n" + "\n".join(problems)
-        denied = self._permitted("run_tests", "", "run the tests (unittest discovery)")
+        shown = f" ({self.test_command})" if self.test_command else ""
+        denied = self._permitted("run_tests", "", f"run the tests{shown}")
         if denied:
             return denied
-        code, output = self.runner.run("tests", [])
+        code, output = self.runner.run("tests", [self.test_command] if self.test_command else [])
         return f"exit code {code}\n{output}"
 
     def _run_shell(self, args: dict) -> str:

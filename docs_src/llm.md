@@ -9,10 +9,14 @@ slow CPU), and returns a `Reply` with token counts. Only `urllib` is used, so no
 
 ## Module header
 @@ localagent/llm.py header @@
-- `json` encodes requests/decodes replies; `time` measures duration; `urllib.error` / `urllib.request` are the
-  standard HTTP client; `Callable`/`Protocol` are typing helpers.
+- `json` encodes requests/decodes replies; `socket` recognises a failed name lookup and opens quick test connections;
+  `time` measures duration; `urllib.error` / `urllib.request` are the standard HTTP client; `urlsplit` takes URLs
+  apart; `Callable`/`Protocol` are typing helpers.
 - `TokenSink = Callable[[str], None]` names the type "a function that accepts a piece of text and returns nothing"
   (used for live output).
+- `REMOVED` replaces an old tool output and `SHORTENED` an old tool call's long argument when the history must shrink
+  (see `fit_history`). `LOCAL_HOSTS` are the names that mean "this computer" (`host.docker.internal` is this computer
+  as seen from inside a container).
 
 ## `LLMError`
 @@ localagent/llm.py LLMError @@
@@ -22,6 +26,47 @@ slow CPU), and returns a `Reply` with token counts. Only `urllib` is used, so no
 - Besides the message it stores `status`: the HTTP status code when the server answered with an error (e.g. 429 "too
   many requests", 503 "overloaded", 400 "bad request"), or `None` when the server could not be reached. `resilient.py`
   uses it to decide between *retry*, *switch model* and *give up*.
+- `dns` is True when the server's *name* could not be looked up. Without internet that is what happens first, so
+  `resilient.py` treats it as "offline" at once instead of retrying three times.
+- `final` is True when retrying cannot help, e.g. "no local model is installed": the model chain moves on immediately.
+
+## Helpers for the network and the history
+@@ localagent/llm.py is_local_url @@
+- True for addresses on this computer, e.g. `http://127.0.0.1:8080/v1`. Used to pick the right advice when a server
+  cannot be reached.
+
+@@ localagent/llm.py reachable @@
+- Opens (and immediately closes) a plain network connection to the server of a URL, giving up after 3 seconds. It sends
+  no request, so it costs no quota; `resilient.py` uses it to notice that the internet is back (or still gone).
+  Port 443 is assumed for `https`, 80 for `http`.
+
+@@ localagent/llm.py message_size @@
+- How many characters one message adds to the prompt: its text **plus the arguments of its tool calls**. Before 0.6
+  only the text was counted, so a `write_file` of a 300-line file (all of it in the arguments) counted as almost
+  nothing and a small local context could overflow without the agent noticing (measured: 50 KB of arguments counted as
+  3 KB).
+
+@@ localagent/llm.py _shorten_call @@
+- Makes a copy of an old tool call in which every argument longer than 200 characters (file contents, edits) becomes
+  `SHORTENED`; short ones such as `path` stay, so the history still says what was done to which file. Arguments sent as
+  a JSON string are parsed first. The thought signature (`extra_content`) is left out of the copy because it belonged to
+  the original arguments; the Gemini client then adds Google's placeholder.
+
+@@ localagent/llm.py fit_history @@
+- Returns a **copy** of the conversation that fits `budget` characters, losing the cheapest things first:
+  1. old tool outputs become `REMOVED` (the model already acted on them);
+  2. old tool calls are shortened (`_shorten_call`);
+  3. only if that is still not enough, the oldest whole exchanges are dropped — always from one user message to the
+     next, so every remaining tool result still follows the call that asked for it (APIs reject the conversation
+     otherwise).
+- The system prompt (index 0) and the newest `keep_last` (4) messages are never touched. Used in three places: the
+  agent's own trimming, the request that asks for a compaction summary (which must fit to be sent at all), and the
+  local model, which fits a conversation built for Gemini's 32K budget into its 8K window.
+
+@@ localagent/llm.py _reach_hint @@
+- The advice added to "Cannot reach ...": for an address on this computer, how to start the local model server; for a
+  remote one (Gemini), to check the internet or switch to the local model. (It used to recommend starting *Ollama*
+  even when Gemini was unreachable.)
 
 ## `Reply`
 @@ localagent/llm.py Reply @@
@@ -39,12 +84,14 @@ slow CPU), and returns a `Reply` with token counts. Only `urllib` is used, so no
 @@ localagent/llm.py post @@
 - Builds a JSON `POST` request (`json.dumps(payload).encode()` turns the dict into bytes; the `Content-Type` header
   announces JSON; extra headers such as `Authorization` are merged in with `**`).
-- `urlopen(..., timeout=900)` sends it; the 15-minute timeout allows for slow CPU generation.
+- `urlopen(..., timeout=...)` sends it. The default 15 minutes allows for slow CPU generation; Gemini clients pass a
+  shorter `gemini_timeout` (2 minutes) so a stalled connection fails sooner.
 - `HTTPError` (the server answered with an error code) is caught **first** because it is a subclass of `URLError`.
   We read the server's explanation, `exc.close()` releases the connection, and raise `LLMError` carrying the
   status code.
 - `URLError`/`TimeoutError`/`ConnectionError` (server not running, refused, timed out) become `LLMError` with
-  advice. `from exc` keeps the original error attached for debugging.
+  advice from `_reach_hint`. When the underlying reason is a `socket.gaierror` (the name lookup failed), `dns=True` is
+  set. `from exc` keeps the original error attached for debugging.
 
 ## `OllamaClient`
 @@ localagent/llm.py OllamaClient @@

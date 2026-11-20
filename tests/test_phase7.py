@@ -40,7 +40,7 @@ class WalkTests(unittest.TestCase):
             snap = Checkpoints(root)
             snap.take()
             (root / "node_modules/pkg/index.js").write_text("changed", encoding="utf-8")
-            self.assertIn("restored 0", snap.undo())                      # not snapshotted at all
+            self.assertEqual(snap.undo(), "nothing to undo")              # not snapshotted at all
 
     def test_search_uses_glob_on_file_names(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -48,7 +48,8 @@ class WalkTests(unittest.TestCase):
             (Path(tmp) / "a.js").write_text("const needle = 1;\n", encoding="utf-8")
             (Path(tmp) / "b.py").write_text("needle = 2\n", encoding="utf-8")
             self.assertIn("a.js:1", box.call("search", {"pattern": "needle", "glob": "*.js"}))
-            self.assertNotIn("a.js", box.call("search", {"pattern": "needle"}))   # default *.py
+            self.assertNotIn("a.js", box.call("search", {"pattern": "needle", "glob": "*.py"}))
+            self.assertIn("a.js:1", box.call("search", {"pattern": "needle"}))   # default: all
 
 
 class LanguageTests(unittest.TestCase):
@@ -148,7 +149,7 @@ class CompactionTests(unittest.TestCase):
             agent, _ = self.make(tmp, [{"role": "assistant", "content": "x" * 400}] * 3
                                  + [{"role": "assistant", "content": "SUM"},
                                     {"role": "assistant", "content": "answer"}],
-                                 num_ctx=1000, compact_at=0.1)
+                                 num_ctx=3000, compact_at=0.1)   # the system prompt must fit
             for question in ("q1", "q2", "q3"):
                 agent.run(question)
             events: list[str] = []

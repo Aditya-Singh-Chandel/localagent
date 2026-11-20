@@ -1,11 +1,18 @@
 name: ci
 on: [push, pull_request]
+permissions:
+  contents: read          # the checks only read the code; the token can do nothing else
 jobs:
   checks:
-    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python: ["3.10", "3.12", "3.13"]
+        os: [ubuntu-latest]
+        python: ["3.10", "3.12", "3.13", "3.14"]
+        include:
+          - os: windows-latest   # the main platform: line endings, PowerShell, process trees;
+            python: "3.14"       # 3.14 is also the Python inside the Windows release bundle
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

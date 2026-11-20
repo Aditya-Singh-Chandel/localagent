@@ -10,16 +10,23 @@ Example:
                    "deny":  ["run_shell(*rm *)", "run_shell(*--force*)"]},
    "mcpServers": {"files": {"command": "npx",
                             "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]}},
-   "hooks": {"after_edit": "ruff check {file}", "after_request": "python -m pytest -q"}}
+   "hooks": {"after_edit": "ruff check {file}", "after_request": "python -m pytest -q"},
+   "test_command": "npm test",
+   "env": {"LOCALAGENT_MODE": "offline"}}
 
 A rule is a tool name (wildcards allowed, e.g. ``mcp__files__*``), optionally followed by
 a pattern in brackets that must match the action's subject: the command line for
 run_shell, the file for run_python, the URL for fetch_url, the arguments for MCP tools.
-Deny rules win over allow rules; an action that matches neither is asked.
+Deny rules win over allow rules; an action that matches neither is asked. A shell command
+line made of several commands (``a && b``, ``a; b``, ``a | b``) is allowed only when every
+part is; one with command substitution, grouping, redirection or several lines is always
+asked, unless an "always" answer approved exactly that line.
+``env`` sets environment variables (any ``LOCALAGENT_*`` setting) unless they are already set.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
@@ -30,6 +37,9 @@ USER_SETTINGS = Path.home() / ".localagent" / "settings.json"
 PROJECT_SETTINGS = Path(".localagent") / "settings.json"     # relative to the workspace
 USER_COMMANDS = Path.home() / ".localagent" / "commands"     # custom slash commands (*.md)
 PROJECT_COMMANDS = Path(".localagent") / "commands"
+SHELL_SPLIT = re.compile(r"&&|\|\||[;&|]")                     # between two commands
+SHELL_UNSAFE = ("`", "$(", "(", ")", "<", ">", "\n", "\r")    # hide or redirect commands
+ESCAPED = re.compile(r"\[[*?\[]\]")                            # [*] [?] [[] = literal characters
 
 
 def read_json(path: Path) -> dict:
@@ -46,8 +56,9 @@ def read_json(path: Path) -> dict:
 
 
 def load_settings(workspace: Path, user_file: Path = USER_SETTINGS) -> dict:
-    """Merge the user and project settings files into one dict."""
-    merged: dict = {"permissions": {"allow": [], "deny": []}, "mcpServers": {}, "hooks": {}}
+    """Merge the user and project settings files into one dict (project values win)."""
+    merged: dict = {"permissions": {"allow": [], "deny": []}, "mcpServers": {}, "hooks": {},
+                    "env": {}, "test_command": ""}
     for path in (user_file, workspace / PROJECT_SETTINGS):
         data = read_json(path)
         rules = data.get("permissions", {})
@@ -55,7 +66,33 @@ def load_settings(workspace: Path, user_file: Path = USER_SETTINGS) -> dict:
             merged["permissions"][kind] += [str(rule) for rule in rules.get(kind, [])]
         merged["mcpServers"].update(data.get("mcpServers", {}))
         merged["hooks"].update(data.get("hooks", {}))           # project hooks replace user ones
+        merged["env"].update({str(k): str(v) for k, v in data.get("env", {}).items()})
+        merged["test_command"] = str(data.get("test_command") or merged["test_command"])
     return merged
+
+
+def save_user_env(name: str, value: str, path: Path = USER_SETTINGS) -> Path:
+    """Remember ``name=value`` in your user settings file's ``env`` (used by `localagent setup`
+    and `localagent models use`); the rest of the file is kept as it is."""
+    data = read_json(path)
+    data.setdefault("env", {})[name] = value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def apply_env(settings: dict) -> list[str]:
+    """Set the settings' ``env`` variables that are not set already; returns their names.
+
+    A real environment variable wins, so ``setx`` (or a one-off ``$env:X=...``) still overrides
+    a settings file.
+    """
+    applied = []
+    for name, value in settings.get("env", {}).items():
+        if name not in os.environ:
+            os.environ[name] = value
+            applied.append(name)
+    return applied
 
 
 def load_commands(workspace: Path, user_dir: Path = USER_COMMANDS) -> dict[str, str]:
@@ -94,10 +131,33 @@ def matches(rule: str, tool: str, subject: str) -> bool:
     return pattern is None or fnmatchcase(subject, pattern)
 
 
+def escape_pattern(text: str) -> str:
+    """``text`` as a rule pattern that matches only itself (``*``, ``?`` and ``[`` made literal)."""
+    return "".join(f"[{char}]" if char in "*?[" else char for char in text)
+
+
+def is_exact(pattern: str | None) -> bool:
+    """True for a pattern without wildcards, such as the ones "always" answers save."""
+    return pattern is not None and not any(char in ESCAPED.sub("", pattern) for char in "*?[")
+
+
+def command_parts(command: str) -> list[str] | None:
+    """The simple commands in a command line (``git add . && git commit`` gives two), or None
+    when it holds something a rule cannot vouch for: command substitution (``$(...)``,
+    backticks), grouping (PowerShell runs ``(...)`` as a command), redirection or several lines.
+
+    Splitting is deliberately simple: an operator inside quotes also splits, which can only
+    make the agent ask more often, never less.
+    """
+    if any(mark in command for mark in SHELL_UNSAFE):
+        return None
+    return [part.strip() for part in SHELL_SPLIT.split(command) if part.strip()]
+
+
 def suggest_rule(tool: str, subject: str) -> str:
     """The rule an "always allow" answer saves: narrow enough to stay safe."""
     if tool == "run_shell" or tool == "run_python":
-        return f"{tool}({subject})"                     # exactly this command / file
+        return f"{tool}({escape_pattern(subject)})"     # exactly this command / file
     if tool == "fetch_url":
         parts = urlsplit(subject)
         return f"fetch_url({parts.scheme}://{parts.netloc}/*)"   # this website
@@ -121,7 +181,19 @@ class Permissions:
         """``"deny"``, ``"allow"`` or ``"ask"`` for this action."""
         if any(matches(rule, tool, subject) for rule in self.deny):
             return "deny"
-        if any(matches(rule, tool, subject) for rule in self.allow):
+        if tool != "run_shell":
+            return "allow" if any(matches(rule, tool, subject) for rule in self.allow) else "ask"
+        for rule in self.allow:                 # every command allowed, or exactly this line
+            name, pattern = parse_rule(rule)
+            if fnmatchcase(tool, name) and (pattern in (None, "*") or (
+                    is_exact(pattern) and fnmatchcase(subject, pattern or ""))):
+                return "allow"
+        parts = command_parts(subject)
+        if not parts:
+            return "ask"
+        if any(matches(rule, tool, part) for part in parts for rule in self.deny):
+            return "deny"
+        if all(any(matches(rule, tool, part) for rule in self.allow) for part in parts):
             return "allow"
         return "ask"
 

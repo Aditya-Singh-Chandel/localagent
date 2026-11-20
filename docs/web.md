@@ -24,52 +24,55 @@ you see each URL before it is opened.
 12 | import urllib.request
 13 | from html.parser import HTMLParser
 14 | 
-15 | MAX_FETCH_BYTES = 2_000_000
-16 | BLOCK_TAGS = {"p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "section",
-17 |               "article", "header", "footer", "table", "ul", "ol"}
-18 | HIDDEN_TAGS = {"script", "style", "noscript", "svg", "head"}
-19 | 
-20 | 
+15 | from . import __version__
+16 | 
+17 | MAX_FETCH_BYTES = 2_000_000
+18 | BLOCK_TAGS = {"p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "section",
+19 |               "article", "header", "footer", "table", "ul", "ol"}
+20 | HIDDEN_TAGS = {"script", "style", "noscript", "svg", "head"}
+21 | 
+22 | 
 ```
-- `re` tidies whitespace; `urllib` downloads; `HTMLParser` (standard library) walks through HTML.
+- `re` tidies whitespace; `urllib` downloads; `HTMLParser` (standard library) walks through HTML; `__version__` goes
+  into the `User-Agent`.
 - `MAX_FETCH_BYTES` caps the download. `BLOCK_TAGS` are tags that start a new line (paragraphs, list items, headings,
   table rows ...). `HIDDEN_TAGS` hold no readable text (`script`, `style`, the `head` section ...).
 
 ## `_TextExtractor`
 ```python
-21 | class _TextExtractor(HTMLParser):
-22 |     """Collects visible text; block tags become line breaks."""
-23 | 
+23 | class _TextExtractor(HTMLParser):
+24 |     """Collects visible text; block tags become line breaks."""
+25 | 
 ```
 ```python
-24 |     def __init__(self) -> None:
-25 |         super().__init__(convert_charrefs=True)
-26 |         self.parts: list[str] = []
-27 |         self._hidden = 0                       # depth inside <script>, <style>, ...
-28 | 
+26 |     def __init__(self) -> None:
+27 |         super().__init__(convert_charrefs=True)
+28 |         self.parts: list[str] = []
+29 |         self._hidden = 0                       # depth inside <script>, <style>, ...
+30 | 
 ```
 ```python
-29 |     def handle_starttag(self, tag: str, attrs: list) -> None:
-30 |         if tag in HIDDEN_TAGS:
-31 |             self._hidden += 1
-32 |         elif tag in BLOCK_TAGS:
-33 |             self.parts.append("\n")
-34 | 
+31 |     def handle_starttag(self, tag: str, attrs: list) -> None:
+32 |         if tag in HIDDEN_TAGS:
+33 |             self._hidden += 1
+34 |         elif tag in BLOCK_TAGS:
+35 |             self.parts.append("\n")
+36 | 
 ```
 ```python
-35 |     def handle_endtag(self, tag: str) -> None:
-36 |         if tag in HIDDEN_TAGS and self._hidden:
-37 |             self._hidden -= 1
-38 |         elif tag in BLOCK_TAGS:
-39 |             self.parts.append("\n")
-40 | 
+37 |     def handle_endtag(self, tag: str) -> None:
+38 |         if tag in HIDDEN_TAGS and self._hidden:
+39 |             self._hidden -= 1
+40 |         elif tag in BLOCK_TAGS:
+41 |             self.parts.append("\n")
+42 | 
 ```
 ```python
-41 |     def handle_data(self, data: str) -> None:
-42 |         if not self._hidden:
-43 |             self.parts.append(data)
-44 | 
-45 | 
+43 |     def handle_data(self, data: str) -> None:
+44 |         if not self._hidden:
+45 |             self.parts.append(data)
+46 | 
+47 | 
 ```
 - The parser calls these methods as it meets each opening tag, closing tag and piece of text.
 - `_hidden` counts how deep we are inside hidden tags; text is only kept at depth 0.
@@ -78,47 +81,48 @@ you see each URL before it is opened.
 
 ## `html_to_text`
 ```python
-46 | def html_to_text(html: str) -> str:
-47 |     """Visible text of an HTML page with tidy whitespace."""
-48 |     parser = _TextExtractor()
-49 |     parser.feed(html)
-50 |     parser.close()
-51 |     text = "".join(parser.parts)
-52 |     text = re.sub(r"[ \t\r\f\v]+", " ", text)              # runs of spaces -> one space
-53 |     text = re.sub(r"\n\s*\n+", "\n\n", text)               # many blank lines -> one
-54 |     return "\n".join(line.strip() for line in text.splitlines()).strip()
-55 | 
-56 | 
+48 | def html_to_text(html: str) -> str:
+49 |     """Visible text of an HTML page with tidy whitespace."""
+50 |     parser = _TextExtractor()
+51 |     parser.feed(html)
+52 |     parser.close()
+53 |     text = "".join(parser.parts)
+54 |     text = re.sub(r"[ \t\r\f\v]+", " ", text)              # runs of spaces -> one space
+55 |     text = re.sub(r"\n\s*\n+", "\n\n", text)               # many blank lines -> one
+56 |     return "\n".join(line.strip() for line in text.splitlines()).strip()
+57 | 
+58 | 
 ```
 - Runs the parser, joins the pieces, collapses runs of spaces/tabs to one space and runs of blank lines to one blank
   line, strips each line, and trims the ends.
 
 ## `fetch_text`
 ```python
-57 | def fetch_text(url: str, timeout: float = 20.0) -> str:
-58 |     """Download ``url`` and return its text; raises ValueError with a readable reason."""
-59 |     if not url.startswith(("http://", "https://")):
-60 |         raise ValueError("only http:// and https:// addresses can be fetched")
-61 |     request = urllib.request.Request(url, headers={"User-Agent": "localagent/0.5 (docs reader)"})
-62 |     try:
-63 |         with urllib.request.urlopen(request, timeout=timeout) as response:
-64 |             raw = response.read(MAX_FETCH_BYTES)
-65 |             content_type = response.headers.get("Content-Type", "")
-66 |             charset = response.headers.get_content_charset() or "utf-8"
-67 |     except urllib.error.HTTPError as exc:
-68 |         exc.close()
-69 |         raise ValueError(f"the server answered HTTP {exc.code}") from None
-70 |     except (urllib.error.URLError, OSError) as exc:
-71 |         raise ValueError(f"cannot reach the address ({exc})") from None
-72 |     try:
-73 |         text = raw.decode(charset, errors="replace")
-74 |     except LookupError:                                   # unknown charset name: assume UTF-8
-75 |         text = raw.decode("utf-8", errors="replace")
-76 |     if "html" in content_type.lower() or text.lstrip().lower().startswith(("<!doctype html", "<html")):
-77 |         text = html_to_text(text)
-78 |     return text
+59 | def fetch_text(url: str, timeout: float = 20.0) -> str:
+60 |     """Download ``url`` and return its text; raises ValueError with a readable reason."""
+61 |     if not url.startswith(("http://", "https://")):
+62 |         raise ValueError("only http:// and https:// addresses can be fetched")
+63 |     request = urllib.request.Request(url, headers={"User-Agent": f"localagent/{__version__} (docs reader)"})
+64 |     try:
+65 |         with urllib.request.urlopen(request, timeout=timeout) as response:
+66 |             raw = response.read(MAX_FETCH_BYTES)
+67 |             content_type = response.headers.get("Content-Type", "")
+68 |             charset = response.headers.get_content_charset() or "utf-8"
+69 |     except urllib.error.HTTPError as exc:
+70 |         exc.close()
+71 |         raise ValueError(f"the server answered HTTP {exc.code}") from None
+72 |     except (urllib.error.URLError, OSError) as exc:
+73 |         raise ValueError(f"cannot reach the address ({exc})") from None
+74 |     try:
+75 |         text = raw.decode(charset, errors="replace")
+76 |     except LookupError:                                   # unknown charset name: assume UTF-8
+77 |         text = raw.decode("utf-8", errors="replace")
+78 |     if "html" in content_type.lower() or text.lstrip().lower().startswith(("<!doctype html", "<html")):
+79 |         text = html_to_text(text)
+80 |     return text
 ```
-- Refuses non-web addresses. Sends a polite `User-Agent` (some sites block requests without one).
+- Refuses non-web addresses. Sends a polite `User-Agent` such as `localagent/0.6.0 (docs reader)` (some sites block
+  requests without one).
 - Reads at most 2 MB, notes the content type and the character set the server declared (default UTF-8).
 - HTTP errors (404, 403 ...) and network problems become `ValueError` with a short reason; the toolbox shows it to the
   model as `ERROR: could not fetch ...`.

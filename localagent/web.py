@@ -12,6 +12,8 @@ import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 
+from . import __version__
+
 MAX_FETCH_BYTES = 2_000_000
 BLOCK_TAGS = {"p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "section",
               "article", "header", "footer", "table", "ul", "ol"}
@@ -58,7 +60,7 @@ def fetch_text(url: str, timeout: float = 20.0) -> str:
     """Download ``url`` and return its text; raises ValueError with a readable reason."""
     if not url.startswith(("http://", "https://")):
         raise ValueError("only http:// and https:// addresses can be fetched")
-    request = urllib.request.Request(url, headers={"User-Agent": "localagent/0.5 (docs reader)"})
+    request = urllib.request.Request(url, headers={"User-Agent": f"localagent/{__version__} (docs reader)"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read(MAX_FETCH_BYTES)

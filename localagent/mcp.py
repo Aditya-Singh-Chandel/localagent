@@ -23,6 +23,8 @@ import subprocess
 import threading
 from pathlib import Path
 
+from . import __version__
+
 PROTOCOL_VERSION = "2025-06-18"
 SCHEMA_KEYS = {"type", "description", "properties", "required", "items", "enum", "format",
                "minimum", "maximum", "minItems", "maxItems", "nullable", "anyOf"}
@@ -89,7 +91,7 @@ class MCPServer:
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
         self.request("initialize", {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
-                                    "clientInfo": {"name": "localagent", "version": "0.5"}})
+                                    "clientInfo": {"name": "localagent", "version": __version__}})
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         self.tools = self._list_tools()
         return self

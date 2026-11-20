@@ -74,8 +74,8 @@ Run: `python -m evals.run_evals --model qwen3:8b` (needs a running model server)
 
 ## `evals/run_evals.py`
 @@ evals/run_evals.py header @@
-- Imports the agent pieces (agent, backend registry, the shared flags and `model_label` from `cli.py`, config with its
-  shared rules, `LLMError`, meter, toolbox) and the task
+- Imports the agent pieces (agent, backend registry, the shared flags, `choose_mode` and `model_label` from `cli.py`,
+  config with its shared rules, `LLMError`, meter, toolbox), `os` (is `LOCALAGENT_BACKEND` set?) and the task
   definitions.
 
 @@ evals/run_evals.py Result @@
@@ -91,8 +91,9 @@ Run: `python -m evals.run_evals --model qwen3:8b` (needs a running model server)
 
 @@ evals/run_evals.py main @@
 - Parses the shared flags (`add_model_flags`), repeated `--only NAME` filters, `--type-check` and `--trace` (print every
-  tool call); overlays them on the environment config and applies `gemini_history`, so the evals measure exactly
-  the setup the chat uses; the summary names the model chain via `model_label`; builds the backend; runs each selected task and prints one line each, then a summary. Exit code is
+  tool call); overlays them on the environment config, applies the mode like the chat (`--offline` measures the local
+  model, `--online` Gemini alone) unless `--backend` was given, and applies `gemini_history`, so the evals measure
+  exactly the setup the chat uses; the summary names the model chain via `model_label`; builds the backend; runs each selected task and prints one line each, then a summary. Exit code is
   0 only if every task passed, so scripts can gate on it.
 
 @@ evals/run_evals.py footer @@

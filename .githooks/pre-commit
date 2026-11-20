@@ -1,0 +1,11 @@
+#!/bin/sh
+# Before every commit: block big files, model/key/.env files, secrets and a public author
+# email (the checks are in tools/check_commit.py). Enable once per clone with:
+#   git config core.hooksPath .githooks
+for python in .venv/Scripts/python.exe .venv/bin/python python3 python; do
+    if command -v "$python" >/dev/null 2>&1; then
+        exec "$python" tools/check_commit.py
+    fi
+done
+echo "pre-commit: Python was not found, so the safety check could not run (commit blocked)" >&2
+exit 1

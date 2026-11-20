@@ -18,13 +18,16 @@ Internally the agent stores messages in Ollama's shape, so this module converts 
 - Walks the history. An **assistant message with tool calls** needs, per call, an `id`, `"type": "function"`, and the
   arguments as a **JSON string** (Ollama uses a dict, hence `json.dumps` unless it is already a string).
   `call.get("id", "call_0")` is a safety default; the agent always assigns real ids.
-- `extra_content` is copied through when present. **Gemini 3 models** attach a *thought signature* there to every tool
-  call and reject the next request (HTTP 400) unless it is sent back unchanged; other servers simply ignore it.
-- `fill_signatures=True` (only for requests to Gemini): a tool call **without** a signature gets the placeholder. Why:
-  after a fallback switch, the history can contain tool calls made by a model that produces no signatures (e.g.
+- `gemini=True` (only for requests to Google): every tool call carries `extra_content` — its own when it has one,
+  else the placeholder. **Gemini 3 models** attach a *thought signature* there to every tool call and reject the next
+  request (HTTP 400) unless it is sent back unchanged. A call **without** a signature gets the placeholder. Why: after a
+  fallback switch, the history can contain tool calls made by a model that produces no signatures (e.g.
   `gemini-2.5-flash`), and a Gemini 3 model then refused the whole request with *"Function call is missing a
   thought_signature"* — a real failure seen in the eval. The placeholder was verified live: `gemini-3.5-flash-lite`
-  accepted such a history and answered correctly. Local servers never get it.
+  accepted such a history and answered correctly.
+- Every other server gets **no** `extra_content` at all. Before 0.6 a call's own signature was passed to any server;
+  now that a conversation can move from Gemini to the local model at any moment (`/model offline`, or offline
+  detection), Google-only fields must not reach a server that might reject unknown fields.
 - `content: ... or None`: this API wants `null`, not an empty string, when a message only contains tool calls.
 - A **tool-result message** becomes `{"role": "tool", "tool_call_id": ..., "content": ...}`; the id links the result to
   the request it answers.
@@ -53,7 +56,7 @@ Internally the agent stores messages in Ollama's shape, so this module converts 
 - Same constructor shape as `OllamaClient`: keep the `Config`.
 
 @@ localagent/openai_compat.py OpenAICompatClient.chat @@
-- The client fills placeholder signatures only when it talks to Google (`api_base == gemini_base`).
+- The client sends signatures only when it talks to Google (`api_base == gemini_base`).
 - Streaming is on by default (`stream`), with `stream_options` asking for token counts at the end.
 - `payload` has the model name, converted messages, tools, temperature and `"stream": False` (this client reads one
   complete answer; streaming is a roadmap item).
@@ -61,9 +64,11 @@ Internally the agent stores messages in Ollama's shape, so this module converts 
 - `reasoning_effort` (e.g. `low`) is added only when set (`--reasoning`); it limits hidden "thinking", which costs
   time and quota tokens on thinking models.
 - `headers` adds `Authorization: Bearer <key>` only when an API key is configured.
-- `post(self._config.api_base + "/chat/completions", ...)` sends it. Streaming: `read_stream` assembles the answer
-  (a connection lost half-way becomes `LLMError`, so the retry/fallback logic can handle it). One-piece: `json.load`
-  parses the reply.
+- `post(self._config.api_base + "/chat/completions", ..., timeout=request_timeout)` sends it (Gemini clients get the
+  shorter `gemini_timeout`). Streaming: `read_stream` assembles the answer (a connection lost half-way becomes
+  `LLMError`, so the retry/fallback logic can handle it). One-piece: `json.load` parses the reply; a reply that is not
+  JSON or has no `choices[0].message` becomes an `LLMError` ("unexpected format") instead of crashing the program with a
+  `KeyError`.
 - The answer is at `choices[0].message`. Text goes into `content`; each tool call is normalised to
   `{"id", "function": {"name", "arguments"}}` — here `arguments` stays a JSON *string*, which `agent._parse_args`
   already knows how to decode. A call's `extra_content` (thought signature) is kept on the stored message so
