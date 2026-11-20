@@ -14,6 +14,9 @@ can build their own `Config`.
   `list[str]` work on older Pythons.
 - `import os` gives `os.environ` (environment variables). `dataclass` generates the constructor for a class from its
   fields; `replace` copies a frozen dataclass with some fields changed. `Path` is the standard file-path object.
+- From `providers.py` (the table of online services): `GEMINI_BASE` (Google's address, the default of two fields),
+  `CUSTOM_KEY` (the key variable of the "custom" entry), `PROVIDERS` and `find_provider` (the table and a lookup by
+  name) and `key_help` (the "no key" message). `providers.py` imports nothing from here, so there is no import loop.
 
 ## `_normalize_host`
 @@ localagent/config.py _normalize_host @@
@@ -27,6 +30,7 @@ can build their own `Config`.
   Google project). They sit well under Google's Tier 1 limits; the agent still adopts lower numbers if Google reports
   them.
 - `MODES`: the three ways to choose who answers — `auto`, `online`, `offline` (see `mode` below and `cli.md`).
+- `LOCAL_SERVERS`: the allowed values of `local_server` — empty (any local model that answers), `openai` or `ollama`.
 
 ## `_split`
 @@ localagent/config.py _split @@
@@ -43,8 +47,8 @@ can build their own `Config`.
 @@ localagent/config.py Config @@
 - `@dataclass(frozen=True)` builds `__init__` from the fields and makes instances **immutable**, so no component can
   silently change a setting mid-run.
-- `backend`: which model-server client to use (`ollama`, `openai`, `gemini` or `local`; see `backends.md`). You
-  normally do not set it: the **mode** chooses it (see below). Setting it by hand (`--backend`) skips the mode.
+- `backend`: which model-server client to use (`ollama`, `openai`, `gemini`, `hosted` or `local`; see `backends.md`).
+  You normally do not set it: the **mode** chooses it (see below). Setting it by hand (`--backend`) skips the mode.
 - `model`: the model tag/name the server understands. `host`: where Ollama listens.
 - `api_base` / `api_key`: address and bearer token for an OpenAI-compatible server. The default
   `http://127.0.0.1:8080/v1` is where `serve.ps1` starts llama.cpp (LM Studio uses `http://localhost:1234/v1`).
@@ -87,11 +91,23 @@ can build their own `Config`.
   server tried last; empty = none).
 - `gemini_tier`: `free` (lite models first, strong models in reserve) or `paid` (strong models first, much higher
   limits). `stream`: show answers while they are written. `helpers` / `helper_turns`: the `delegate` tool and how many
-  model calls one helper may use. `gemini_timeout`: a Gemini request is given up after 2 minutes (a hung connection
-  should not wait 15). `fallback_backend` may also be `local`: the local model of `localserver.py`, started when needed.
-- **Online / offline settings:** `mode` — `auto` (default: Gemini when a key is set, the local model when Gemini
-  cannot be reached or there is no key), `online` (Gemini only) or `offline` (the local model only); env
-  `LOCALAGENT_MODE`, flags `--mode`, `--online`, `--offline`, or `/model` in the chat. `local_ctx`: the local model's
+  model calls one helper may use. `gemini_timeout`: an online request (Gemini or another service) is given up after 2
+  minutes — a hung connection should not wait 15. `fallback_backend` may also be `local`: the local model of
+  `localserver.py`, started when needed.
+- **The online service** (see `providers.md`): `provider` — who answers online: `gemini` (the default and the only one
+  with a free quota) or `openai`, `anthropic`, `openrouter`, `groq`, `mistral`, `deepseek`, `custom`; env
+  `LOCALAGENT_PROVIDER`, flag `--provider`. `provider_model`: that service's model (env `LOCALAGENT_PROVIDER_MODEL`;
+  Gemini ignores it and uses its own chain). `provider_base`: its address — from the table, or
+  `LOCALAGENT_PROVIDER_BASE` (needed for `custom`, possible for any, e.g. a company proxy). `provider_key`: your key,
+  read from the **service's own variable** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ...), so a key you already have set
+  for other tools just works. `localagent setup` fills all four for you.
+- **Online / offline settings:** `mode` — `auto` (default: the online model when it is set up, the local model when
+  that cannot be reached or nothing online is set up), `online` (the online model only) or `offline` (the local model
+  only); env `LOCALAGENT_MODE`, flags `--mode`, `--online`, `--offline`, or `/model` in the chat. `local_server`:
+  which local model counts — empty: any server that answers (then Ollama, then llama.cpp started here); `openai`: only
+  the server at `api_base` (started from the downloaded model when nothing answers and the address is on this
+  computer); `ollama`: only Ollama. `localagent setup` writes it when you pick one (env `LOCALAGENT_LOCAL_SERVER`), so
+  your choice is never replaced by a different model that happens to run. `local_ctx`: the local model's
   context window (8K; the server is started with it). `llama_server` and `model_file`: where llama.cpp's server program
   and the `.gguf` model are (empty = look in the usual places, see `localserver.md`). `gpu_layers`: how many of the
   model's layers go to the graphics card; `-1` lets llama.cpp fit as many as the card's memory holds (it measures this
@@ -109,17 +125,35 @@ can build their own `Config`.
   removed.
 - `tier`/`paid` are read first because they change the default limits. `LOCALAGENT_RPM`, `LOCALAGENT_RPD` and
   `LOCALAGENT_TPM` override the limits directly; otherwise the paid presets or the free defaults apply.
-- `mode` is read in lower case and checked against `MODES`; anything else is explained as a `ValueError`.
+- `mode` is read in lower case and checked against `MODES`; anything else is explained as a `ValueError`. The same for
+  `local_server` and `LOCAL_SERVERS`.
 - Also read: `GEMINI_API_KEY` (spaces stripped), `LOCALAGENT_GEMINI_MODELS` (comma list; empty keeps the default
   chain), `LOCALAGENT_GEMINI_LIMITS` (comma list of `model=rpm/rpd`), `LOCALAGENT_REASONING`, `LOCALAGENT_FALLBACK`,
   `LOCALAGENT_SANDBOX`, and for the local model `LOCALAGENT_LOCAL_CTX`, `LOCALAGENT_LLAMA_SERVER`,
   `LOCALAGENT_MODEL_FILE`, `LOCALAGENT_GPU_LAYERS` and `LOCALAGENT_THREADS`. The Docker image sets several of these;
   a settings file can set any of them with `"env"` (see `settings.md`).
+- The finished config goes through `with_provider` with `LOCALAGENT_PROVIDER` (default `gemini`) and
+  `LOCALAGENT_PROVIDER_MODEL`, which fills in the online service's address and key.
+
+## `with_provider`
+@@ localagent/config.py with_provider @@
+- Makes `name` the online service: looks it up in the table (any letter case; an unknown name is a `ValueError` that
+  lists the valid ones), takes its address — or `LOCALAGENT_PROVIDER_BASE` when set, without a trailing `/` — and
+  reads your key from the variable the table names for it. Used by `from_env` and by the `--provider` flag (`cli.md`),
+  so a flag and a variable work exactly the same way.
+
+## `online_problem`
+@@ localagent/config.py online_problem @@
+- One place that decides whether the online model can work, in words a person can act on; empty text means "ready".
+  Gemini needs only its key. Another service needs an address (only `custom` can lack one), a key (except `custom`:
+  a server on your own network may need none) and a chosen model. Every message ends with the fix — `localagent
+  setup`, or the variable to set. The modes (`cli.choose_mode`), `make_hosted`, `/model` and `--doctor` all ask it, so
+  they can never disagree about whether online works.
 
 ## Shared rules used by every entry point (chat, server, evals)
-@@ localagent/config.py after_Config @@
-- `GEMINI_CONTEXT` (32 768 tokens) is the history budget for Gemini, which is built for long prompts; the 8K default
-  (`num_ctx`) suits small local models.
+@@ localagent/config.py after_online_problem @@
+- `GEMINI_CONTEXT` (32 768 tokens) is the history budget for online models, which are built for long prompts; the 8K
+  default (`num_ctx`) suits small local models.
 
 @@ localagent/config.py overlay @@
 - Returns a copy of the config with only the given settings replaced; a value of `None` means "this flag was not given"
@@ -127,7 +161,8 @@ can build their own `Config`.
   setting name; `replace` itself rejects names that are not settings.
 
 @@ localagent/config.py gemini_history @@
-- Raises `num_ctx` to `GEMINI_CONTEXT` when the backend is Gemini, unless you chose a size yourself (`chosen` = the
+- Raises `num_ctx` to `GEMINI_CONTEXT` when the backend is online (`gemini` or `hosted`), unless you chose a size
+  yourself (`chosen` = the
   `--num-ctx` flag was given, or `LOCALAGENT_NUM_CTX` is set). The chat, the HTTP server and the evals all call it,
   so all three behave the same. Before, the rule lived in the chat only: the server and the evals ran Gemini with
   the 8K budget, so long sessions summarised early (extra calls) and the evals measured a different setup than the

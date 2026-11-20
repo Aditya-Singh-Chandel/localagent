@@ -9,7 +9,8 @@
 ```
 **The Windows zip** holds everything: Python itself (the official "embeddable" Python 3.14.10 from python.org, about
 12 MB), the agent, ruff and mypy (its verification layers), launchers and two double-clickable helpers. A user
-unzips it, double-clicks `install.cmd` (it adds the folder to their PATH), opens a new terminal and types
+unzips it, double-clicks `install.cmd` (it adds the folder to their PATH and starts the guided setup right there),
+opens a new terminal and types
 `localagent setup`. Tested exactly like that (20 Nov 2026): unzipped into a fresh folder, `--version`, the bundled
 Python found both checkers, broken code was rejected, `--doctor` reported correctly, and a real request was answered
 in 1 call.
@@ -17,7 +18,7 @@ in 1 call.
 ```
 localagent-0.6.0-windows-x64\
   localagent.cmd        runs python\python.exe -m localagent with your arguments
-  install.cmd/.ps1      adds this folder to YOUR user PATH (nothing else changes)
+  install.cmd/.ps1      adds this folder to YOUR user PATH (nothing else changes), then runs the setup
   uninstall.cmd/.ps1    removes it again
   README.txt            the four steps above
   LICENSE, THIRD_PARTY_NOTICES.md
@@ -49,9 +50,11 @@ website: `tools/build_site.py` (see `build_site.md`) builds a complete, self-con
   in paths with spaces, thanks to the quotes); `%*` passes all arguments on.
 - `INSTALL_CMD`/`UNINSTALL_CMD`: double-clickable wrappers that run the PowerShell scripts with `-ExecutionPolicy
   Bypass` (scripts from the internet are blocked by default) and pause so the message can be read.
-- `INSTALL_PS1` adds the folder to the user PATH only when missing; `UNINSTALL_PS1` removes exactly that entry. Both
+- `INSTALL_PS1` adds the folder to the user PATH only when missing, then starts `localagent setup` with the bundled
+  Python (named by its full path: the new PATH only reaches terminals opened later), so a double-click ends with a
+  working agent; `UNINSTALL_PS1` removes exactly that entry. Both
   touch only the current user's PATH — no administrator rights needed.
-- `README_TXT` is the four-step guide inside the zip.
+- `README_TXT` is the four-step guide inside the zip; it names every kind of brain the setup offers.
 
 ## Steps
 @@ tools/build_release.py run @@

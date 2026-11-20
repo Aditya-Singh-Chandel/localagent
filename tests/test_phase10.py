@@ -682,12 +682,12 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(config.fallback_backend, "ollama")
         config, notes = self.choose("auto", local="openai")
         self.assertEqual((config.backend, config.num_ctx), ("local", 8192))
-        self.assertIn("no GEMINI_API_KEY", notes[0])
+        self.assertIn("no online model is set up", notes[0])
         config, _ = self.choose("offline", key="k", local="local")
         self.assertEqual((config.backend, config.mode), ("local", "offline"))
 
     def test_impossible_modes_say_what_to_do(self):
-        with self.assertRaisesRegex(ValueError, "online mode needs a Gemini key"):
+        with self.assertRaisesRegex(ValueError, "online mode needs a working online model: GEMINI_API_KEY"):
             self.choose("online")
         with self.assertRaisesRegex(ValueError, "No local model"):
             self.choose("offline", key="k")

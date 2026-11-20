@@ -44,7 +44,11 @@ if (($path -split ";") -contains $here) {
     [Environment]::SetEnvironmentVariable("Path", $new, "User")
     Write-Host "Added $here to your PATH."
 }
-Write-Host "Open a NEW terminal and type:  localagent setup"
+Write-Host ""
+Write-Host "Next, the guided setup (about a minute; run it again any time with: localagent setup)"
+& "$here\\python\\python.exe" -m localagent setup
+Write-Host ""
+Write-Host "Done. Open a NEW terminal in a project folder and type:  localagent"
 """
 UNINSTALL_PS1 = """# Removes this folder from YOUR user PATH. Then delete the folder itself.
 # Your settings, logs and downloaded models stay in %USERPROFILE%\\.localagent (delete it too to remove them).
@@ -57,13 +61,15 @@ Write-Host "Removed $here from your PATH. You can now delete this folder."
 """
 README_TXT = """localagent {version} for Windows (64-bit), portable
 
-A coding agent like Claude Code: online with Google Gemini, offline with a model on your PC.
+A coding agent for your terminal: online with Google Gemini (free key) or your own key for
+OpenAI, Anthropic, OpenRouter, Groq, Mistral, DeepSeek; offline with a model on your PC.
 
 1. Unzip this folder somewhere permanent, for example C:\\Tools\\localagent (not Downloads).
-2. Double-click install.cmd once. It adds this folder to your PATH (only for your account).
-3. Open a NEW terminal (PowerShell) and run:   localagent setup
-   It asks for a free Gemini key and offers to download the offline model for your PC.
-4. Then, in any project folder:               localagent
+2. Double-click install.cmd once. It adds this folder to your PATH (only for your account)
+   and starts the guided setup: an online service and key, and/or a model on this PC
+   (one you already run - Ollama, LM Studio - or a free one it downloads for you).
+3. Open a NEW terminal (PowerShell) in a project folder and type:   localagent
+4. Change the setup any time with:   localagent setup
 
 Python {python} is included; nothing else has to be installed. Docker Desktop is optional (a sealed
 box for running code). Check the setup at any time:  localagent --doctor

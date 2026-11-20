@@ -9,27 +9,34 @@ the counterpart of Claude Code's terminal interface.
 ```
 localagent                       # in your project folder: automatic setup (mode auto)
 localagent --offline             # only the local model (started for you when needed)
-localagent --online              # only Gemini
+localagent --online              # only the online model (Gemini, or the service chosen in setup)
+localagent --provider anthropic:claude-sonnet-5-5   # this run: another online service and model
 localagent -p "what does this project do?"     # one answer, printed; for scripts
 localagent -c                    # continue the latest conversation of this project
 localagent --doctor              # check the setup that would be used
 localagent --backend openai --api-base http://127.0.0.1:8080/v1 --no-auto   # fully manual
 ```
 
-**The three modes.** `auto` (default): Gemini answers while a key is set and the internet works; when Gemini cannot be
-reached (or its quota is used up) the local model answers instead, by itself and at once — and Gemini takes over again
-when it is back. Without a key, `auto` uses the local model. `online`: only Gemini (nothing local is started or
-used). `offline`: only the local model, started for you if needed. Switch at any time in the chat with `/model online`,
-`/model offline`, `/model auto` (or `/online`, `/offline`, `/auto`); the conversation and your files stay.
+**The three modes.** `auto` (default): the online model answers while it is set up and the internet works — Gemini,
+or the service you chose in `localagent setup` (OpenAI, Anthropic, OpenRouter, Groq, Mistral, DeepSeek, any
+OpenAI-compatible address). When it cannot be reached (or a quota is used up) the local model answers instead, by
+itself and at once — and the online model takes over again when it is back. With nothing online set up, `auto` uses
+the local model. `online`: only the online model (nothing local is started or used). `offline`: only the local model,
+started for you if needed. Switch at any time in the chat with `/model online`, `/model offline`, `/model auto` (or
+`/online`, `/offline`, `/auto`); the conversation and your files stay.
+
+**The first start.** With nothing set up at all and a person at the keyboard, `localagent` offers the guided setup
+at once instead of printing an error (`guided_first_run`).
 
 ## Module header
 @@ localagent/cli.py header @@
 - The docstring explains how to start it and what the modes do.
 - Imports: `argparse` (flags), `os` (environment variables), `re` (`@file` mentions), `sys` (the output streams),
   `time` (when a request started), `replace`, `Path`, `Callable`, `__version__`, and the modules it wires together —
-  agent, backends, checkpoints, config (with `MODES`, `overlay`, `gemini_history`), doctor, `LLMError`, the local-model
-  functions, meter, `sandbox_image_ready`, the sandbox helpers it uses for `!` and `@`, sessions, settings/permissions,
-  and the toolbox with its `Approval` questions and text helpers.
+  agent, backends, checkpoints, config (with `MODES`, `overlay`, `gemini_history`, `online_problem` and
+  `with_provider`), doctor, `LLMError`, the local-model functions, meter, `run_models`, the provider table,
+  `sandbox_image_ready`, the sandbox helpers it uses for `!` and `@`, sessions, settings/permissions, the toolbox with
+  its `Approval` questions and text helpers, and `run_setup` (the guided setup, `wizard.py`).
 - `HELP` lists the commands (shown at start and by `/help`), the `!`, `#` and `@` shortcuts, how to type multi-line
   requests, and that Ctrl+C stops a task without leaving.
 - `INIT_PROMPT` is what `/init` asks the model: look at the project and write `AGENT.md` (purpose, how to run, how to
@@ -39,9 +46,9 @@ used). `offline`: only the local model, started for you if needed. Switch at any
 - `PLAN_FOLLOW_UP` is sent after you accept a plan from `/plan`; it starts with "Implement", so the agent's "you changed
   nothing" safeguards apply to it.
 - `BUILT_IN` lists the built-in commands (custom commands cannot replace them). `MODE_TEXT` describes each mode for
-  `/model`. `NOTHING_HELP` is shown when no model at all is available: `localagent setup` first, then both ways to set
-  one up by hand. `SUBCOMMANDS` are the product commands handled before the flags; `COMMANDS_EPILOG` lists them at the
-  end of `--help`.
+  `/model`. `NOTHING_HELP` is shown when no model at all is available: `localagent setup`, and everything it offers.
+  `SUBCOMMANDS` are the product commands handled before the flags; `COMMANDS_EPILOG` lists them at the end of
+  `--help`.
 - `MENTION` finds `@path` words — only at the start or after a space, so `me@example.com` is not one. `COLORS` and
   `FAILURE_WORDS` decide which progress lines are coloured.
 
@@ -75,8 +82,9 @@ used). `offline`: only the local model, started for you if needed. Switch at any
 
 ## `build_parser`
 @@ localagent/cli.py build_parser @@
-- `--version` prints `localagent 0.6.0` and exits. `-p`/`--print REQUEST` answers one request (`-` reads it from your
-  input, e.g. `type question.txt | localagent -p -`).
+- `--version` prints `localagent 0.6.0` and exits. `--provider NAME[:MODEL]` picks the online service for this run
+  (its help lists the names from the table). `-p`/`--print REQUEST` answers one request (`-` reads it from your input,
+  e.g. `type question.txt | localagent -p -`).
 - The shared flags (`add_model_flags`), then the chat's own. Value flags default to `None`, meaning "not given" (so
   automatic setup and environment variables can fill them): `--workspace` (default: the current folder), `--num-ctx`,
   `--fallback` (`local`, `ollama` or `openai`), `--reasoning`.
@@ -89,20 +97,28 @@ used). `offline`: only the local model, started for you if needed. Switch at any
 - Starts from `Config.from_env()` (defaults + environment variables), `overlay`s only the value flags actually given
   (the shared ones from `model_flags` plus the chat's own), then sets the on/off flags. Order of strength: flags >
   environment variables > settings-file `env` > defaults.
+- `--provider` goes through `with_provider` (`config.md`), exactly like `LOCALAGENT_PROVIDER`: the part before the
+  first `:` names the service, the rest is the model (`openrouter:qwen/qwen3-coder:free` keeps its own colon). Naming
+  the service that is already chosen without a model keeps the saved model; another service starts without one.
 
 ## Choosing the model setup
 @@ localagent/cli.py local_kind @@
 - What the local model would be right now: `openai` when a server answers at `api_base` (llama.cpp, LM Studio),
   `ollama` when Ollama answers, `local` when llama.cpp can be started here, `""` when there is nothing. The quick checks
   take a second at most.
+- A kind you chose in `localagent setup` (`local_server`) is returned as it is, without a check: it is checked when it
+  is used, and then the error names that server ("not running at ...") instead of a vague "no local model".
 
 @@ localagent/cli.py choose_mode @@
-- Turns a mode into a model setup and explains it:
-  - `online` needs a key (else a `ValueError` saying how to get one) → backend `gemini`, no local backup;
-  - `auto` with a key → backend `gemini` with the local model as its last link (`fallback_backend`) when there is one,
-    and a note naming it — or "none set up";
-  - `offline`, or `auto` without a key → backend `local`, history budget = the local context (8K) unless you chose a
-    size; with nothing local a `ValueError` says what to install (`NO_LOCAL_MODEL`, or `NOTHING_HELP` in `auto`).
+- Turns a mode into a model setup and explains it. "The online model works" means `online_problem` (`config.md`) has
+  nothing to say; its backend is `gemini` for Gemini and `hosted` for any other service:
+  - `online` needs a working online model (else a `ValueError` with the fix) → no local backup;
+  - `auto` with a working online model → it, with the local model as its last link (`fallback_backend`) when there is
+    one, and a note naming it — or "none set up". The first note says who answers, e.g. `OpenAI gpt-5-mini answers
+    (OPENAI_API_KEY is set)`;
+  - `offline`, or `auto` with nothing online → backend `local`, history budget = the local context (8K) unless you
+    chose a size; with nothing local a `ValueError` says what to install (`NO_LOCAL_MODEL`, or `NOTHING_HELP` in
+    `auto`).
 - Used at start-up (`auto_configure`), by `/model`, and by the HTTP server and the evals, so all four agree.
 
 @@ localagent/cli.py auto_configure @@
@@ -110,19 +126,25 @@ used). `offline`: only the local model, started for you if needed. Switch at any
   banner can explain it:
   - **models:** `choose_mode` for the configured mode — unless you chose `--backend` (or `LOCALAGENT_BACKEND`) by hand;
   - **sandbox:** `docker` when Docker runs and the sandbox image exists (one quick `docker image inspect`);
-  - **fallback:** with a hand-chosen `--backend gemini` (and not online mode), the local server when one answers;
-  - **history budget:** 32 768 tokens with Gemini (unless you set `--num-ctx`). The 8 192 default fits the small local
-    model; with it, Gemini sessions forgot old tool output and summarised far earlier than necessary. At 32K a call
-    carries at most ~23K tokens of history — still well inside the free tier's 250 000 tokens per minute.
+  - **fallback:** with a hand-chosen online backend (`--backend gemini` or `hosted`, not online mode), the local server
+    when one answers;
+  - **history budget:** 32 768 tokens with an online model (unless you set `--num-ctx`). The 8 192 default fits the
+    small local model; with it, Gemini sessions forgot old tool output and summarised far earlier than necessary. At
+    32K a call carries at most ~23K tokens of history — still well inside Gemini's free 250 000 tokens per minute.
 - When the mode cannot work (no key and nothing local), `choose_mode`'s `ValueError` reaches `main`, which prints it as
   a setup problem — or, with `--doctor`, runs the health check anyway.
 
-## `model_label`
+## `online_name` and `model_label`
+@@ localagent/cli.py online_name @@
+- The online model in a few words for notes and `/model`: `Gemini`, `OpenAI gpt-5-mini`, or for `custom` the model and
+  its address.
+
 @@ localagent/cli.py model_label @@
 - A readable description of who answers, e.g.
   `gemini:gemini-3.5-flash-lite > gemini-3.1-flash-lite > gemini-3.5-flash > gemini-2.5-flash > local:Qwen3-8B-Q4_K_M`
-  (the local model named after its file), or `local:Qwen3-8B-Q4_K_M` offline. Used by the banner, `/model` and the eval
-  scoreboard.
+  (the local model named after its file), `openai:gpt-5-mini > local:Qwen3-8B-Q4_K_M`, or `local:Qwen3-8B-Q4_K_M`
+  offline. A local server you chose is named by its model instead of the downloaded file: `ollama:qwen3:8b`, or
+  `openai:<model>` for a server at an address of your own. Used by the banner, `/model` and the eval scoreboard.
 
 ## `read_request` — typing a request
 @@ localagent/cli.py read_request @@
@@ -194,8 +216,9 @@ used). `offline`: only the local model, started for you if needed. Switch at any
   after — also when the request fails or is stopped).
 
 @@ localagent/cli.py Chat.model_status @@
-- What `/model` shows: the mode and what it means, the model chain now and which model answered last, whether a Gemini
-  key is set, what the local model is (running, or started when needed, or not set up), and how to switch.
+- What `/model` shows: the mode and what it means, the model chain now and which model answered last, the online
+  model with "key set" or what it still lacks, what the local model is (running, or started when needed, or not set
+  up), and how to switch — other services and models are chosen with `localagent setup`.
 
 @@ localagent/cli.py Chat.switch @@
 - `/model <mode>`: builds the new setup (`choose_mode`, then the history budget) and the new backend. Going offline
@@ -245,10 +268,19 @@ used). `offline`: only the local model, started for you if needed. Switch at any
 
 ## The product commands
 @@ localagent/cli.py run_subcommand @@
-- `localagent setup` and `localagent models ...` (see `models.md`). They are recognised **before** the flag parser,
+- `localagent setup` (see `wizard.md`) and `localagent models ...` (see `models.md`). They are recognised **before**
+  the flag parser,
   so they need no flags of their own and the chat's flags stay as they were. The settings files' `env` is applied
   and the configuration read; a problem there is one `setup problem` line. Ctrl+C during a download says how to
   continue it (exit code 130, the usual code for "stopped by Ctrl+C").
+
+## `guided_first_run` — the very first start
+@@ localagent/cli.py guided_first_run @@
+- Offers the guided setup instead of an error when **all** of these hold: a person is typing (input and output are a
+  terminal), it is a normal chat start (no `-p`, `--doctor`, `--no-auto` or `--backend`), no online model works and
+  no local model is available. One question, `Start it now? [Y/n]`; Enter or `y` runs `localagent setup`. True when the
+  setup made a model ready; then `main` reads the settings again and carries on into the chat. Scripts and CI never
+  see the question.
 
 ## `main` — start-up
 @@ localagent/cli.py main @@
@@ -259,10 +291,12 @@ used). `offline`: only the local model, started for you if needed. Switch at any
 - Loads the settings files of the workspace and applies their `env` **before** building the config (so a settings file
   can set the mode, the model file or anything else). A broken `settings.json`, or a typo in a variable such as
   `LOCALAGENT_NUM_CTX=8k`, is printed as one `setup problem` line with exit code 2 instead of a traceback.
+- On the very first start `guided_first_run` may run the setup; the settings are then loaded and applied again, so the
+  chat starts with what was just chosen.
 - Unless `--no-auto`, applies automatic setup. When no model can work, that is a setup problem too — except with
   `--doctor`, which then runs anyway and shows the reason first, because that is when you need it most.
 - `--doctor` prints the automatic choices plus the health report and exits with 0 (healthy) or 1.
-- Builds the backend (a missing Gemini key → setup problem). The approver: with `--auto-approve` nothing is asked (deny
+- Builds the backend (a missing key or model → setup problem). The approver: with `--auto-approve` nothing is asked (deny
   rules still apply); with `-p` nothing can be asked, so `refuse`; otherwise the interactive `Approver`, connected to
   the toolbox's permissions for "always" answers.
 - Runs the chat (or the single `-p` request). `finally` always closes the toolbox — stopping the Docker sandbox and any

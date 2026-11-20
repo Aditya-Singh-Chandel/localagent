@@ -80,8 +80,10 @@ Patterns use shell-style wildcards: `*` any text, `?` one character. Matching is
 
 @@ localagent/settings.py save_user_env @@
 - Writes one `env` variable into your **user** settings file and keeps everything else in it (rules, servers, other
-  variables). `localagent setup` saves the Gemini key this way and `localagent models use` the chosen model, so both
-  apply to every project from the next start on.
+  variables); `None` removes the variable instead. `localagent setup` saves its choices and pasted keys this way and
+  `localagent models use` the chosen model, so they apply to every project from the next start on.
+- Because the file can hold keys, on Linux and macOS it is made readable by you alone (`chmod 600`): there a home
+  folder is often readable by every user of the computer. Windows keeps each user's folder private already.
 
 @@ localagent/settings.py apply_env @@
 - Sets each `env` variable that is not set yet and returns the names it set. The CLI calls it **before** reading the

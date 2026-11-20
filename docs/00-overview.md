@@ -53,7 +53,8 @@ Four ideas carry the whole design:
  └────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 Lower layers never import higher ones, so each piece can be tested alone (that is what `tests/` does with a *fake*
-model). `doctor.py` checks the setup; `models.py` (with `fetch.py`) is `localagent setup` and `localagent models`;
+model). `doctor.py` checks the setup; `providers.py` lists the online services and local model servers the agent can
+use; `wizard.py` is `localagent setup`, and `models.py` (with `fetch.py`) is `localagent models` and the downloads;
 `__main__.py` makes `python -m localagent` work.
 
 ---
@@ -192,7 +193,8 @@ Read the pages in this order; each builds only on the ones before it.
 | 17 | `server.md`, `package.md` | `server.py`, `__init__/__main__` | the HTTP service; `python -m` |
 | 18 | `evals.md`, `tests.md` | `evals/*`, `tests/*` | how quality is measured and proven |
 | 19 | `build_docs.md`, `check_commit.md`, `docker.md` | `tools/`, Docker files | how these docs, the commit guard and the images work |
-| 20 | `fetch.md`, `models.md`, `build_release.md` | `fetch.py`, `models.py`, `tools/build_release.py` | the product side: verified downloads, `setup`/`models`, the download files |
+| 20 | `providers.md`, `wizard.md` | `providers.py`, `wizard.py` | who can answer — online services with your key, servers you run — and the guided setup |
+| 21 | `fetch.md`, `models.md`, `build_release.md`, `build_site.md` | `fetch.py`, `models.py`, `tools/build_release.py`, `tools/build_site.py` | the product side: verified downloads, `models`, the download files, the website |
 
 The other pages: `04-start-from-zero` (setup from nothing), `06-run-and-verify` (every way to run it, checks, and
 publishing to GitHub safely), `05-user-manual` (every command, flag and setting), `01-setup-and-models` (online and

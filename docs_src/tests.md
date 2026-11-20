@@ -359,8 +359,10 @@ last test uses real Docker, and it is skipped automatically when Docker is not r
   `fill_signatures` is on.
 - The Gemini backend refuses to start without a key, builds a `FallbackBackend` with one, labels the chain correctly,
   and rejects an unknown fallback name. The doctor reports a missing key as a failure.
-- With Gemini answering (its model list is faked with `mock.patch`) but the backup server unreachable, the doctor
-  stays healthy, prints no `FAIL`, and prints a `note` about the backup.
+- With Gemini answering (its model list is faked with `mock.patch`) but the backup unavailable, the doctor stays
+  healthy, prints no `FAIL`, and prints a `note` about the backup. "Unavailable" is faked too — no server answers and
+  no llama.cpp is found — because the backup check now also counts a local model that *could be started*: on a
+  computer with llama.cpp installed (like the reference laptop) the backup really is available.
 
 ## Runners
 @@ tests/test_phase4.py RunnerTests @@
@@ -859,7 +861,8 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 @@ tests/test_phase10.py ModeTests.test_each_mode_chooses_its_models @@
 @@ tests/test_phase10.py ModeTests.test_impossible_modes_say_what_to_do @@
 - Online: Gemini, no backup. Auto with a key: Gemini plus the local backup (or Ollama). Auto without a key: the local
-  model with an 8K budget and a note saying why. Offline: the local model even with a key.
+  model with an 8K budget and a note saying why ("no online model is set up"). Offline: the local model even with a
+  key.
 - Online without a key, offline without a local model, auto with nothing, and an unknown mode each raise an
   explanation.
 
@@ -916,7 +919,8 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 
 **Role:** proves the parts that turn the agent into a downloadable product — verified and resumable downloads, safe
 unpacking, the model catalog, `localagent setup` and `localagent models` — without downloading anything real: a small
-local file server plays GitHub and Hugging Face. 15 tests, about 3 seconds.
+local file server plays GitHub and Hugging Face. 12 tests, about 3 seconds. (The guided setup's own tests are in
+`test_providers.py`, next to the provider choices it offers.)
 
 ## Helpers
 @@ tests/test_product.py header @@
@@ -963,27 +967,156 @@ local file server plays GitHub and Hugging Face. 15 tests, about 3 seconds.
   and its archive deleted.
 - A model download is asked for with the catalog's address, checksum and size, into the models folder.
 
-## Setup and the models command
+## The models command and the settings file
 @@ tests/test_product.py SetupTests @@
-@@ tests/test_product.py SetupTests.run_setup @@
-- Runs `run_setup` with the key check, the finders, the installers and Docker replaced, typed answers from a list, a
-  pasted key, and a settings file in a temporary folder; returns the exit code, everything said, and what was saved.
-
-@@ tests/test_product.py SetupTests.test_a_pasted_key_is_checked_and_saved @@
-@@ tests/test_product.py SetupTests.test_a_rejected_key_is_not_saved_and_missing_parts_are_offered @@
-@@ tests/test_product.py SetupTests.test_declining_everything_leaves_no_model @@
-- A good pasted key is saved under `env`, and with llama.cpp and a model present the result is "Ready, online and
-  offline".
-- A rejected key is not saved; the missing llama.cpp and model are offered and installed; offline alone counts as ready.
-- Skipping the key and declining both downloads ends with "No model is ready yet" and exit code 1.
-
 @@ tests/test_product.py SetupTests.test_models_list_and_use @@
 @@ tests/test_product.py SetupTests.test_saving_a_setting_keeps_the_others @@
 @@ tests/test_product.py SetupTests.test_the_commands_are_reached_from_the_command_line @@
 - The list marks the model in use with `*`; `use qwen3-4b` saves its full path; a model that is not there, an unknown
   download and an unknown action each return 2.
-- Saving two variables keeps the permission rules already in the file.
+- Saving two variables keeps the permission rules already in the file; saving `None` forgets one again; on Linux and
+  macOS the file can be read by its owner only (mode 600), because it can hold keys.
 - `localagent models use qwen3-4b` and `localagent setup` reach their functions; `--help` names the commands.
 
 @@ tests/test_product.py footer @@
+- Lets you run the file directly.
+
+---
+# `tests/test_providers.py` — online services, your own servers, and the guided setup
+
+**Role:** proves everything about choosing who answers — the provider table, the client's per-service details, the
+configuration, the modes with another service, the doctor's check, the first-start offer and every path through
+`localagent setup` — with no internet, no key and no model: a small local server plays the services. 28 tests, about
+7 seconds. (The real services were checked live once by hand, see the build log.)
+
+## Helpers
+@@ tests/test_providers.py header @@
+- Imports the modules under test and the standard pieces for a local HTTP server. `USAGE` is the token count every fake
+  answer reports.
+
+@@ tests/test_providers.py clean_env @@
+- This process's environment without any `LOCALAGENT_*`/`OLLAMA_*` setting or `*_API_KEY`, plus the given extras —
+  so a key on the developer's own computer (the reference laptop has `GEMINI_API_KEY` set) can never change a result.
+
+@@ tests/test_providers.py FakeService @@
+@@ tests/test_providers.py FakeService.__init__ @@
+@@ tests/test_providers.py FakeService.close @@
+- A server on a free local port that answers like an OpenAI-compatible service: `GET /v1/models` (a list of the given
+  model names; `None` = no such list), `POST /v1/chat/completions` (the answer `hi`, streamed when asked, with token
+  counts) and, with `ollama`, Ollama's `GET /api/tags`. `key` makes it answer 401 to any other key; `refuse` makes it
+  answer 400 to requests containing those fields, naming the field like OpenAI does. Every request is recorded with its
+  headers (in lower case) and body.
+
+## The tables
+@@ tests/test_providers.py ProviderTests @@
+@@ tests/test_providers.py ProviderTests.test_the_table_is_complete @@
+@@ tests/test_providers.py ProviderTests.test_keys_travel_in_the_headers_each_service_expects @@
+- Names are unique, Gemini comes first, every entry has a key variable, title and price note, and every service but
+  `custom` an `https://` address and key page. Names are found in any case; an unknown one is `None`.
+- Anthropic gets the key twice (`Authorization` and `x-api-key`) plus `anthropic-version`; OpenAI only the bearer
+  header; no key, no headers.
+
+@@ tests/test_providers.py ProviderTests.test_good_models_are_suggested @@
+- `gpt-5-mini` beats `gpt-4.1` and `whisper-1`; Anthropic's dated `claude-sonnet-4-5-20250929` matches its suggestion;
+  with no suggestion offered the first chat model (not the embedding model) is taken; nothing offered gives `""`.
+  Locally, `qwen3:8b` beats `llama3.1:8b` and an embedding model, a `coder` model beats both, and an unknown model is
+  still taken when it is the only one.
+
+@@ tests/test_providers.py ProviderTests.test_keys_are_checked_by_listing_models @@
+- Against a fake service with a key: the right key is `ok` with the two models, a wrong one `rejected` with `HTTP 401`
+  in the detail; once the service is closed, `unreachable`.
+
+@@ tests/test_providers.py ProviderTests.test_local_servers_are_found_with_their_models @@
+- A fake Ollama and a fake LM Studio are found with their models; the same address with a trailing `/` is asked only
+  once; a port where nothing listens is left out. The real default ports are switched off for the test, so a server
+  running on the developer's computer cannot change the result.
+
+## The client
+@@ tests/test_providers.py ClientTests @@
+@@ tests/test_providers.py ClientTests.client @@
+- An `OpenAICompatClient` for the fake service with a given provider entry, streaming or not.
+
+@@ tests/test_providers.py ClientTests.test_a_service_gets_its_headers_and_answer_length @@
+@@ tests/test_providers.py ClientTests.test_a_refused_field_is_left_out_from_then_on @@
+@@ tests/test_providers.py ClientTests.test_other_refusals_are_reported @@
+- As Anthropic: the request carries `x-api-key`, `anthropic-version` and `max_tokens` 16 384, and the streamed answer
+  and its token count arrive.
+- A service that refuses `temperature`: the first request is refused, the client leaves the field out and succeeds,
+  remembers it (`dropped`), and the next conversation is sent without it at once — three requests in all.
+- A refusal that names no optional field is raised as an `LLMError` (HTTP 400) after one request.
+
+## Configuration
+@@ tests/test_providers.py OnlineConfigTests @@
+@@ tests/test_providers.py OnlineConfigTests.test_the_online_service_comes_from_the_environment @@
+@@ tests/test_providers.py OnlineConfigTests.test_what_is_missing_is_said @@
+- `LOCALAGENT_PROVIDER=OpenAI` (any case) with `OPENAI_API_KEY` and a model gives the service, its key, model and
+  address; `LOCALAGENT_PROVIDER_BASE` replaces the address (without its trailing `/`); an unknown provider and a wrong
+  `LOCALAGENT_LOCAL_SERVER` are explained errors.
+- `online_problem` names the missing Gemini key, the missing OpenAI key, the missing model, the missing custom address
+  — and says nothing for a complete setup, or for a custom address with a model but no key.
+
+## Modes, the doctor, the first start
+@@ tests/test_providers.py HostedModeTests @@
+@@ tests/test_providers.py HostedModeTests.test_another_service_answers_with_the_local_model_as_backup @@
+- With OpenAI set up: `auto` gives backend `hosted` with the local backup and the note `mode auto: OpenAI gpt-5-mini
+  answers (OPENAI_API_KEY is set)`; `online` has no backup; the label reads `openai:gpt-5-mini > local:Qwen3-8B`;
+  `make_hosted` builds the chain `openai:gpt-5-mini`, `local` with the OpenAI entry and a probe; without a model it
+  refuses with the reason.
+
+@@ tests/test_providers.py HostedModeTests.test_the_provider_flag @@
+- `--provider openrouter:qwen/qwen3-coder:free` keeps the model's own colon and reads the OpenRouter key; an unknown
+  name is a `ValueError`; naming the saved service without a model keeps the saved model.
+
+@@ tests/test_providers.py HostedModeTests.test_a_chosen_local_server_is_trusted @@
+- A chosen Ollama is the local kind without any network check; when Ollama is down, a server at `api_base` does not
+  count and the description says Ollama is not running; offline mode builds a `LocalModel` limited to Ollama.
+
+@@ tests/test_providers.py HostedModeTests.test_doctor_checks_another_service @@
+- Against a fake service with a key that names its model the way Gemini does (`models/m1`): healthy, `key accepted`,
+  `ok    model m1`. A model it does not offer and a wrong key each fail with the reason.
+
+@@ tests/test_providers.py HostedModeTests.test_the_first_start_offers_the_setup @@
+- With a "terminal" faked and nothing set up: Enter runs the setup once; `n` declines; a working online model and a
+  `-p` run are never asked.
+
+## The guided setup
+@@ tests/test_providers.py WizardTests @@
+@@ tests/test_providers.py WizardTests.run_setup @@
+- Runs `run_setup` in a clean environment with typed answers (input "ends" after them), pasted keys, a fake list of
+  running servers, a fake key check, and fake downloads that make llama.cpp and the model appear; returns the exit
+  code, everything said, the saved `env` (`None` when no file was written) and the key-check mock.
+
+@@ tests/test_providers.py WizardTests.test_a_free_gemini_key_is_checked_and_saved @@
+@@ tests/test_providers.py WizardTests.test_a_key_already_set_is_found_and_a_good_model_suggested @@
+@@ tests/test_providers.py WizardTests.test_a_refused_key_saves_nothing @@
+@@ tests/test_providers.py WizardTests.test_any_openai_compatible_address @@
+- Enter, Enter: Gemini with the pasted key — exactly the key and the provider are saved; online only.
+- With `OPENAI_API_KEY` set, OpenAI is marked `[key found]` and suggested; Enter twice saves OpenAI and `gpt-5-mini`
+  (not the key: it is already in the environment); the check went to OpenAI's address with the bearer header.
+- A refused Groq key saves nothing at all (no file is even created).
+- A custom address (its trailing `/` dropped) with no key: the check is sent without key headers, the chat model
+  `big-model` is suggested over `embed-x`, and service, model and address are saved.
+
+@@ tests/test_providers.py WizardTests.test_a_running_ollama_is_offered_first @@
+@@ tests/test_providers.py WizardTests.test_lm_studio_keeps_its_address @@
+@@ tests/test_providers.py WizardTests.test_the_free_model_is_downloaded_and_used @@
+@@ tests/test_providers.py WizardTests.test_another_address_is_tried_as_ollama_then_openai @@
+- A running Ollama is choice 1 and Enter takes `qwen3:8b`: kind and model saved, no address (it is the default).
+- LM Studio saves kind `openai`, its model and its address.
+- With nothing found: "download a free model for me", yes, yes — llama.cpp and the model arrive, kind `openai` is
+  saved, and the server address and model of an earlier choice are forgotten.
+- Another address typed without `http://`: asked as Ollama first (nothing), then as an OpenAI-style server (one
+  model), and saved with `http://` in front.
+
+@@ tests/test_providers.py WizardTests.test_ending_input_changes_nothing @@
+@@ tests/test_providers.py WizardTests.test_a_wrong_number_is_asked_again @@
+@@ tests/test_providers.py WizardTests.test_answers_piped_in_by_a_script_work @@
+@@ tests/test_providers.py WizardTests.test_an_environment_variable_that_wins_is_pointed_out @@
+- Input that ends at once: nothing saved, exit code 1.
+- `42` is answered with "please type a number from 1 to 9" and asked again.
+- An answer starting with Windows PowerShell's byte-order mark is understood; with piped input a key is read like any
+  answer, never with `getpass` (which would wait for the keyboard).
+- A real `LOCALAGENT_PROVIDER` in the environment would beat the saved choice, and the setup says so.
+
+@@ tests/test_providers.py footer @@
 - Lets you run the file directly.

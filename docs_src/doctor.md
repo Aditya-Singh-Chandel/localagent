@@ -17,8 +17,10 @@ ok    server reachable at http://127.0.0.1:8080/v1
 
 ## Module header
 @@ localagent/doctor.py header @@
-- `importlib.util` tells whether a package is installed; `urllib` performs simple HTTP GETs; `__version__` is shown
-  first; `RateLimiter` reads today's quota use; `model_limits` gives per-model limits; the `localserver` functions find
+- `importlib.util` tells whether a package is installed; `urllib` performs simple HTTP GETs and `urlsplit` takes an
+  address apart; `__version__` is shown first; `online_problem` says what the online model lacks; the provider table
+  helpers send a service's key the way it expects; `RateLimiter` reads today's quota use; `model_limits` gives
+  per-model limits; the `localserver` functions (and `THIS_COMPUTER`, the addresses that mean "this computer") find
   the local model; `docker_available` and `run_command` check Docker. `SETUP_DOC` is the guide named in local-model advice.
 
 ## Helpers
@@ -50,20 +52,38 @@ ok    server reachable at http://127.0.0.1:8080/v1
   and its size and which program will start it, e.g. `ok    local model: Qwen3-8B-Q4_K_M.gguf (5027 MB), started with
   ...\bin\llamacpp-vulkan\llama-server.exe when needed`. Otherwise one `FAIL` line per missing piece, each pointing to the
   setup guide.
+- A server chosen in `localagent setup` is judged as itself: Ollama chosen but not answering → one `FAIL` that says to
+  start Ollama (or choose again); a server at another computer's address that does not answer → one `FAIL` naming it
+  — not advice about llama.cpp, which could not be started for that address anyway.
 
 @@ localagent/doctor.py _check_gemini @@
 - No key → FAIL with a pointer to the beginner guide.
 - Lists the models offered to your key (this does not use generation quota). HTTP error → the key was rejected.
 - Each model in the chain must be in that list; for each it prints today's usage from `usage.json` (with that model's
   own limits, see `model_limits`).
-- If a local fallback is configured (`local`, `openai` or `ollama`), it is checked too — into a separate list `found`.
-  Available → its `ok` lines are shown. Not available → one `note` line ("the offline backup is not available
-  (optional - Gemini works without it)") with the details indented below it (`line[6:]` cuts the 6-character `FAIL  `
-  prefix), and the result stays healthy. Found in the final verification of 0.5: the agent's Docker image always
-  configures the local backup, so its doctor printed `FAIL` whenever `serve.ps1` was not running — although the agent
-  works without it. In `auto` mode without any backup, a `note` says that nothing will answer without internet.
+- Then the offline backup (`_check_backup`).
+
+@@ localagent/doctor.py _check_hosted @@
+- Another online service: first anything `online_problem` reports (no key, no model, no address) is one `FAIL` with
+  the fix. Then the service's model list is asked with your key, sent the way the service expects (`key_headers`): an
+  HTTP error means the key was refused (the error is closed, freeing the connection); no answer means the service
+  cannot be reached. The chosen model must be in the list — compared without Gemini's `models/` prefix, because the
+  live test pointed a `custom` service at Gemini's address and the check wrongly said "not offered". A service that
+  lists no models at all is trusted. Then the offline backup.
+- The service is called by its title, or "the service" for `custom` (its title, "another OpenAI-compatible
+  service", reads badly in a sentence).
+
+@@ localagent/doctor.py _check_backup @@
+- The local fallback of `auto` mode (`local`, `openai` or `ollama`) is checked into a separate list `found`; `local`
+  and `openai` both use `_check_local`, which also accepts a model that *can be started*. Available → its `ok` lines
+  are shown. Not available → one `note` line ("the offline backup is not available (optional - the online model works
+  without it)") with the details indented below it (`line[6:]` cuts the 6-character `FAIL  ` prefix), and the result
+  stays healthy. Found in the final verification of 0.5: the agent's Docker image always configures the local backup,
+  so its doctor printed `FAIL` whenever `serve.ps1` was not running — although the agent works without it. In `auto`
+  mode without any backup, a `note` says that nothing will answer without internet.
 
 ## `run_doctor`
 @@ localagent/doctor.py run_doctor @@
-- Version and Python, the mode and backend, tools, sandbox, then the backend check chosen by name. Healthy = sandbox OK
+- Version and Python, the mode and backend, tools, sandbox, then the backend check chosen by name (`hosted` is any
+  online service other than Gemini). Healthy = sandbox OK
   and backend OK. When no model can be set up at all, the CLI still runs the doctor and puts the reason first.

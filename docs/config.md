@@ -21,7 +21,9 @@ can build their own `Config`.
  11 | from pathlib import Path
  12 | from typing import Any
  13 | 
- 14 | 
+ 14 | from .providers import CUSTOM_KEY, GEMINI_BASE, PROVIDERS, find_provider, key_help
+ 15 | 
+ 16 | 
 ```
 - The triple-quoted text is the module docstring (shown by `help()`); it has no effect on behaviour.
 - `Any` types the free-form settings accepted by `overlay`.
@@ -29,16 +31,19 @@ can build their own `Config`.
   `list[str]` work on older Pythons.
 - `import os` gives `os.environ` (environment variables). `dataclass` generates the constructor for a class from its
   fields; `replace` copies a frozen dataclass with some fields changed. `Path` is the standard file-path object.
+- From `providers.py` (the table of online services): `GEMINI_BASE` (Google's address, the default of two fields),
+  `CUSTOM_KEY` (the key variable of the "custom" entry), `PROVIDERS` and `find_provider` (the table and a lookup by
+  name) and `key_help` (the "no key" message). `providers.py` imports nothing from here, so there is no import loop.
 
 ## `_normalize_host`
 ```python
- 15 | def _normalize_host(raw: str) -> str:
- 16 |     """Turn ``127.0.0.1:11434`` (Ollama's own style) into a full URL."""
- 17 |     if raw.startswith(("http://", "https://")):
- 18 |         return raw.rstrip("/")
- 19 |     return "http://" + raw.rstrip("/")
- 20 | 
- 21 | 
+ 17 | def _normalize_host(raw: str) -> str:
+ 18 |     """Turn ``127.0.0.1:11434`` (Ollama's own style) into a full URL."""
+ 19 |     if raw.startswith(("http://", "https://")):
+ 20 |         return raw.rstrip("/")
+ 21 |     return "http://" + raw.rstrip("/")
+ 22 | 
+ 23 | 
 ```
 - The leading underscore marks it private. It takes the raw `OLLAMA_HOST` text and returns a URL.
 - Ollama's own docs let people write `127.0.0.1:11434` without a scheme. If the text already starts with `http://`
@@ -46,39 +51,41 @@ can build their own `Config`.
 
 ## Paid-tier presets and the modes
 ```python
- 22 | PAID_RPM, PAID_RPD, PAID_TPM = 1000, 10_000, 1_000_000   # paid-tier presets (well under Tier 1)
- 23 | MODES = ("auto", "online", "offline")
- 24 | 
- 25 | 
+ 24 | PAID_RPM, PAID_RPD, PAID_TPM = 1000, 10_000, 1_000_000   # paid-tier presets (well under Tier 1)
+ 25 | MODES = ("auto", "online", "offline")
+ 26 | LOCAL_SERVERS = ("", "openai", "ollama")      # which local model: any that answers, or one kind
+ 27 | 
+ 28 | 
 ```
 - `PAID_RPM`, `PAID_RPD`, `PAID_TPM`: per-model limits used when `LOCALAGENT_GEMINI_TIER=paid` (billing enabled on your
   Google project). They sit well under Google's Tier 1 limits; the agent still adopts lower numbers if Google reports
   them.
 - `MODES`: the three ways to choose who answers — `auto`, `online`, `offline` (see `mode` below and `cli.md`).
+- `LOCAL_SERVERS`: the allowed values of `local_server` — empty (any local model that answers), `openai` or `ollama`.
 
 ## `_split`
 ```python
- 26 | def _split(raw: str) -> tuple[str, ...]:
- 27 |     """Turn ``"a, b,c"`` into ``("a", "b", "c")``; empty text gives ``()``."""
- 28 |     return tuple(part.strip() for part in raw.split(",") if part.strip())
- 29 | 
- 30 | 
+ 29 | def _split(raw: str) -> tuple[str, ...]:
+ 30 |     """Turn ``"a, b,c"`` into ``("a", "b", "c")``; empty text gives ``()``."""
+ 31 |     return tuple(part.strip() for part in raw.split(",") if part.strip())
+ 32 | 
+ 33 | 
 ```
 - Turns a comma-separated environment value such as `"a, b,c"` into a tuple `("a", "b", "c")`, ignoring blanks.
 
 ## `_int`
 ```python
- 31 | def _int(name: str, default: int) -> int:
- 32 |     """A whole-number environment variable, or ``default``; a typo is explained, not a crash."""
- 33 |     raw = os.environ.get(name, "").strip()
- 34 |     if not raw:
- 35 |         return default
- 36 |     try:
- 37 |         return int(raw)
- 38 |     except ValueError:
- 39 |         raise ValueError(f"{name} must be a whole number such as {default} (it is '{raw}')") from None
- 40 | 
- 41 | 
+ 34 | def _int(name: str, default: int) -> int:
+ 35 |     """A whole-number environment variable, or ``default``; a typo is explained, not a crash."""
+ 36 |     raw = os.environ.get(name, "").strip()
+ 37 |     if not raw:
+ 38 |         return default
+ 39 |     try:
+ 40 |         return int(raw)
+ 41 |     except ValueError:
+ 42 |         raise ValueError(f"{name} must be a whole number such as {default} (it is '{raw}')") from None
+ 43 | 
+ 44 | 
 ```
 - Reads a whole-number environment variable. An empty or missing one gives the default; a typo such as
   `LOCALAGENT_NUM_CTX=8k` raises a `ValueError` that names the variable, shows an example and repeats the bad value.
@@ -87,76 +94,83 @@ can build their own `Config`.
 
 ## `Config` — the settings
 ```python
- 42 | @dataclass(frozen=True)
- 43 | class Config:
- 44 |     """Immutable settings object that is handed to every component."""
- 45 | 
- 46 |     backend: str = "ollama"                  # "ollama", "openai", "gemini" or "local" (see modes)
- 47 |     model: str = "qwen3:8b"                  # model tag/name understood by the backend
- 48 |     host: str = "http://localhost:11434"     # Ollama server address
- 49 |     api_base: str = "http://127.0.0.1:8080/v1"  # OpenAI-compatible server (llama.cpp serve.ps1;
- 50 |     #                                             LM Studio uses http://localhost:1234/v1)
- 51 |     api_key: str = ""                        # bearer token for the OpenAI-compatible server
- 52 |     workspace: Path = Path(".")              # the ONLY folder the agent may touch (default: here)
- 53 |     state_dir: Path = Path(".localagent")    # session logs: <workspace>/.localagent/sessions
- 54 |     num_ctx: int = 8192                      # history budget (tokens); Ollama's context window
- 55 |     temperature: float = 0.0                 # 0 = greedy: the most repeatable code
- 56 |     max_turns: int = 20                      # model calls allowed per user request
- 57 |     max_fix_attempts: int = 3                # rejected writes allowed per file
- 58 |     command_timeout: int = 30                # seconds before a run is killed
- 59 |     test_timeout: int = 120                  # seconds before run_tests is killed (builds are slow)
- 60 |     max_output_chars: int = 4000             # cap on any single tool result
- 61 |     memory_chars: int = 2000                 # cap on AGENT.md text put in the prompt
- 62 |     tree_entries: int = 50                   # cap on file-overview lines put in the prompt
- 63 |     type_check: bool = False                 # also run mypy during verification
- 64 |     auto_approve: bool = False               # skip the "may I run this?" prompt
- 65 |     allow_host_shell: bool = False           # offer run_shell on this computer (asks every time)
- 66 |     usage_file: Path = Path.home() / ".localagent" / "usage.json"   # quota counts, all projects
- 67 |     compact_at: float = 0.6                  # summarise history above this share of the budget
- 68 |     diff_lines: int = 40                     # lines of each edit's diff shown to the user
- 69 |     auto_format: bool = True                 # run `ruff format` on every verified Python write
- 70 |     max_nudges: int = 1                      # "you changed nothing" reminders per request
- 71 |     reasoning_effort: str = ""               # sent to OpenAI-style servers when set ("low", ...)
- 72 |     stream: bool = True                      # show OpenAI-style answers while they are written
- 73 |     helpers: bool = True                     # offer the delegate tool (read-only helper agents)
- 74 |     helper_turns: int = 8                    # model calls a helper may use
- 75 |     request_timeout: int = 900               # seconds to wait for an answer (local CPUs are slow)
- 76 |     # ---- online / offline ------------------------------------------------------------
- 77 |     mode: str = "auto"                       # "auto": Gemini, local model when offline/out of quota
- 78 |     #                                          "online": Gemini only; "offline": local model only
- 79 |     local_ctx: int = 8192                    # context window of the local model (tokens)
- 80 |     llama_server: str = ""                   # path of llama.cpp's llama-server ("" = look for it)
- 81 |     model_file: str = ""                     # the local model, a .gguf file ("" = look for it)
- 82 |     gpu_layers: int = -1                     # model layers on the GPU (-1 = as many as fit)
- 83 |     local_threads: int = 0                   # CPU threads for the local model (0 = automatic)
- 84 |     # ---- Gemini (hosted) -----------------------------------------------------------
- 85 |     gemini_api_key: str = ""                 # from the GEMINI_API_KEY environment variable
- 86 |     gemini_tier: str = "free"                # "free" or "paid" (billing on: higher limits)
- 87 |     gemini_base: str = "https://generativelanguage.googleapis.com/v1beta/openai"
- 88 |     gemini_models: tuple[str, ...] = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
- 89 |     # ^ everyday chain, tried in order: fast "lite" models with large daily quotas
- 90 |     gemini_strong_models: tuple[str, ...] = ("gemini-3.5-flash", "gemini-2.5-flash")
- 91 |     # ^ reserve: small daily quota (~20 on a free key), used first only after an escalation
- 92 |     gemini_timeout: int = 120                # seconds before a stalled Gemini request fails
- 93 |     escalate_after: int = 2                  # failed tool results in one request before escalating
- 94 |     rpm: int = 12                            # requests per minute allowed per model
- 95 |     tpm: int = 250_000                       # tokens per minute allowed per model
- 96 |     rpd: int = 1500                          # requests per day allowed per model
- 97 |     gemini_limits: tuple[str, ...] = ()      # per-model overrides "model=rpm/rpd", e.g. "m=5/20"
- 98 |     max_retries: int = 3                     # retries of one model on 429/5xx/network errors
- 99 |     fallback_backend: str = ""               # "local", "openai" or "ollama": used when Gemini fails
-100 |     # ---- where code runs --------------------------------------------------------------
-101 |     sandbox: str = "local"                   # "local" (this machine) or "docker" (container)
-102 |     sandbox_image: str = "localagent-sandbox:latest"
-103 |     sandbox_network: bool = False            # allow internet inside the container (pip install)
-104 |     sandbox_memory: str = "1g"               # container memory cap
-105 |     sandbox_cpus: str = "1.0"                # container CPU cap
-106 | 
+ 45 | @dataclass(frozen=True)
+ 46 | class Config:
+ 47 |     """Immutable settings object that is handed to every component."""
+ 48 | 
+ 49 |     backend: str = "ollama"                  # "ollama", "openai", "gemini" or "local" (see modes)
+ 50 |     model: str = "qwen3:8b"                  # model tag/name understood by the backend
+ 51 |     host: str = "http://localhost:11434"     # Ollama server address
+ 52 |     api_base: str = "http://127.0.0.1:8080/v1"  # OpenAI-compatible server (llama.cpp serve.ps1;
+ 53 |     #                                             LM Studio uses http://localhost:1234/v1)
+ 54 |     api_key: str = ""                        # bearer token for the OpenAI-compatible server
+ 55 |     workspace: Path = Path(".")              # the ONLY folder the agent may touch (default: here)
+ 56 |     state_dir: Path = Path(".localagent")    # session logs: <workspace>/.localagent/sessions
+ 57 |     num_ctx: int = 8192                      # history budget (tokens); Ollama's context window
+ 58 |     temperature: float = 0.0                 # 0 = greedy: the most repeatable code
+ 59 |     max_turns: int = 20                      # model calls allowed per user request
+ 60 |     max_fix_attempts: int = 3                # rejected writes allowed per file
+ 61 |     command_timeout: int = 30                # seconds before a run is killed
+ 62 |     test_timeout: int = 120                  # seconds before run_tests is killed (builds are slow)
+ 63 |     max_output_chars: int = 4000             # cap on any single tool result
+ 64 |     memory_chars: int = 2000                 # cap on AGENT.md text put in the prompt
+ 65 |     tree_entries: int = 50                   # cap on file-overview lines put in the prompt
+ 66 |     type_check: bool = False                 # also run mypy during verification
+ 67 |     auto_approve: bool = False               # skip the "may I run this?" prompt
+ 68 |     allow_host_shell: bool = False           # offer run_shell on this computer (asks every time)
+ 69 |     usage_file: Path = Path.home() / ".localagent" / "usage.json"   # quota counts, all projects
+ 70 |     compact_at: float = 0.6                  # summarise history above this share of the budget
+ 71 |     diff_lines: int = 40                     # lines of each edit's diff shown to the user
+ 72 |     auto_format: bool = True                 # run `ruff format` on every verified Python write
+ 73 |     max_nudges: int = 1                      # "you changed nothing" reminders per request
+ 74 |     reasoning_effort: str = ""               # sent to OpenAI-style servers when set ("low", ...)
+ 75 |     stream: bool = True                      # show OpenAI-style answers while they are written
+ 76 |     helpers: bool = True                     # offer the delegate tool (read-only helper agents)
+ 77 |     helper_turns: int = 8                    # model calls a helper may use
+ 78 |     request_timeout: int = 900               # seconds to wait for an answer (local CPUs are slow)
+ 79 |     # ---- online / offline ------------------------------------------------------------
+ 80 |     mode: str = "auto"                       # "auto": the online model, the local one when it fails
+ 81 |     #                                          "online": online model only; "offline": local only
+ 82 |     local_server: str = ""                   # "": any local model that answers; "openai": only
+ 83 |     #                                          the server at api_base; "ollama": only Ollama
+ 84 |     local_ctx: int = 8192                    # context window of the local model (tokens)
+ 85 |     llama_server: str = ""                   # path of llama.cpp's llama-server ("" = look for it)
+ 86 |     model_file: str = ""                     # the local model, a .gguf file ("" = look for it)
+ 87 |     gpu_layers: int = -1                     # model layers on the GPU (-1 = as many as fit)
+ 88 |     local_threads: int = 0                   # CPU threads for the local model (0 = automatic)
+ 89 |     # ---- Gemini (hosted) -----------------------------------------------------------
+ 90 |     gemini_api_key: str = ""                 # from the GEMINI_API_KEY environment variable
+ 91 |     gemini_tier: str = "free"                # "free" or "paid" (billing on: higher limits)
+ 92 |     gemini_base: str = GEMINI_BASE
+ 93 |     gemini_models: tuple[str, ...] = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
+ 94 |     # ^ everyday chain, tried in order: fast "lite" models with large daily quotas
+ 95 |     gemini_strong_models: tuple[str, ...] = ("gemini-3.5-flash", "gemini-2.5-flash")
+ 96 |     # ^ reserve: small daily quota (~20 on a free key), used first only after an escalation
+ 97 |     gemini_timeout: int = 120                # seconds before a stalled online request fails
+ 98 |     escalate_after: int = 2                  # failed tool results in one request before escalating
+ 99 |     rpm: int = 12                            # requests per minute allowed per model
+100 |     tpm: int = 250_000                       # tokens per minute allowed per model
+101 |     rpd: int = 1500                          # requests per day allowed per model
+102 |     gemini_limits: tuple[str, ...] = ()      # per-model overrides "model=rpm/rpd", e.g. "m=5/20"
+103 |     max_retries: int = 3                     # retries of one model on 429/5xx/network errors
+104 |     fallback_backend: str = ""               # "local", "openai" or "ollama": used when Gemini fails
+105 |     # ---- the online model: Gemini (above) or another service (see providers.py) ----
+106 |     provider: str = "gemini"                 # gemini, openai, anthropic, openrouter, groq, ...
+107 |     provider_model: str = ""                 # its model (Gemini uses its own chain instead)
+108 |     provider_base: str = GEMINI_BASE         # its address (from the table; "custom": yours)
+109 |     provider_key: str = ""                   # your key, from the service's own variable
+110 |     # ---- where code runs --------------------------------------------------------------
+111 |     sandbox: str = "local"                   # "local" (this machine) or "docker" (container)
+112 |     sandbox_image: str = "localagent-sandbox:latest"
+113 |     sandbox_network: bool = False            # allow internet inside the container (pip install)
+114 |     sandbox_memory: str = "1g"               # container memory cap
+115 |     sandbox_cpus: str = "1.0"                # container CPU cap
+116 | 
 ```
 - `@dataclass(frozen=True)` builds `__init__` from the fields and makes instances **immutable**, so no component can
   silently change a setting mid-run.
-- `backend`: which model-server client to use (`ollama`, `openai`, `gemini` or `local`; see `backends.md`). You
-  normally do not set it: the **mode** chooses it (see below). Setting it by hand (`--backend`) skips the mode.
+- `backend`: which model-server client to use (`ollama`, `openai`, `gemini`, `hosted` or `local`; see `backends.md`).
+  You normally do not set it: the **mode** chooses it (see below). Setting it by hand (`--backend`) skips the mode.
 - `model`: the model tag/name the server understands. `host`: where Ollama listens.
 - `api_base` / `api_key`: address and bearer token for an OpenAI-compatible server. The default
   `http://127.0.0.1:8080/v1` is where `serve.ps1` starts llama.cpp (LM Studio uses `http://localhost:1234/v1`).
@@ -199,11 +213,23 @@ can build their own `Config`.
   server tried last; empty = none).
 - `gemini_tier`: `free` (lite models first, strong models in reserve) or `paid` (strong models first, much higher
   limits). `stream`: show answers while they are written. `helpers` / `helper_turns`: the `delegate` tool and how many
-  model calls one helper may use. `gemini_timeout`: a Gemini request is given up after 2 minutes (a hung connection
-  should not wait 15). `fallback_backend` may also be `local`: the local model of `localserver.py`, started when needed.
-- **Online / offline settings:** `mode` — `auto` (default: Gemini when a key is set, the local model when Gemini
-  cannot be reached or there is no key), `online` (Gemini only) or `offline` (the local model only); env
-  `LOCALAGENT_MODE`, flags `--mode`, `--online`, `--offline`, or `/model` in the chat. `local_ctx`: the local model's
+  model calls one helper may use. `gemini_timeout`: an online request (Gemini or another service) is given up after 2
+  minutes — a hung connection should not wait 15. `fallback_backend` may also be `local`: the local model of
+  `localserver.py`, started when needed.
+- **The online service** (see `providers.md`): `provider` — who answers online: `gemini` (the default and the only one
+  with a free quota) or `openai`, `anthropic`, `openrouter`, `groq`, `mistral`, `deepseek`, `custom`; env
+  `LOCALAGENT_PROVIDER`, flag `--provider`. `provider_model`: that service's model (env `LOCALAGENT_PROVIDER_MODEL`;
+  Gemini ignores it and uses its own chain). `provider_base`: its address — from the table, or
+  `LOCALAGENT_PROVIDER_BASE` (needed for `custom`, possible for any, e.g. a company proxy). `provider_key`: your key,
+  read from the **service's own variable** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ...), so a key you already have set
+  for other tools just works. `localagent setup` fills all four for you.
+- **Online / offline settings:** `mode` — `auto` (default: the online model when it is set up, the local model when
+  that cannot be reached or nothing online is set up), `online` (the online model only) or `offline` (the local model
+  only); env `LOCALAGENT_MODE`, flags `--mode`, `--online`, `--offline`, or `/model` in the chat. `local_server`:
+  which local model counts — empty: any server that answers (then Ollama, then llama.cpp started here); `openai`: only
+  the server at `api_base` (started from the downloaded model when nothing answers and the address is on this
+  computer); `ollama`: only Ollama. `localagent setup` writes it when you pick one (env `LOCALAGENT_LOCAL_SERVER`), so
+  your choice is never replaced by a different model that happens to run. `local_ctx`: the local model's
   context window (8K; the server is started with it). `llama_server` and `model_file`: where llama.cpp's server program
   and the `.gguf` model are (empty = look in the usual places, see `localserver.md`). `gpu_layers`: how many of the
   model's layers go to the graphics card; `-1` lets llama.cpp fit as many as the card's memory holds (it measures this
@@ -214,47 +240,54 @@ can build their own `Config`.
 
 ## `Config.from_env`
 ```python
-107 |     @classmethod
-108 |     def from_env(cls) -> "Config":
-109 |         """Build a Config from defaults, then apply environment overrides."""
-110 |         base = cls()
-111 |         tier = os.environ.get("LOCALAGENT_GEMINI_TIER", base.gemini_tier).strip().lower()
-112 |         paid = tier == "paid"
-113 |         mode = os.environ.get("LOCALAGENT_MODE", base.mode).strip().lower()
-114 |         if mode not in MODES:
-115 |             raise ValueError(f"LOCALAGENT_MODE must be one of {', '.join(MODES)} (it is '{mode}')")
-116 |         return replace(
-117 |             base,
-118 |             backend=os.environ.get("LOCALAGENT_BACKEND", base.backend),
-119 |             model=os.environ.get("LOCALAGENT_MODEL", base.model),
-120 |             host=_normalize_host(os.environ.get("OLLAMA_HOST", base.host)),
-121 |             api_base=os.environ.get("LOCALAGENT_API_BASE", base.api_base).rstrip("/"),
-122 |             api_key=os.environ.get("LOCALAGENT_API_KEY", base.api_key),
-123 |             workspace=Path(os.environ.get("LOCALAGENT_WORKSPACE", str(base.workspace))),
-124 |             num_ctx=_int("LOCALAGENT_NUM_CTX", base.num_ctx),
-125 |             mode=mode,
-126 |             local_ctx=_int("LOCALAGENT_LOCAL_CTX", base.local_ctx),
-127 |             llama_server=os.environ.get("LOCALAGENT_LLAMA_SERVER", base.llama_server),
-128 |             model_file=os.environ.get("LOCALAGENT_MODEL_FILE", base.model_file),
-129 |             gpu_layers=_int("LOCALAGENT_GPU_LAYERS", base.gpu_layers),
-130 |             local_threads=_int("LOCALAGENT_THREADS", base.local_threads),
-131 |             gemini_api_key=os.environ.get("GEMINI_API_KEY", base.gemini_api_key).strip(),
-132 |             gemini_models=_split(os.environ.get("LOCALAGENT_GEMINI_MODELS", ""))
-133 |             or base.gemini_models,
-134 |             gemini_strong_models=_split(os.environ.get("LOCALAGENT_GEMINI_STRONG", ""))
-135 |             or base.gemini_strong_models,
-136 |             gemini_limits=_split(os.environ.get("LOCALAGENT_GEMINI_LIMITS", "")),
-137 |             gemini_tier=tier,
-138 |             rpm=_int("LOCALAGENT_RPM", PAID_RPM if paid else base.rpm),
-139 |             rpd=_int("LOCALAGENT_RPD", PAID_RPD if paid else base.rpd),
-140 |             tpm=_int("LOCALAGENT_TPM", PAID_TPM if paid else base.tpm),
-141 |             reasoning_effort=os.environ.get("LOCALAGENT_REASONING", base.reasoning_effort),
-142 |             fallback_backend=os.environ.get("LOCALAGENT_FALLBACK", base.fallback_backend),
-143 |             sandbox=os.environ.get("LOCALAGENT_SANDBOX", base.sandbox),
-144 |             usage_file=Path(os.environ.get("LOCALAGENT_USAGE_FILE", str(base.usage_file))),
-145 |         )
-146 | 
-147 | 
+117 |     @classmethod
+118 |     def from_env(cls) -> "Config":
+119 |         """Build a Config from defaults, then apply environment overrides."""
+120 |         base = cls()
+121 |         tier = os.environ.get("LOCALAGENT_GEMINI_TIER", base.gemini_tier).strip().lower()
+122 |         paid = tier == "paid"
+123 |         mode = os.environ.get("LOCALAGENT_MODE", base.mode).strip().lower()
+124 |         if mode not in MODES:
+125 |             raise ValueError(f"LOCALAGENT_MODE must be one of {', '.join(MODES)} (it is '{mode}')")
+126 |         local_server = os.environ.get("LOCALAGENT_LOCAL_SERVER", base.local_server).strip().lower()
+127 |         if local_server not in LOCAL_SERVERS:
+128 |             raise ValueError("LOCALAGENT_LOCAL_SERVER must be openai, ollama or empty "
+129 |                              f"(it is '{local_server}')")
+130 |         config = replace(
+131 |             base,
+132 |             backend=os.environ.get("LOCALAGENT_BACKEND", base.backend),
+133 |             model=os.environ.get("LOCALAGENT_MODEL", base.model),
+134 |             host=_normalize_host(os.environ.get("OLLAMA_HOST", base.host)),
+135 |             api_base=os.environ.get("LOCALAGENT_API_BASE", base.api_base).rstrip("/"),
+136 |             api_key=os.environ.get("LOCALAGENT_API_KEY", base.api_key),
+137 |             workspace=Path(os.environ.get("LOCALAGENT_WORKSPACE", str(base.workspace))),
+138 |             num_ctx=_int("LOCALAGENT_NUM_CTX", base.num_ctx),
+139 |             mode=mode,
+140 |             local_server=local_server,
+141 |             local_ctx=_int("LOCALAGENT_LOCAL_CTX", base.local_ctx),
+142 |             llama_server=os.environ.get("LOCALAGENT_LLAMA_SERVER", base.llama_server),
+143 |             model_file=os.environ.get("LOCALAGENT_MODEL_FILE", base.model_file),
+144 |             gpu_layers=_int("LOCALAGENT_GPU_LAYERS", base.gpu_layers),
+145 |             local_threads=_int("LOCALAGENT_THREADS", base.local_threads),
+146 |             gemini_api_key=os.environ.get("GEMINI_API_KEY", base.gemini_api_key).strip(),
+147 |             gemini_models=_split(os.environ.get("LOCALAGENT_GEMINI_MODELS", ""))
+148 |             or base.gemini_models,
+149 |             gemini_strong_models=_split(os.environ.get("LOCALAGENT_GEMINI_STRONG", ""))
+150 |             or base.gemini_strong_models,
+151 |             gemini_limits=_split(os.environ.get("LOCALAGENT_GEMINI_LIMITS", "")),
+152 |             gemini_tier=tier,
+153 |             rpm=_int("LOCALAGENT_RPM", PAID_RPM if paid else base.rpm),
+154 |             rpd=_int("LOCALAGENT_RPD", PAID_RPD if paid else base.rpd),
+155 |             tpm=_int("LOCALAGENT_TPM", PAID_TPM if paid else base.tpm),
+156 |             reasoning_effort=os.environ.get("LOCALAGENT_REASONING", base.reasoning_effort),
+157 |             fallback_backend=os.environ.get("LOCALAGENT_FALLBACK", base.fallback_backend),
+158 |             sandbox=os.environ.get("LOCALAGENT_SANDBOX", base.sandbox),
+159 |             usage_file=Path(os.environ.get("LOCALAGENT_USAGE_FILE", str(base.usage_file))),
+160 |         )
+161 |         return with_provider(config, os.environ.get("LOCALAGENT_PROVIDER", base.provider),
+162 |                              os.environ.get("LOCALAGENT_PROVIDER_MODEL", ""))
+163 | 
+164 | 
 ```
 - `@classmethod` means it is called on the class (`Config.from_env()`) and receives the class as `cls`.
 - `base = cls()` is a Config with all defaults. `replace(base, ...)` returns a copy with the listed fields overridden.
@@ -263,42 +296,94 @@ can build their own `Config`.
   removed.
 - `tier`/`paid` are read first because they change the default limits. `LOCALAGENT_RPM`, `LOCALAGENT_RPD` and
   `LOCALAGENT_TPM` override the limits directly; otherwise the paid presets or the free defaults apply.
-- `mode` is read in lower case and checked against `MODES`; anything else is explained as a `ValueError`.
+- `mode` is read in lower case and checked against `MODES`; anything else is explained as a `ValueError`. The same for
+  `local_server` and `LOCAL_SERVERS`.
 - Also read: `GEMINI_API_KEY` (spaces stripped), `LOCALAGENT_GEMINI_MODELS` (comma list; empty keeps the default
   chain), `LOCALAGENT_GEMINI_LIMITS` (comma list of `model=rpm/rpd`), `LOCALAGENT_REASONING`, `LOCALAGENT_FALLBACK`,
   `LOCALAGENT_SANDBOX`, and for the local model `LOCALAGENT_LOCAL_CTX`, `LOCALAGENT_LLAMA_SERVER`,
   `LOCALAGENT_MODEL_FILE`, `LOCALAGENT_GPU_LAYERS` and `LOCALAGENT_THREADS`. The Docker image sets several of these;
   a settings file can set any of them with `"env"` (see `settings.md`).
+- The finished config goes through `with_provider` with `LOCALAGENT_PROVIDER` (default `gemini`) and
+  `LOCALAGENT_PROVIDER_MODEL`, which fills in the online service's address and key.
+
+## `with_provider`
+```python
+165 | def with_provider(config: Config, name: str, model: str = "") -> Config:
+166 |     """``config`` with ``name`` as the online model's service: its address (the table's, or
+167 |     LOCALAGENT_PROVIDER_BASE) and your key (read from the service's own variable)."""
+168 |     provider = find_provider(name)
+169 |     if provider is None:
+170 |         names = ", ".join(known.name for known in PROVIDERS)
+171 |         raise ValueError(f"unknown provider '{name}': choose one of {names}")
+172 |     base = os.environ.get("LOCALAGENT_PROVIDER_BASE", "").strip() or provider.base
+173 |     return replace(config, provider=provider.name, provider_model=model.strip(),
+174 |                    provider_base=base.rstrip("/"),
+175 |                    provider_key=os.environ.get(provider.key_env, "").strip())
+176 | 
+177 | 
+```
+- Makes `name` the online service: looks it up in the table (any letter case; an unknown name is a `ValueError` that
+  lists the valid ones), takes its address — or `LOCALAGENT_PROVIDER_BASE` when set, without a trailing `/` — and
+  reads your key from the variable the table names for it. Used by `from_env` and by the `--provider` flag (`cli.md`),
+  so a flag and a variable work exactly the same way.
+
+## `online_problem`
+```python
+178 | def online_problem(config: Config) -> str:
+179 |     """What stops the online model from working, in words ("" = nothing): no key, no model
+180 |     chosen, or (for "custom") no address."""
+181 |     provider = find_provider(config.provider) or PROVIDERS[0]
+182 |     if provider.name == "gemini":
+183 |         return "" if config.gemini_api_key else key_help(provider)
+184 |     if not config.provider_base:
+185 |         return "the custom service needs its address: localagent setup asks for it (or set " \
+186 |                "LOCALAGENT_PROVIDER_BASE)"
+187 |     if not config.provider_key and provider.key_env != CUSTOM_KEY:   # a custom one may need none
+188 |         return key_help(provider)
+189 |     if not config.provider_model:
+190 |         return (f"no {provider.title} model is chosen: localagent setup offers them "
+191 |                 "(or set LOCALAGENT_PROVIDER_MODEL)")
+192 |     return ""
+193 | 
+194 | 
+```
+- One place that decides whether the online model can work, in words a person can act on; empty text means "ready".
+  Gemini needs only its key. Another service needs an address (only `custom` can lack one), a key (except `custom`:
+  a server on your own network may need none) and a chosen model. Every message ends with the fix — `localagent
+  setup`, or the variable to set. The modes (`cli.choose_mode`), `make_hosted`, `/model` and `--doctor` all ask it, so
+  they can never disagree about whether online works.
 
 ## Shared rules used by every entry point (chat, server, evals)
 ```python
-148 | GEMINI_CONTEXT = 32_768   # history budget for Gemini (built for long prompts; 8K suits local models)
-149 | 
-150 | 
+195 | GEMINI_CONTEXT = 32_768   # history budget for Gemini (built for long prompts; 8K suits local models)
+196 | 
+197 | 
 ```
-- `GEMINI_CONTEXT` (32 768 tokens) is the history budget for Gemini, which is built for long prompts; the 8K default
-  (`num_ctx`) suits small local models.
+- `GEMINI_CONTEXT` (32 768 tokens) is the history budget for online models, which are built for long prompts; the 8K
+  default (`num_ctx`) suits small local models.
 
 ```python
-151 | def overlay(config: Config, **given: Any) -> Config:
-152 |     """Replace only the settings that were actually given (``None`` = not given)."""
-153 |     return replace(config, **{key: value for key, value in given.items() if value is not None})
-154 | 
-155 | 
+198 | def overlay(config: Config, **given: Any) -> Config:
+199 |     """Replace only the settings that were actually given (``None`` = not given)."""
+200 |     return replace(config, **{key: value for key, value in given.items() if value is not None})
+201 | 
+202 | 
 ```
 - Returns a copy of the config with only the given settings replaced; a value of `None` means "this flag was not given"
   and is skipped. This is how flags beat environment variables, which beat defaults. `**given: Any` accepts any
   setting name; `replace` itself rejects names that are not settings.
 
 ```python
-156 | def gemini_history(config: Config, chosen: bool = False) -> Config:
-157 |     """Give Gemini the 32K history budget, unless a size was chosen (flag or environment)."""
-158 |     chosen = chosen or "LOCALAGENT_NUM_CTX" in os.environ
-159 |     if config.backend == "gemini" and not chosen and config.num_ctx < GEMINI_CONTEXT:
-160 |         return replace(config, num_ctx=GEMINI_CONTEXT)
-161 |     return config
+203 | def gemini_history(config: Config, chosen: bool = False) -> Config:
+204 |     """Give an online model (Gemini or another service) the 32K history budget, unless a size
+205 |     was chosen (flag or environment)."""
+206 |     chosen = chosen or "LOCALAGENT_NUM_CTX" in os.environ
+207 |     if config.backend in ("gemini", "hosted") and not chosen and config.num_ctx < GEMINI_CONTEXT:
+208 |         return replace(config, num_ctx=GEMINI_CONTEXT)
+209 |     return config
 ```
-- Raises `num_ctx` to `GEMINI_CONTEXT` when the backend is Gemini, unless you chose a size yourself (`chosen` = the
+- Raises `num_ctx` to `GEMINI_CONTEXT` when the backend is online (`gemini` or `hosted`), unless you chose a size
+  yourself (`chosen` = the
   `--num-ctx` flag was given, or `LOCALAGENT_NUM_CTX` is set). The chat, the HTTP server and the evals all call it,
   so all three behave the same. Before, the rule lived in the chat only: the server and the evals ran Gemini with
   the 8K budget, so long sessions summarised early (extra calls) and the evals measured a different setup than the

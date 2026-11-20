@@ -1,17 +1,22 @@
-# `localagent/openai_compat.py` — the scaling path to bigger models
+# `localagent/openai_compat.py` — one client for every OpenAI-compatible service
 
-**Role in the flow:** lets the *same agent* talk to any server that implements the common `/chat/completions` API:
-LM Studio, llama.cpp's server, vLLM, Ollama's own `/v1` endpoint, or a hosted service. When you outgrow the laptop,
-run a larger model on a GPU machine and start the agent with
-`--backend openai --api-base http://that-machine:8000/v1 --model <name>`; no other code changes.
+**Role in the flow:** lets the *same agent* talk to anything that implements the common `/chat/completions` API: the
+online services of `providers.md` (Gemini, OpenAI, Anthropic, OpenRouter, Groq, Mistral, DeepSeek, any custom address)
+and local servers — LM Studio, llama.cpp's server, vLLM, Ollama's own `/v1` endpoint. When you outgrow the laptop, run
+a larger model on a GPU machine and choose it in `localagent setup` ("a model server at another address"); no code
+changes.
 
 Internally the agent stores messages in Ollama's shape, so this module converts them out and back.
 
 ## Module header
 @@ localagent/openai_compat.py header @@
 - `PLACEHOLDER_SIGNATURE` is Google's documented stand-in thought signature (`skip_thought_signature_validator`).
-- Imports `json` (arguments need to be JSON text for this API), `time`, the shared `Config`, and `Reply`, `TokenSink`
-  and `post` from `llm.py` (so error handling is identical for both backends).
+- Imports `json` (arguments need to be JSON text for this API), `time`, the shared `Config`, `Reply`, `TokenSink`,
+  `post` and `LLMError` from `llm.py` (so error handling is identical for both backends), and `Provider`/`key_headers`
+  from `providers.py`.
+- `OPTIONAL_FIELDS`: request fields the agent can do without — the temperature, `stream_options` (token counts at the
+  end of a streamed answer), `reasoning_effort` and `max_tokens`. If a server refuses one, it is left out (see
+  `refused_field`).
 
 ## `to_openai` — message conversion
 @@ localagent/openai_compat.py to_openai @@
@@ -50,10 +55,18 @@ Internally the agent stores messages in Ollama's shape, so this module converts 
 - Verified live: llama.cpp streamed a tool call and a 16-piece answer; Gemini streamed a tool call **with** its thought
   signature, and text answers.
 
+## `refused_field`
+@@ localagent/openai_compat.py refused_field @@
+- Reads a refusal: for HTTP 400 or 422 ("bad request", "cannot process") it returns the first optional field that
+  the request contains *and* the error text names — OpenAI's newest models allow only their default temperature
+  (`'temperature' does not support 0.0`), strict services such as Mistral answer 422 to fields they do not know
+  (`stream_options`). Anything else returns `""`: the error is real and is reported as it is.
+
 ## `OpenAICompatClient`
 @@ localagent/openai_compat.py OpenAICompatClient @@
 @@ localagent/openai_compat.py OpenAICompatClient.__init__ @@
-- Same constructor shape as `OllamaClient`: keep the `Config`.
+- Keeps the `Config` and, for an online service, its `Provider` entry. `dropped` collects the optional fields this
+  server refused; it lives as long as the client, so a field is refused once, not on every request.
 
 @@ localagent/openai_compat.py OpenAICompatClient.chat @@
 - The client sends signatures only when it talks to Google (`api_base == gemini_base`).
@@ -63,9 +76,11 @@ Internally the agent stores messages in Ollama's shape, so this module converts 
 - `tools` is added only when there are tools (some servers reject an empty list).
 - `reasoning_effort` (e.g. `low`) is added only when set (`--reasoning`); it limits hidden "thinking", which costs
   time and quota tokens on thinking models.
-- `headers` adds `Authorization: Bearer <key>` only when an API key is configured.
-- `post(self._config.api_base + "/chat/completions", ..., timeout=request_timeout)` sends it (Gemini clients get the
-  shorter `gemini_timeout`). Streaming: `read_stream` assembles the answer (a connection lost half-way becomes
+- A service whose table entry sets `max_tokens` (Anthropic) gets it in every request. Fields in `dropped` are taken out.
+- `headers`: for an online service, `key_headers` (its key in the header or headers it expects); otherwise
+  `Authorization: Bearer <key>` only when an API key is configured.
+- `_send` sends it to `api_base + "/chat/completions"` with `request_timeout` (online clients get the shorter
+  `gemini_timeout`). Streaming: `read_stream` assembles the answer (a connection lost half-way becomes
   `LLMError`, so the retry/fallback logic can handle it). One-piece: `json.load` parses the reply; a reply that is not
   JSON or has no `choices[0].message` becomes an `LLMError` ("unexpected format") instead of crashing the program with a
   `KeyError`.
@@ -78,3 +93,10 @@ Internally the agent stores messages in Ollama's shape, so this module converts 
   `total_tokens` larger than prompt + completion (the difference is hidden thinking, which still counts against quotas),
   so the completion figure is raised to `total - prompt` when that is larger. Measured on Gemini: 66 prompt + 28 answer
   = 179 total, i.e. 85 hidden tokens.
+
+@@ localagent/openai_compat.py OpenAICompatClient._send @@
+- Posts the request. When `refused_field` finds an optional field in the refusal, that field is remembered in
+  `dropped`, removed from this request, and the request sent again at once — so any OpenAI-compatible service works
+  without a setting per service. The loop ends: every round removes one field that is in the request, and other
+  errors are raised. Tested with a fake server that refuses `temperature`: the first request is refused, the second
+  succeeds, and the next conversation is right at once (`tests/test_providers.py`).

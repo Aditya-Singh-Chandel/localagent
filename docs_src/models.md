@@ -1,38 +1,24 @@
-# `localagent/models.py` — local models and the guided first run
+# `localagent/models.py` — local models: the catalog and the downloads
 
-**Role:** what turns a fresh download into a working setup without reading any guide. Two commands:
+**Role:** which free model suits this computer, which models are installed, and fetching llama.cpp and a model —
+resumable, and checked against the publisher's checksum. One command of its own:
 
 ```
-localagent setup                      the guided first run (about a minute, plus downloads)
 localagent models                     installed models, the catalog, the suggestion for this computer
 localagent models download qwen3-4b   fetch a catalog model (resumable, verified)
 localagent models use qwen3-4b        make it the model offline mode uses (also a path to any .gguf)
 ```
 
-`localagent setup`, as it looks on this laptop (everything already present, so nothing to download):
-```
-1/3  Online model: Gemini (fast, a free daily quota)
-  ok    your GEMINI_API_KEY works
-2/3  Offline model: runs on this computer (private, no quota, slower)
-  This computer has 15.7 GB of memory: the suggested model is qwen3-8b (4.7 GB download) - ...
-  ok    llama.cpp found: ...\bin\llamacpp-vulkan\llama-server.exe
-  ok    model found: ...\models\Qwen3-8B-Q4_K_M.gguf
-3/3  Sandbox: Docker runs the agent's code in a sealed box (optional)
-  note  Docker is not running. ...
-Ready, online and offline. In a project folder, type: localagent   (/model switches)
-```
-On a new computer step 1 asks for the key (hidden while typed, checked with Google before it is saved) and step 2
-offers to download llama.cpp and the suggested model.
+The guided first run, `localagent setup`, lives in `wizard.py` (see `wizard.md`); its "download a free model for me"
+choice uses the helpers here.
 
 ## Module header
 @@ localagent/models.py header @@
-- Imports: `ctypes` (memory size on Windows), `getpass` (typing the key hidden), `os`, `platform` (processor type),
-  `stat` (making downloaded programs runnable on Linux/macOS), `sys`, `time`, `dataclass`, `Path`, `Callable`, and
-  from the agent: the config, the download functions, where models live (`HOME`, `CHECKOUT`, the finders), the Docker
-  checks and `save_user_env`.
-- `LLAMA_RELEASES` is GitHub's list of llama.cpp's newest releases; `KEY_PAGE` where Gemini keys are made. `GiB` is
-  1024³ bytes — the unit Windows itself shows as "GB" (Task Manager's 15.7 GB). `Say` is the type of the printing
-  function (tests collect the lines instead).
+- Imports: `ctypes` (memory size on Windows), `os`, `platform` (processor type), `stat` (making downloaded programs
+  runnable on Linux/macOS), `sys`, `time`, `dataclass`, `Path`, `Callable`, and from the agent: the config, the
+  download functions, where models live (`HOME`, `CHECKOUT`) with the model-file finder, and `save_user_env`.
+- `LLAMA_RELEASES` is GitHub's list of llama.cpp's newest releases. `GiB` is 1024³ bytes — the unit Windows itself
+  shows as "GB" (Task Manager's 15.7 GB). `Say` is the type of the printing function (tests collect the lines instead).
 
 ## The catalog
 @@ localagent/models.py CatalogModel @@
@@ -83,34 +69,14 @@ offers to download llama.cpp and the suggested model.
   (where `find_llama_server` looks — GPU builds first), deletes the archive, and on Linux/macOS marks the `llama-*`
   programs as runnable (archives can lose that mark).
 
-## Checking a key, showing progress
-@@ localagent/models.py check_gemini_key @@
-- Lists Gemini's models with the key: costs no quota. An HTTP 4xx answer means the key was rejected; no answer means
-  Google cannot be reached right now (the key is then saved anyway, unchecked).
-
+## Showing progress, the sandbox hint
 @@ localagent/models.py progress_printer @@
 - A download's progress — `1.20 GB of 4.68 GB (25%), about 6 min left at 12.3 MB/s` — rewritten in place once a second
   in a terminal, or as a new line every 30 seconds when the output goes to a file. The last line always appears.
 
-@@ localagent/models.py _sandbox_hint @@
+@@ localagent/models.py sandbox_hint @@
 - The exact `docker build` command for this copy's Dockerfile (the release bundle carries one too), or a pointer to
-  the docs.
-
-## `localagent setup`
-@@ localagent/models.py run_setup @@
-- The three steps and a summary. `yes` treats Enter as "yes" (the suggestion in brackets) and no input or Ctrl+C as
-  "no". Returns 0 when at least one model — online or offline — is ready, else 1. Every input and output is
-  injectable, so the tests drive it without a keyboard.
-
-@@ localagent/models.py _setup_gemini @@
-- With a key already set: checks it and says what it found. Without one: says where to get one, asks for it hidden
-  (`getpass`), checks it, and only if Google does not reject it saves it in your **user** settings file
-  (`%USERPROFILE%\.localagent\settings.json`, under `env`) and in this run's environment. The folder belongs to your
-  account; the key is never written into a project.
-
-@@ localagent/models.py _setup_local @@
-- Shows the computer's memory and the suggested model, then for llama.cpp and for the model: found → ok; missing →
-  offers the download (Enter = yes) and reports the result. A failed download is reported and setup carries on.
+  the docs. Used by the setup's sandbox step.
 
 ## `localagent models`
 @@ localagent/models.py run_models @@

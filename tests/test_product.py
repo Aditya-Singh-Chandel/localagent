@@ -10,7 +10,6 @@ import tempfile
 import threading
 import unittest
 import zipfile
-from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -176,48 +175,6 @@ class CatalogTests(unittest.TestCase):
 
 
 class SetupTests(unittest.TestCase):
-    def run_setup(self, tmp, key="", given_key="", key_state="ok", llama=None, model=None,
-                  answers=("y", "y")):
-        said: list[str] = []
-        replies = iter(answers)
-        settings = Path(tmp) / "settings.json"
-        with mock.patch.dict(os.environ, {}, clear=False), \
-                mock.patch.object(models, "check_gemini_key", return_value=key_state), \
-                mock.patch.object(models, "find_llama_server", side_effect=[llama, llama or Path("l")]), \
-                mock.patch.object(models, "find_model_file", return_value=model), \
-                mock.patch.object(models, "install_llama", return_value=Path(tmp) / "llama"), \
-                mock.patch.object(models, "install_model", return_value=Path(tmp) / "m.gguf"), \
-                mock.patch.object(models, "docker_available", return_value=False):
-            code = models.run_setup(replace(Config(), gemini_api_key=key), ask=lambda _q: next(replies),
-                                    secret=lambda _q: given_key, say=said.append,
-                                    settings_file=settings, progress=lambda _d, _t: None)
-            saved = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
-        return code, "\n".join(said), saved
-
-    def test_a_pasted_key_is_checked_and_saved(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            code, said, saved = self.run_setup(tmp, given_key="good-key", llama=Path("l"),
-                                               model=Path("m.gguf"))
-            self.assertEqual(code, 0)
-            self.assertEqual(saved["env"]["GEMINI_API_KEY"], "good-key")
-            self.assertIn("Ready, online and offline", said)
-
-    def test_a_rejected_key_is_not_saved_and_missing_parts_are_offered(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            code, said, saved = self.run_setup(tmp, given_key="bad", key_state="rejected")
-            self.assertEqual(saved, {})
-            self.assertIn("Google rejected that key", said)
-            self.assertIn("llama.cpp installed in", said)                  # offered and fetched
-            self.assertIn("model saved", said)
-            self.assertEqual(code, 0)                                      # offline is ready
-
-    def test_declining_everything_leaves_no_model(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            code, said, _ = self.run_setup(tmp, answers=("n", "n"))
-            self.assertEqual(code, 1)
-            self.assertIn("No model is ready yet", said)
-            self.assertIn("skipped: without a key", said)
-
     def test_models_list_and_use(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -247,6 +204,10 @@ class SetupTests(unittest.TestCase):
             save_user_env("B", "2", path)
             data = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(data, {"permissions": {"allow": ["run_tests"]}, "env": {"A": "1", "B": "2"}})
+            save_user_env("A", None, path)                    # None forgets a setting
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["env"], {"B": "2"})
+            if os.name != "nt":                               # it can hold keys: yours alone
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_the_commands_are_reached_from_the_command_line(self):
         with mock.patch.object(cli, "run_models", return_value=0) as listed, \

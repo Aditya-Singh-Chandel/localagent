@@ -278,7 +278,9 @@ class GeminiWireTests(unittest.TestCase):
                 return {"data": [{"id": "models/m1"}, {"id": "models/m2"}]}
             raise OSError("connection refused")             # the backup server is not running
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch("localagent.doctor._get_json", side_effect=fake_get):
+                mock.patch("localagent.doctor._get_json", side_effect=fake_get), \
+                mock.patch("localagent.doctor.running_local", return_value=""), \
+                mock.patch("localagent.doctor.find_llama_server", return_value=None):
             config = replace(Config(), backend="gemini", gemini_api_key="k", gemini_models=("m1",),
                              gemini_strong_models=("m2",), fallback_backend="openai",
                              usage_file=Path(tmp) / "usage.json")

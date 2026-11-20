@@ -1551,16 +1551,18 @@ last test uses real Docker, and it is skipped automatically when Docker is not r
 278 |                 return {"data": [{"id": "models/m1"}, {"id": "models/m2"}]}
 279 |             raise OSError("connection refused")             # the backup server is not running
 280 |         with tempfile.TemporaryDirectory() as tmp, \
-281 |                 mock.patch("localagent.doctor._get_json", side_effect=fake_get):
-282 |             config = replace(Config(), backend="gemini", gemini_api_key="k", gemini_models=("m1",),
-283 |                              gemini_strong_models=("m2",), fallback_backend="openai",
-284 |                              usage_file=Path(tmp) / "usage.json")
-285 |             healthy, lines = run_doctor(config)
-286 |         self.assertTrue(healthy)                             # Gemini works: the backup is optional
-287 |         self.assertFalse(any(line.startswith("FAIL") for line in lines))
-288 |         self.assertTrue(any(line.startswith("note  the offline backup") for line in lines))
-289 | 
-290 | 
+281 |                 mock.patch("localagent.doctor._get_json", side_effect=fake_get), \
+282 |                 mock.patch("localagent.doctor.running_local", return_value=""), \
+283 |                 mock.patch("localagent.doctor.find_llama_server", return_value=None):
+284 |             config = replace(Config(), backend="gemini", gemini_api_key="k", gemini_models=("m1",),
+285 |                              gemini_strong_models=("m2",), fallback_backend="openai",
+286 |                              usage_file=Path(tmp) / "usage.json")
+287 |             healthy, lines = run_doctor(config)
+288 |         self.assertTrue(healthy)                             # Gemini works: the backup is optional
+289 |         self.assertFalse(any(line.startswith("FAIL") for line in lines))
+290 |         self.assertTrue(any(line.startswith("note  the offline backup") for line in lines))
+291 | 
+292 | 
 ```
 - Against the fake server: `reasoning_effort` is sent; the tool call's `extra_content` (thought signature) is kept on
   the stored message and sent back by `to_openai`; with 60 prompt + 20 completion but 150 total tokens, 90 are counted
@@ -1569,59 +1571,61 @@ last test uses real Docker, and it is skipped automatically when Docker is not r
   `fill_signatures` is on.
 - The Gemini backend refuses to start without a key, builds a `FallbackBackend` with one, labels the chain correctly,
   and rejects an unknown fallback name. The doctor reports a missing key as a failure.
-- With Gemini answering (its model list is faked with `mock.patch`) but the backup server unreachable, the doctor
-  stays healthy, prints no `FAIL`, and prints a `note` about the backup.
+- With Gemini answering (its model list is faked with `mock.patch`) but the backup unavailable, the doctor stays
+  healthy, prints no `FAIL`, and prints a `note` about the backup. "Unavailable" is faked too — no server answers and
+  no llama.cpp is found — because the backup check now also counts a local model that *could be started*: on a
+  computer with llama.cpp installed (like the reference laptop) the backup really is available.
 
 ## Runners
 ```python
-291 | class RunnerTests(unittest.TestCase):
+293 | class RunnerTests(unittest.TestCase):
 ```
 ```python
-292 |     def test_local_runner_refuses_shell_and_toolbox_hides_tool(self):
-293 |         with tempfile.TemporaryDirectory() as tmp:
-294 |             runner = LocalRunner(Config(), Path(tmp))
-295 |             self.assertEqual(runner.run("shell", ["ls"])[0], 126)
-296 |             box = ToolBox(replace(Config(), workspace=Path(tmp)), lambda _a: True)
-297 |             names = [spec["function"]["name"] for spec in box.specs()]
-298 |             self.assertNotIn("run_shell", names)
-299 |             box.close()
-300 | 
+294 |     def test_local_runner_refuses_shell_and_toolbox_hides_tool(self):
+295 |         with tempfile.TemporaryDirectory() as tmp:
+296 |             runner = LocalRunner(Config(), Path(tmp))
+297 |             self.assertEqual(runner.run("shell", ["ls"])[0], 126)
+298 |             box = ToolBox(replace(Config(), workspace=Path(tmp)), lambda _a: True)
+299 |             names = [spec["function"]["name"] for spec in box.specs()]
+300 |             self.assertNotIn("run_shell", names)
+301 |             box.close()
+302 | 
 ```
 ```python
-301 |     def test_docker_toolbox_offers_shell(self):
-302 |         with tempfile.TemporaryDirectory() as tmp:
-303 |             box = ToolBox(replace(Config(), workspace=Path(tmp), sandbox="docker"), lambda _a: True)
-304 |             self.assertIn("run_shell", [s["function"]["name"] for s in box.specs()])
-305 |             self.assertIn("ERROR", box.call("run_shell", {"command": "  "}))
-306 |             box.close()                                      # never started: nothing to stop
-307 | 
+303 |     def test_docker_toolbox_offers_shell(self):
+304 |         with tempfile.TemporaryDirectory() as tmp:
+305 |             box = ToolBox(replace(Config(), workspace=Path(tmp), sandbox="docker"), lambda _a: True)
+306 |             self.assertIn("run_shell", [s["function"]["name"] for s in box.specs()])
+307 |             self.assertIn("ERROR", box.call("run_shell", {"command": "  "}))
+308 |             box.close()                                      # never started: nothing to stop
+309 | 
 ```
 ```python
-308 |     @unittest.skipUnless(docker_available() and sandbox_image_ready("localagent-sandbox:latest"),
-309 |                          "Docker is not running, or the sandbox image is not built")
-310 |     def test_docker_sandbox_isolation_end_to_end(self):
-311 |         with tempfile.TemporaryDirectory() as tmp:
-312 |             config = replace(Config(), workspace=Path(tmp), sandbox="docker", command_timeout=20)
-313 |             box = ToolBox(config, lambda _a: True)
-314 |             try:
-315 |                 box.call("write_file", {"path": "hi.py", "content": "print('from container')\n"})
-316 |                 self.assertIn("from container", box.call("run_python", {"path": "hi.py"}))
-317 |                 who = box.call("run_shell", {"command": "id -u && pwd"}).splitlines()
-318 |                 self.assertEqual(who[0], "exit code 0")
-319 |                 self.assertNotEqual(who[1], "0")             # not root
-320 |                 self.assertEqual(who[2], "/work")
-321 |                 net = box.call("run_shell", {"command": "python -c \"import urllib.request as u; "
-322 |                                              "u.urlopen('http://example.com', timeout=5)\""})
-323 |                 self.assertNotIn("exit code 0", net)         # no network by default
-324 |                 slow = replace(config, command_timeout=2)
-325 |                 runner = DockerRunner(slow, Path(tmp))
-326 |                 code, _ = runner.run("shell", ["sleep 30"])
-327 |                 runner.stop()
-328 |                 self.assertEqual(code, 124)                  # timeout kills the command
-329 |             finally:
-330 |                 box.close()
-331 | 
-332 | 
+310 |     @unittest.skipUnless(docker_available() and sandbox_image_ready("localagent-sandbox:latest"),
+311 |                          "Docker is not running, or the sandbox image is not built")
+312 |     def test_docker_sandbox_isolation_end_to_end(self):
+313 |         with tempfile.TemporaryDirectory() as tmp:
+314 |             config = replace(Config(), workspace=Path(tmp), sandbox="docker", command_timeout=20)
+315 |             box = ToolBox(config, lambda _a: True)
+316 |             try:
+317 |                 box.call("write_file", {"path": "hi.py", "content": "print('from container')\n"})
+318 |                 self.assertIn("from container", box.call("run_python", {"path": "hi.py"}))
+319 |                 who = box.call("run_shell", {"command": "id -u && pwd"}).splitlines()
+320 |                 self.assertEqual(who[0], "exit code 0")
+321 |                 self.assertNotEqual(who[1], "0")             # not root
+322 |                 self.assertEqual(who[2], "/work")
+323 |                 net = box.call("run_shell", {"command": "python -c \"import urllib.request as u; "
+324 |                                              "u.urlopen('http://example.com', timeout=5)\""})
+325 |                 self.assertNotIn("exit code 0", net)         # no network by default
+326 |                 slow = replace(config, command_timeout=2)
+327 |                 runner = DockerRunner(slow, Path(tmp))
+328 |                 code, _ = runner.run("shell", ["sleep 30"])
+329 |                 runner.stop()
+330 |                 self.assertEqual(code, 124)                  # timeout kills the command
+331 |             finally:
+332 |                 box.close()
+333 | 
+334 | 
 ```
 - Locally the shell is refused (code 126) and the `run_shell` tool is not even offered to the model.
 - With `sandbox="docker"` the tool is offered and an empty command is rejected — without starting a container.
@@ -1632,8 +1636,8 @@ last test uses real Docker, and it is skipped automatically when Docker is not r
   container runs as your own user id (see `runners.md`).
 
 ```python
-333 | if __name__ == "__main__":
-334 |     unittest.main()
+335 | if __name__ == "__main__":
+336 |     unittest.main()
 ```
 - Lets you run the file directly.
 
@@ -3812,14 +3816,14 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 682 |         self.assertEqual(config.fallback_backend, "ollama")
 683 |         config, notes = self.choose("auto", local="openai")
 684 |         self.assertEqual((config.backend, config.num_ctx), ("local", 8192))
-685 |         self.assertIn("no GEMINI_API_KEY", notes[0])
+685 |         self.assertIn("no online model is set up", notes[0])
 686 |         config, _ = self.choose("offline", key="k", local="local")
 687 |         self.assertEqual((config.backend, config.mode), ("local", "offline"))
 688 | 
 ```
 ```python
 689 |     def test_impossible_modes_say_what_to_do(self):
-690 |         with self.assertRaisesRegex(ValueError, "online mode needs a Gemini key"):
+690 |         with self.assertRaisesRegex(ValueError, "online mode needs a working online model: GEMINI_API_KEY"):
 691 |             self.choose("online")
 692 |         with self.assertRaisesRegex(ValueError, "No local model"):
 693 |             self.choose("offline", key="k")
@@ -3830,7 +3834,8 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 698 | 
 ```
 - Online: Gemini, no backup. Auto with a key: Gemini plus the local backup (or Ollama). Auto without a key: the local
-  model with an 8K budget and a note saying why. Offline: the local model even with a key.
+  model with an 8K budget and a note saying why ("no online model is set up"). Offline: the local model even with a
+  key.
 - Online without a key, offline without a local model, auto with nothing, and an unknown mode each raise an
   explanation.
 
@@ -4067,7 +4072,8 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 
 **Role:** proves the parts that turn the agent into a downloadable product — verified and resumable downloads, safe
 unpacking, the model catalog, `localagent setup` and `localagent models` — without downloading anything real: a small
-local file server plays GitHub and Hugging Face. 15 tests, about 3 seconds.
+local file server plays GitHub and Hugging Face. 12 tests, about 3 seconds. (The guided setup's own tests are in
+`test_providers.py`, next to the provider choices it offers.)
 
 ## Helpers
 ```python
@@ -4083,61 +4089,60 @@ local file server plays GitHub and Hugging Face. 15 tests, about 3 seconds.
  10 | import threading
  11 | import unittest
  12 | import zipfile
- 13 | from dataclasses import replace
- 14 | from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
- 15 | from pathlib import Path
- 16 | from unittest import mock
- 17 | 
- 18 | from localagent import cli, models
- 19 | from localagent.config import Config
- 20 | from localagent.fetch import DownloadError, download, extract_archive
- 21 | from localagent.settings import save_user_env
- 22 | 
- 23 | DATA = bytes(range(256)) * 4096                  # 1 MB of test content
- 24 | DATA_SHA = hashlib.sha256(DATA).hexdigest()
+ 13 | from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ 14 | from pathlib import Path
+ 15 | from unittest import mock
+ 16 | 
+ 17 | from localagent import cli, models
+ 18 | from localagent.config import Config
+ 19 | from localagent.fetch import DownloadError, download, extract_archive
+ 20 | from localagent.settings import save_user_env
+ 21 | 
+ 22 | DATA = bytes(range(256)) * 4096                  # 1 MB of test content
+ 23 | DATA_SHA = hashlib.sha256(DATA).hexdigest()
+ 24 | 
  25 | 
- 26 | 
 ```
 - `DATA` is 1 MB of test content and `DATA_SHA` its checksum, standing in for a model file.
 
 ```python
- 27 | class RangeServer:
- 28 |     """A file server that understands Range requests (or ignores them), and can stop early."""
- 29 | 
+ 26 | class RangeServer:
+ 27 |     """A file server that understands Range requests (or ignores them), and can stop early."""
+ 28 | 
 ```
 ```python
- 30 |     def __init__(self, data: bytes, honour_range: bool = True, cut_at: int | None = None) -> None:
- 31 |         outer = self
- 32 |         self.ranges: list[str | None] = []
- 33 | 
- 34 |         class Handler(BaseHTTPRequestHandler):
- 35 |             def do_GET(self):  # noqa: N802 (name fixed by http.server)
- 36 |                 asked = self.headers.get("Range")
- 37 |                 outer.ranges.append(asked)
- 38 |                 body, status = data, 200
- 39 |                 if asked and honour_range:
- 40 |                     body, status = data[int(asked.split("=")[1].split("-")[0]):], 206
- 41 |                 if cut_at is not None:
- 42 |                     body = body[:cut_at]                 # the connection "breaks" early
- 43 |                 self.send_response(status)
- 44 |                 self.send_header("Content-Length", str(len(body)))
- 45 |                 self.end_headers()
- 46 |                 self.wfile.write(body)
- 47 | 
- 48 |             def log_message(self, *args):
- 49 |                 pass
- 50 | 
- 51 |         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
- 52 |         self.url = f"http://127.0.0.1:{self._server.server_port}/file.bin"
- 53 |         threading.Thread(target=self._server.serve_forever, daemon=True).start()
- 54 | 
+ 29 |     def __init__(self, data: bytes, honour_range: bool = True, cut_at: int | None = None) -> None:
+ 30 |         outer = self
+ 31 |         self.ranges: list[str | None] = []
+ 32 | 
+ 33 |         class Handler(BaseHTTPRequestHandler):
+ 34 |             def do_GET(self):  # noqa: N802 (name fixed by http.server)
+ 35 |                 asked = self.headers.get("Range")
+ 36 |                 outer.ranges.append(asked)
+ 37 |                 body, status = data, 200
+ 38 |                 if asked and honour_range:
+ 39 |                     body, status = data[int(asked.split("=")[1].split("-")[0]):], 206
+ 40 |                 if cut_at is not None:
+ 41 |                     body = body[:cut_at]                 # the connection "breaks" early
+ 42 |                 self.send_response(status)
+ 43 |                 self.send_header("Content-Length", str(len(body)))
+ 44 |                 self.end_headers()
+ 45 |                 self.wfile.write(body)
+ 46 | 
+ 47 |             def log_message(self, *args):
+ 48 |                 pass
+ 49 | 
+ 50 |         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+ 51 |         self.url = f"http://127.0.0.1:{self._server.server_port}/file.bin"
+ 52 |         threading.Thread(target=self._server.serve_forever, daemon=True).start()
+ 53 | 
 ```
 ```python
- 55 |     def close(self) -> None:
- 56 |         self._server.shutdown()
- 57 |         self._server.server_close()
+ 54 |     def close(self) -> None:
+ 55 |         self._server.shutdown()
+ 56 |         self._server.server_close()
+ 57 | 
  58 | 
- 59 | 
 ```
 - A file server on a free local port that records every `Range` header it receives, answers a Range request with `206`
   and the rest of the file (or, with `honour_range=False`, ignores it and sends everything with `200`), and with
@@ -4145,285 +4150,857 @@ local file server plays GitHub and Hugging Face. 15 tests, about 3 seconds.
 
 ## Downloads
 ```python
- 60 | class DownloadTests(unittest.TestCase):
+ 59 | class DownloadTests(unittest.TestCase):
 ```
 ```python
- 61 |     def serve(self, **kw) -> RangeServer:
- 62 |         server = RangeServer(DATA, **kw)
- 63 |         self.addCleanup(server.close)
- 64 |         return server
- 65 | 
+ 60 |     def serve(self, **kw) -> RangeServer:
+ 61 |         server = RangeServer(DATA, **kw)
+ 62 |         self.addCleanup(server.close)
+ 63 |         return server
+ 64 | 
 ```
 ```python
- 66 |     def test_a_download_is_verified_and_kept_once(self):
- 67 |         server = self.serve()
- 68 |         with tempfile.TemporaryDirectory() as tmp:
- 69 |             target = Path(tmp) / "m.gguf"
- 70 |             seen: list[int] = []
- 71 |             download(server.url, target, DATA_SHA, len(DATA), lambda done, _total: seen.append(done))
- 72 |             self.assertEqual(target.read_bytes(), DATA)
- 73 |             self.assertEqual(seen[-1], len(DATA))
- 74 |             download(server.url, target, DATA_SHA, len(DATA))
- 75 |             self.assertEqual(len(server.ranges), 1)                # already there: no second fetch
- 76 | 
+ 65 |     def test_a_download_is_verified_and_kept_once(self):
+ 66 |         server = self.serve()
+ 67 |         with tempfile.TemporaryDirectory() as tmp:
+ 68 |             target = Path(tmp) / "m.gguf"
+ 69 |             seen: list[int] = []
+ 70 |             download(server.url, target, DATA_SHA, len(DATA), lambda done, _total: seen.append(done))
+ 71 |             self.assertEqual(target.read_bytes(), DATA)
+ 72 |             self.assertEqual(seen[-1], len(DATA))
+ 73 |             download(server.url, target, DATA_SHA, len(DATA))
+ 74 |             self.assertEqual(len(server.ranges), 1)                # already there: no second fetch
+ 75 | 
 ```
 ```python
- 77 |     def test_a_wrong_checksum_deletes_the_file(self):
- 78 |         server = self.serve()
- 79 |         with tempfile.TemporaryDirectory() as tmp:
- 80 |             target = Path(tmp) / "m.gguf"
- 81 |             with self.assertRaisesRegex(DownloadError, "does not match its published checksum"):
- 82 |                 download(server.url, target, "0" * 64, len(DATA))
- 83 |             self.assertEqual(list(Path(tmp).iterdir()), [])
- 84 | 
+ 76 |     def test_a_wrong_checksum_deletes_the_file(self):
+ 77 |         server = self.serve()
+ 78 |         with tempfile.TemporaryDirectory() as tmp:
+ 79 |             target = Path(tmp) / "m.gguf"
+ 80 |             with self.assertRaisesRegex(DownloadError, "does not match its published checksum"):
+ 81 |                 download(server.url, target, "0" * 64, len(DATA))
+ 82 |             self.assertEqual(list(Path(tmp).iterdir()), [])
+ 83 | 
 ```
 - A download arrives complete and reports progress up to its size; asking again sends no second request.
 - With a wrong checksum the download fails and nothing is left in the folder — not even the part.
 
 ```python
- 85 |     def test_an_interrupted_download_continues_where_it_stopped(self):
- 86 |         with tempfile.TemporaryDirectory() as tmp:
- 87 |             target = Path(tmp) / "m.gguf"
- 88 |             broken = self.serve(cut_at=300_000)
- 89 |             with self.assertRaisesRegex(DownloadError, "run the same command again"):
- 90 |                 download(broken.url, target, DATA_SHA, len(DATA))
- 91 |             self.assertEqual(target.with_name("m.gguf.part").stat().st_size, 300_000)
- 92 |             good = self.serve()
- 93 |             download(good.url, target, DATA_SHA, len(DATA))
- 94 |             self.assertEqual(good.ranges, ["bytes=300000-"])        # only the rest was asked for
- 95 |             self.assertEqual(target.read_bytes(), DATA)
- 96 | 
+ 84 |     def test_an_interrupted_download_continues_where_it_stopped(self):
+ 85 |         with tempfile.TemporaryDirectory() as tmp:
+ 86 |             target = Path(tmp) / "m.gguf"
+ 87 |             broken = self.serve(cut_at=300_000)
+ 88 |             with self.assertRaisesRegex(DownloadError, "run the same command again"):
+ 89 |                 download(broken.url, target, DATA_SHA, len(DATA))
+ 90 |             self.assertEqual(target.with_name("m.gguf.part").stat().st_size, 300_000)
+ 91 |             good = self.serve()
+ 92 |             download(good.url, target, DATA_SHA, len(DATA))
+ 93 |             self.assertEqual(good.ranges, ["bytes=300000-"])        # only the rest was asked for
+ 94 |             self.assertEqual(target.read_bytes(), DATA)
+ 95 | 
 ```
 ```python
- 97 |     def test_a_server_ignoring_the_range_sends_everything_again(self):
- 98 |         with tempfile.TemporaryDirectory() as tmp:
- 99 |             target = Path(tmp) / "m.gguf"
-100 |             target.with_name("m.gguf.part").write_bytes(DATA[:1000])
-101 |             download(self.serve(honour_range=False).url, target, DATA_SHA, len(DATA))
-102 |             self.assertEqual(target.read_bytes(), DATA)
-103 | 
+ 96 |     def test_a_server_ignoring_the_range_sends_everything_again(self):
+ 97 |         with tempfile.TemporaryDirectory() as tmp:
+ 98 |             target = Path(tmp) / "m.gguf"
+ 99 |             target.with_name("m.gguf.part").write_bytes(DATA[:1000])
+100 |             download(self.serve(honour_range=False).url, target, DATA_SHA, len(DATA))
+101 |             self.assertEqual(target.read_bytes(), DATA)
+102 | 
 ```
 - A connection that breaks after 300 000 bytes leaves exactly that part and the advice to run again; the next run asks
   only for `bytes=300000-` and ends with the complete, verified file.
 - A server that ignores the Range request still ends with the right file (the part is started again).
 
 ```python
-104 |     def test_archives_are_unpacked_only_inside_their_folder(self):
-105 |         with tempfile.TemporaryDirectory() as tmp:
-106 |             root = Path(tmp)
-107 |             good, evil = root / "good.zip", root / "evil.zip"
-108 |             with zipfile.ZipFile(good, "w") as bundle:
-109 |                 bundle.writestr("build/llama-server.exe", b"MZ")
-110 |             with zipfile.ZipFile(evil, "w") as bundle:
-111 |                 bundle.writestr("../outside.txt", b"x")
-112 |             extract_archive(good, root / "out")
-113 |             self.assertTrue((root / "out" / "build" / "llama-server.exe").is_file())
-114 |             with self.assertRaisesRegex(DownloadError, "would land outside"):
-115 |                 extract_archive(evil, root / "out2")
-116 |             self.assertFalse((root / "outside.txt").exists())
-117 |             tgz = root / "build.tar.gz"
-118 |             with tarfile.open(tgz, "w:gz") as bundle:
-119 |                 info = tarfile.TarInfo("bin/llama-server")
-120 |                 info.size = 2
-121 |                 bundle.addfile(info, io.BytesIO(b"\x7fE"))
-122 |             extract_archive(tgz, root / "out3")
-123 |             self.assertTrue((root / "out3" / "bin" / "llama-server").is_file())
+103 |     def test_archives_are_unpacked_only_inside_their_folder(self):
+104 |         with tempfile.TemporaryDirectory() as tmp:
+105 |             root = Path(tmp)
+106 |             good, evil = root / "good.zip", root / "evil.zip"
+107 |             with zipfile.ZipFile(good, "w") as bundle:
+108 |                 bundle.writestr("build/llama-server.exe", b"MZ")
+109 |             with zipfile.ZipFile(evil, "w") as bundle:
+110 |                 bundle.writestr("../outside.txt", b"x")
+111 |             extract_archive(good, root / "out")
+112 |             self.assertTrue((root / "out" / "build" / "llama-server.exe").is_file())
+113 |             with self.assertRaisesRegex(DownloadError, "would land outside"):
+114 |                 extract_archive(evil, root / "out2")
+115 |             self.assertFalse((root / "outside.txt").exists())
+116 |             tgz = root / "build.tar.gz"
+117 |             with tarfile.open(tgz, "w:gz") as bundle:
+118 |                 info = tarfile.TarInfo("bin/llama-server")
+119 |                 info.size = 2
+120 |                 bundle.addfile(info, io.BytesIO(b"\x7fE"))
+121 |             extract_archive(tgz, root / "out3")
+122 |             self.assertTrue((root / "out3" / "bin" / "llama-server").is_file())
+123 | 
 124 | 
-125 | 
 ```
 - A normal zip unpacks; a zip with `../outside.txt` is refused and writes nothing outside; a `.tar.gz` (the Linux and
   macOS format) unpacks too.
 
 ## Catalog and llama.cpp
 ```python
-126 | class CatalogTests(unittest.TestCase):
+125 | class CatalogTests(unittest.TestCase):
 ```
 ```python
-127 |     def test_the_suggestion_follows_the_memory(self):
-128 |         self.assertEqual(models.recommend(15.7).name, "qwen3-8b")
-129 |         self.assertEqual(models.recommend(7.8).name, "qwen3-4b")
-130 |         self.assertEqual(models.recommend(4.0).name, "qwen3-1.7b")
-131 |         self.assertEqual(models.recommend(None).name, "qwen3-4b")
-132 |         self.assertEqual(models.catalog_entry(" QWEN3-4B ").file, "Qwen3-4B-Q4_K_M.gguf")
-133 |         self.assertIsNone(models.catalog_entry("gpt-9"))
-134 |         memory = models.total_memory_gb()
-135 |         self.assertTrue(memory is None or memory > 0.5)
-136 |         self.assertTrue(all(len(m.sha256) == 64 and m.url.endswith(m.file) for m in models.CATALOG))
-137 | 
+126 |     def test_the_suggestion_follows_the_memory(self):
+127 |         self.assertEqual(models.recommend(15.7).name, "qwen3-8b")
+128 |         self.assertEqual(models.recommend(7.8).name, "qwen3-4b")
+129 |         self.assertEqual(models.recommend(4.0).name, "qwen3-1.7b")
+130 |         self.assertEqual(models.recommend(None).name, "qwen3-4b")
+131 |         self.assertEqual(models.catalog_entry(" QWEN3-4B ").file, "Qwen3-4B-Q4_K_M.gguf")
+132 |         self.assertIsNone(models.catalog_entry("gpt-9"))
+133 |         memory = models.total_memory_gb()
+134 |         self.assertTrue(memory is None or memory > 0.5)
+135 |         self.assertTrue(all(len(m.sha256) == 64 and m.url.endswith(m.file) for m in models.CATALOG))
+136 | 
 ```
 - 15.7 GB → the 8B model, 7.8 GB → 4B, 4 GB → 1.7B, unknown → 4B; names match in any case; this computer's memory is
   read; every catalog entry has a 64-character checksum and a matching address.
 
 ```python
-138 |     def test_the_newest_llama_build_with_a_checksum_is_chosen(self):
-139 |         def asset(tag, variant, digest="sha256:" + "a" * 64):
-140 |             name = f"llama-{tag}-bin-{variant}.zip"
-141 |             return {"name": name, "size": 10, "browser_download_url": f"https://x/{name}", "digest": digest}
-142 |         releases = [{"tag_name": "v1.0.0", "assets": [{"name": "nightly-tag.txt"}]},     # placeholder
-143 |                     {"tag_name": "b2", "assets": [asset("b2", "win-vulkan-x64", digest="")]},
-144 |                     {"tag_name": "b1", "assets": [asset("b1", "win-cpu-x64"), asset("b1", "win-vulkan-x64")]}]
-145 |         with mock.patch.object(models, "get_json", return_value=releases):
-146 |             name, url, size, sha = models.find_llama_release(("win-vulkan-x64", "win-cpu-x64"))
-147 |             self.assertEqual((name, sha), ("llama-b1-bin-win-vulkan-x64.zip", "a" * 64))
-148 |             with self.assertRaisesRegex(DownloadError, "no llama.cpp build"):
-149 |                 models.find_llama_release(("macos-arm64",))
-150 | 
+137 |     def test_the_newest_llama_build_with_a_checksum_is_chosen(self):
+138 |         def asset(tag, variant, digest="sha256:" + "a" * 64):
+139 |             name = f"llama-{tag}-bin-{variant}.zip"
+140 |             return {"name": name, "size": 10, "browser_download_url": f"https://x/{name}", "digest": digest}
+141 |         releases = [{"tag_name": "v1.0.0", "assets": [{"name": "nightly-tag.txt"}]},     # placeholder
+142 |                     {"tag_name": "b2", "assets": [asset("b2", "win-vulkan-x64", digest="")]},
+143 |                     {"tag_name": "b1", "assets": [asset("b1", "win-cpu-x64"), asset("b1", "win-vulkan-x64")]}]
+144 |         with mock.patch.object(models, "get_json", return_value=releases):
+145 |             name, url, size, sha = models.find_llama_release(("win-vulkan-x64", "win-cpu-x64"))
+146 |             self.assertEqual((name, sha), ("llama-b1-bin-win-vulkan-x64.zip", "a" * 64))
+147 |             with self.assertRaisesRegex(DownloadError, "no llama.cpp build"):
+148 |                 models.find_llama_release(("macos-arm64",))
+149 | 
 ```
 - Three releases: a placeholder like llama.cpp's real `v1.0.0`, one whose file has no checksum, and one with both
   builds. The Vulkan build of the third is chosen; a platform no release has gives a clear error.
 
 ```python
-151 |     def test_llama_cpp_is_installed_from_a_verified_archive(self):
-152 |         payload = io.BytesIO()
-153 |         with zipfile.ZipFile(payload, "w") as bundle:
-154 |             bundle.writestr("llama-server.exe", b"MZ fake program")
-155 |         data = payload.getvalue()
-156 |         server = RangeServer(data)
-157 |         self.addCleanup(server.close)
-158 |         with tempfile.TemporaryDirectory() as tmp, \
-159 |                 mock.patch.object(models, "HOME", Path(tmp)), \
-160 |                 mock.patch.object(models, "find_llama_release",
-161 |                                   return_value=("llama-b9-bin-win-cpu-x64.zip", server.url, len(data),
-162 |                                                 hashlib.sha256(data).hexdigest())):
-163 |             folder = models.install_llama(lambda _d, _t: None)
-164 |             self.assertEqual(folder, Path(tmp) / "llama" / "llama-b9-bin-win-cpu-x64")
-165 |             self.assertTrue((folder / "llama-server.exe").is_file())
-166 |             self.assertEqual(list((Path(tmp) / "llama" / "downloads").iterdir()), [])   # zip deleted
-167 | 
+150 |     def test_llama_cpp_is_installed_from_a_verified_archive(self):
+151 |         payload = io.BytesIO()
+152 |         with zipfile.ZipFile(payload, "w") as bundle:
+153 |             bundle.writestr("llama-server.exe", b"MZ fake program")
+154 |         data = payload.getvalue()
+155 |         server = RangeServer(data)
+156 |         self.addCleanup(server.close)
+157 |         with tempfile.TemporaryDirectory() as tmp, \
+158 |                 mock.patch.object(models, "HOME", Path(tmp)), \
+159 |                 mock.patch.object(models, "find_llama_release",
+160 |                                   return_value=("llama-b9-bin-win-cpu-x64.zip", server.url, len(data),
+161 |                                                 hashlib.sha256(data).hexdigest())):
+162 |             folder = models.install_llama(lambda _d, _t: None)
+163 |             self.assertEqual(folder, Path(tmp) / "llama" / "llama-b9-bin-win-cpu-x64")
+164 |             self.assertTrue((folder / "llama-server.exe").is_file())
+165 |             self.assertEqual(list((Path(tmp) / "llama" / "downloads").iterdir()), [])   # zip deleted
+166 | 
 ```
 ```python
-168 |     def test_a_model_goes_to_the_models_folder(self):
-169 |         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(models, "HOME", Path(tmp)), \
-170 |                 mock.patch.object(models, "download", return_value=Path("x")) as fetched:
-171 |             model = models.CATALOG[1]
-172 |             models.install_model(model, lambda _d, _t: None)
-173 |             url, target, sha, size, _progress = fetched.call_args.args
-174 |             self.assertEqual((url, target, sha, size),
-175 |                              (model.url, Path(tmp) / "models" / model.file, model.sha256, model.size))
+167 |     def test_a_model_goes_to_the_models_folder(self):
+168 |         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(models, "HOME", Path(tmp)), \
+169 |                 mock.patch.object(models, "download", return_value=Path("x")) as fetched:
+170 |             model = models.CATALOG[1]
+171 |             models.install_model(model, lambda _d, _t: None)
+172 |             url, target, sha, size, _progress = fetched.call_args.args
+173 |             self.assertEqual((url, target, sha, size),
+174 |                              (model.url, Path(tmp) / "models" / model.file, model.sha256, model.size))
+175 | 
 176 | 
-177 | 
 ```
 - A zip holding a fake `llama-server.exe`, served locally, is downloaded, verified, unpacked into its build folder,
   and its archive deleted.
 - A model download is asked for with the catalog's address, checksum and size, into the models folder.
 
-## Setup and the models command
+## The models command and the settings file
 ```python
-178 | class SetupTests(unittest.TestCase):
+177 | class SetupTests(unittest.TestCase):
 ```
 ```python
-179 |     def run_setup(self, tmp, key="", given_key="", key_state="ok", llama=None, model=None,
-180 |                   answers=("y", "y")):
-181 |         said: list[str] = []
-182 |         replies = iter(answers)
-183 |         settings = Path(tmp) / "settings.json"
-184 |         with mock.patch.dict(os.environ, {}, clear=False), \
-185 |                 mock.patch.object(models, "check_gemini_key", return_value=key_state), \
-186 |                 mock.patch.object(models, "find_llama_server", side_effect=[llama, llama or Path("l")]), \
-187 |                 mock.patch.object(models, "find_model_file", return_value=model), \
-188 |                 mock.patch.object(models, "install_llama", return_value=Path(tmp) / "llama"), \
-189 |                 mock.patch.object(models, "install_model", return_value=Path(tmp) / "m.gguf"), \
-190 |                 mock.patch.object(models, "docker_available", return_value=False):
-191 |             code = models.run_setup(replace(Config(), gemini_api_key=key), ask=lambda _q: next(replies),
-192 |                                     secret=lambda _q: given_key, say=said.append,
-193 |                                     settings_file=settings, progress=lambda _d, _t: None)
-194 |             saved = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
-195 |         return code, "\n".join(said), saved
-196 | 
-```
-- Runs `run_setup` with the key check, the finders, the installers and Docker replaced, typed answers from a list, a
-  pasted key, and a settings file in a temporary folder; returns the exit code, everything said, and what was saved.
-
-```python
-197 |     def test_a_pasted_key_is_checked_and_saved(self):
-198 |         with tempfile.TemporaryDirectory() as tmp:
-199 |             code, said, saved = self.run_setup(tmp, given_key="good-key", llama=Path("l"),
-200 |                                                model=Path("m.gguf"))
-201 |             self.assertEqual(code, 0)
-202 |             self.assertEqual(saved["env"]["GEMINI_API_KEY"], "good-key")
-203 |             self.assertIn("Ready, online and offline", said)
-204 | 
+178 |     def test_models_list_and_use(self):
+179 |         with tempfile.TemporaryDirectory() as tmp:
+180 |             home = Path(tmp)
+181 |             (home / "models").mkdir()
+182 |             gguf = home / "models" / "Qwen3-4B-Q4_K_M.gguf"
+183 |             gguf.write_bytes(b"GGUF")
+184 |             settings = home / "settings.json"
+185 |             said: list[str] = []
+186 |             with mock.patch.object(models, "HOME", home), \
+187 |                     mock.patch.object(models, "CHECKOUT", home / "none"), \
+188 |                     mock.patch.object(models, "find_model_file", return_value=gguf), \
+189 |                     mock.patch.dict(os.environ, {"LOCALAGENT_MODEL_FILE": ""}):
+190 |                 self.assertEqual(models.run_models([], Config(), said.append, settings), 0)
+191 |                 self.assertTrue(any(line.startswith("  * ") and "Qwen3-4B" in line for line in said))
+192 |                 self.assertEqual(models.run_models(["use", "qwen3-4b"], Config(), said.append, settings), 0)
+193 |                 self.assertEqual(json.loads(settings.read_text(encoding="utf-8"))["env"]
+194 |                                  ["LOCALAGENT_MODEL_FILE"], str(gguf.resolve()))
+195 |                 self.assertEqual(models.run_models(["use", "qwen3-8b"], Config(), said.append, settings), 2)
+196 |                 self.assertEqual(models.run_models(["download", "nope"], Config(), said.append, settings), 2)
+197 |                 self.assertEqual(models.run_models(["frobnicate"], Config(), said.append, settings), 2)
+198 | 
 ```
 ```python
-205 |     def test_a_rejected_key_is_not_saved_and_missing_parts_are_offered(self):
-206 |         with tempfile.TemporaryDirectory() as tmp:
-207 |             code, said, saved = self.run_setup(tmp, given_key="bad", key_state="rejected")
-208 |             self.assertEqual(saved, {})
-209 |             self.assertIn("Google rejected that key", said)
-210 |             self.assertIn("llama.cpp installed in", said)                  # offered and fetched
-211 |             self.assertIn("model saved", said)
-212 |             self.assertEqual(code, 0)                                      # offline is ready
-213 | 
+199 |     def test_saving_a_setting_keeps_the_others(self):
+200 |         with tempfile.TemporaryDirectory() as tmp:
+201 |             path = Path(tmp) / "settings.json"
+202 |             path.write_text('{"permissions": {"allow": ["run_tests"]}}', encoding="utf-8")
+203 |             save_user_env("A", "1", path)
+204 |             save_user_env("B", "2", path)
+205 |             data = json.loads(path.read_text(encoding="utf-8"))
+206 |             self.assertEqual(data, {"permissions": {"allow": ["run_tests"]}, "env": {"A": "1", "B": "2"}})
+207 |             save_user_env("A", None, path)                    # None forgets a setting
+208 |             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["env"], {"B": "2"})
+209 |             if os.name != "nt":                               # it can hold keys: yours alone
+210 |                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+211 | 
 ```
 ```python
-214 |     def test_declining_everything_leaves_no_model(self):
-215 |         with tempfile.TemporaryDirectory() as tmp:
-216 |             code, said, _ = self.run_setup(tmp, answers=("n", "n"))
-217 |             self.assertEqual(code, 1)
-218 |             self.assertIn("No model is ready yet", said)
-219 |             self.assertIn("skipped: without a key", said)
-220 | 
-```
-- A good pasted key is saved under `env`, and with llama.cpp and a model present the result is "Ready, online and
-  offline".
-- A rejected key is not saved; the missing llama.cpp and model are offered and installed; offline alone counts as ready.
-- Skipping the key and declining both downloads ends with "No model is ready yet" and exit code 1.
-
-```python
-221 |     def test_models_list_and_use(self):
-222 |         with tempfile.TemporaryDirectory() as tmp:
-223 |             home = Path(tmp)
-224 |             (home / "models").mkdir()
-225 |             gguf = home / "models" / "Qwen3-4B-Q4_K_M.gguf"
-226 |             gguf.write_bytes(b"GGUF")
-227 |             settings = home / "settings.json"
-228 |             said: list[str] = []
-229 |             with mock.patch.object(models, "HOME", home), \
-230 |                     mock.patch.object(models, "CHECKOUT", home / "none"), \
-231 |                     mock.patch.object(models, "find_model_file", return_value=gguf), \
-232 |                     mock.patch.dict(os.environ, {"LOCALAGENT_MODEL_FILE": ""}):
-233 |                 self.assertEqual(models.run_models([], Config(), said.append, settings), 0)
-234 |                 self.assertTrue(any(line.startswith("  * ") and "Qwen3-4B" in line for line in said))
-235 |                 self.assertEqual(models.run_models(["use", "qwen3-4b"], Config(), said.append, settings), 0)
-236 |                 self.assertEqual(json.loads(settings.read_text(encoding="utf-8"))["env"]
-237 |                                  ["LOCALAGENT_MODEL_FILE"], str(gguf.resolve()))
-238 |                 self.assertEqual(models.run_models(["use", "qwen3-8b"], Config(), said.append, settings), 2)
-239 |                 self.assertEqual(models.run_models(["download", "nope"], Config(), said.append, settings), 2)
-240 |                 self.assertEqual(models.run_models(["frobnicate"], Config(), said.append, settings), 2)
-241 | 
-```
-```python
-242 |     def test_saving_a_setting_keeps_the_others(self):
-243 |         with tempfile.TemporaryDirectory() as tmp:
-244 |             path = Path(tmp) / "settings.json"
-245 |             path.write_text('{"permissions": {"allow": ["run_tests"]}}', encoding="utf-8")
-246 |             save_user_env("A", "1", path)
-247 |             save_user_env("B", "2", path)
-248 |             data = json.loads(path.read_text(encoding="utf-8"))
-249 |             self.assertEqual(data, {"permissions": {"allow": ["run_tests"]}, "env": {"A": "1", "B": "2"}})
-250 | 
-```
-```python
-251 |     def test_the_commands_are_reached_from_the_command_line(self):
-252 |         with mock.patch.object(cli, "run_models", return_value=0) as listed, \
-253 |                 mock.patch.object(cli, "run_setup", return_value=0) as guided:
-254 |             self.assertEqual(cli.main(["models", "use", "qwen3-4b"]), 0)
-255 |             self.assertEqual(listed.call_args.args[0], ["use", "qwen3-4b"])
-256 |             self.assertEqual(cli.main(["setup"]), 0)
-257 |             self.assertTrue(guided.called)
-258 |         with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
-259 |             cli.main(["--help"])
-260 |         self.assertIn("localagent setup", out.getvalue())
-261 | 
-262 | 
+212 |     def test_the_commands_are_reached_from_the_command_line(self):
+213 |         with mock.patch.object(cli, "run_models", return_value=0) as listed, \
+214 |                 mock.patch.object(cli, "run_setup", return_value=0) as guided:
+215 |             self.assertEqual(cli.main(["models", "use", "qwen3-4b"]), 0)
+216 |             self.assertEqual(listed.call_args.args[0], ["use", "qwen3-4b"])
+217 |             self.assertEqual(cli.main(["setup"]), 0)
+218 |             self.assertTrue(guided.called)
+219 |         with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+220 |             cli.main(["--help"])
+221 |         self.assertIn("localagent setup", out.getvalue())
+222 | 
+223 | 
 ```
 - The list marks the model in use with `*`; `use qwen3-4b` saves its full path; a model that is not there, an unknown
   download and an unknown action each return 2.
-- Saving two variables keeps the permission rules already in the file.
+- Saving two variables keeps the permission rules already in the file; saving `None` forgets one again; on Linux and
+  macOS the file can be read by its owner only (mode 600), because it can hold keys.
 - `localagent models use qwen3-4b` and `localagent setup` reach their functions; `--help` names the commands.
 
 ```python
-263 | if __name__ == "__main__":
-264 |     unittest.main()
+224 | if __name__ == "__main__":
+225 |     unittest.main()
+```
+- Lets you run the file directly.
+
+---
+# `tests/test_providers.py` — online services, your own servers, and the guided setup
+
+**Role:** proves everything about choosing who answers — the provider table, the client's per-service details, the
+configuration, the modes with another service, the doctor's check, the first-start offer and every path through
+`localagent setup` — with no internet, no key and no model: a small local server plays the services. 28 tests, about
+7 seconds. (The real services were checked live once by hand, see the build log.)
+
+## Helpers
+```python
+  1 | """Tests for choosing who answers: online services with your own key, model servers you run
+  2 | yourself, and the guided setup that offers them all. A small local server plays the services;
+  3 | nothing here needs the internet, a key or a model."""
+  4 | import contextlib
+  5 | import io
+  6 | import json
+  7 | import os
+  8 | import tempfile
+  9 | import threading
+ 10 | import unittest
+ 11 | from dataclasses import replace
+ 12 | from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ 13 | from pathlib import Path
+ 14 | from unittest import mock
+ 15 | 
+ 16 | from localagent import cli, providers, wizard
+ 17 | from localagent.backends import make_backend, make_hosted
+ 18 | from localagent.config import Config, online_problem
+ 19 | from localagent.doctor import run_doctor
+ 20 | from localagent.llm import LLMError
+ 21 | from localagent.localserver import LocalModel, describe_local, running_local
+ 22 | from localagent.openai_compat import OpenAICompatClient
+ 23 | from localagent.providers import (PROVIDERS, LocalServer, check_key, find_provider, key_headers,
+ 24 |                                   pick_local_model, pick_model, scan_local_servers)
+ 25 | from localagent.resilient import FallbackBackend
+ 26 | 
+ 27 | USAGE = {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}
+ 28 | 
+ 29 | 
+```
+- Imports the modules under test and the standard pieces for a local HTTP server. `USAGE` is the token count every fake
+  answer reports.
+
+```python
+ 30 | def clean_env(extra: dict | None = None) -> dict:
+ 31 |     """This process's environment without any model setting or key, plus ``extra``."""
+ 32 |     kept = {name: value for name, value in os.environ.items()
+ 33 |             if not name.startswith(("LOCALAGENT_", "OLLAMA_")) and not name.endswith("_API_KEY")}
+ 34 |     kept.update(extra or {})
+ 35 |     return kept
+ 36 | 
+ 37 | 
+```
+- This process's environment without any `LOCALAGENT_*`/`OLLAMA_*` setting or `*_API_KEY`, plus the given extras —
+  so a key on the developer's own computer (the reference laptop has `GEMINI_API_KEY` set) can never change a result.
+
+```python
+ 38 | class FakeService:
+ 39 |     """An OpenAI-compatible service on a free local port (with ``ollama``: Ollama's model list
+ 40 |     too). It records every request; ``key`` makes it check the key; ``refuse`` names request
+ 41 |     fields it answers HTTP 400 to, like a model that only allows its default temperature."""
+ 42 | 
+```
+```python
+ 43 |     def __init__(self, models=("m1", "m2"), key="", refuse=(), ollama=None):
+ 44 |         self.requests: list[tuple[str, dict, dict]] = []
+ 45 |         service = self
+ 46 | 
+ 47 |         class Handler(BaseHTTPRequestHandler):
+ 48 |             def log_message(self, *_args):
+ 49 |                 pass
+ 50 | 
+ 51 |             def send(self, status, body, kind="application/json"):
+ 52 |                 data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
+ 53 |                 self.send_response(status)
+ 54 |                 self.send_header("Content-Type", kind)
+ 55 |                 self.send_header("Content-Length", str(len(data)))
+ 56 |                 self.end_headers()
+ 57 |                 self.wfile.write(data)
+ 58 | 
+ 59 |             def heard(self, body):
+ 60 |                 headers = {name.lower(): value for name, value in self.headers.items()}
+ 61 |                 service.requests.append((self.path, headers, body))
+ 62 |                 return headers
+ 63 | 
+ 64 |             def do_GET(self):
+ 65 |                 headers = self.heard({})
+ 66 |                 if self.path == "/api/tags" and ollama is not None:
+ 67 |                     return self.send(200, {"models": [{"name": name} for name in ollama]})
+ 68 |                 if key and headers.get("authorization") != f"Bearer {key}":
+ 69 |                     return self.send(401, {"error": {"message": "invalid key"}})
+ 70 |                 if self.path == "/v1/models" and models is not None:
+ 71 |                     return self.send(200, {"data": [{"id": name} for name in models]})
+ 72 |                 self.send(404, {"error": "not found"})
+ 73 | 
+ 74 |             def do_POST(self):
+ 75 |                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+ 76 |                 self.heard(body)
+ 77 |                 for name in refuse:
+ 78 |                     if name in body:
+ 79 |                         return self.send(400, {"error": {"message": f"Unsupported parameter: '{name}'"}})
+ 80 |                 if body.get("stream"):
+ 81 |                     chunks = [{"choices": [{"delta": {"content": "hi"}}]}, {"choices": [], "usage": USAGE}]
+ 82 |                     text = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+ 83 |                     return self.send(200, text.encode("utf-8"), "text/event-stream")
+ 84 |                 self.send(200, {"choices": [{"message": {"role": "assistant", "content": "hi"}}],
+ 85 |                                 "usage": USAGE})
+ 86 | 
+ 87 |         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+ 88 |         threading.Thread(target=self.server.serve_forever, daemon=True).start()
+ 89 |         self.root = f"http://127.0.0.1:{self.server.server_address[1]}"
+ 90 |         self.base = self.root + "/v1"
+ 91 | 
+```
+```python
+ 92 |     def close(self):
+ 93 |         self.server.shutdown()
+ 94 |         self.server.server_close()
+ 95 | 
+ 96 | 
+```
+- A server on a free local port that answers like an OpenAI-compatible service: `GET /v1/models` (a list of the given
+  model names; `None` = no such list), `POST /v1/chat/completions` (the answer `hi`, streamed when asked, with token
+  counts) and, with `ollama`, Ollama's `GET /api/tags`. `key` makes it answer 401 to any other key; `refuse` makes it
+  answer 400 to requests containing those fields, naming the field like OpenAI does. Every request is recorded with its
+  headers (in lower case) and body.
+
+## The tables
+```python
+ 97 | class ProviderTests(unittest.TestCase):
+```
+```python
+ 98 |     def test_the_table_is_complete(self):
+ 99 |         names = [provider.name for provider in PROVIDERS]
+100 |         self.assertEqual(len(names), len(set(names)))
+101 |         self.assertEqual(names[0], "gemini")                       # the free one comes first
+102 |         for provider in PROVIDERS:
+103 |             self.assertTrue(provider.key_env and provider.title and provider.note)
+104 |             if provider.name != "custom":
+105 |                 self.assertTrue(provider.base.startswith("https://"), provider.name)
+106 |                 self.assertTrue(provider.key_page.startswith("https://"), provider.name)
+107 |         self.assertEqual(find_provider(" OpenAI ").name, "openai")
+108 |         self.assertIsNone(find_provider("nope"))
+109 | 
+```
+```python
+110 |     def test_keys_travel_in_the_headers_each_service_expects(self):
+111 |         anthropic = find_provider("anthropic")
+112 |         self.assertEqual(key_headers(anthropic, "k"), {"Authorization": "Bearer k", "x-api-key": "k",
+113 |                                                        "anthropic-version": "2023-06-01"})
+114 |         self.assertEqual(key_headers(find_provider("openai"), "k"), {"Authorization": "Bearer k"})
+115 |         self.assertEqual(key_headers(find_provider("custom"), ""), {})
+116 | 
+```
+- Names are unique, Gemini comes first, every entry has a key variable, title and price note, and every service but
+  `custom` an `https://` address and key page. Names are found in any case; an unknown one is `None`.
+- Anthropic gets the key twice (`Authorization` and `x-api-key`) plus `anthropic-version`; OpenAI only the bearer
+  header; no key, no headers.
+
+```python
+117 |     def test_good_models_are_suggested(self):
+118 |         openai = find_provider("openai")
+119 |         self.assertEqual(pick_model(openai, ["whisper-1", "gpt-4.1", "gpt-5-mini"]), "gpt-5-mini")
+120 |         dated = pick_model(find_provider("anthropic"), ["claude-3-haiku", "claude-sonnet-4-5-20250929"])
+121 |         self.assertEqual(dated, "claude-sonnet-4-5-20250929")
+122 |         self.assertEqual(pick_model(openai, ["text-embedding-3-small", "my-model"]), "my-model")
+123 |         self.assertEqual(pick_model(openai, []), "")
+124 |         self.assertEqual(pick_local_model(["nomic-embed-text", "llama3.1:8b", "qwen3:8b"]), "qwen3:8b")
+125 |         self.assertEqual(pick_local_model(["qwen3:8b", "qwen2.5-coder:7b"]), "qwen2.5-coder:7b")
+126 |         self.assertEqual(pick_local_model(["phi4"]), "phi4")
+127 | 
+```
+- `gpt-5-mini` beats `gpt-4.1` and `whisper-1`; Anthropic's dated `claude-sonnet-4-5-20250929` matches its suggestion;
+  with no suggestion offered the first chat model (not the embedding model) is taken; nothing offered gives `""`.
+  Locally, `qwen3:8b` beats `llama3.1:8b` and an embedding model, a `coder` model beats both, and an unknown model is
+  still taken when it is the only one.
+
+```python
+128 |     def test_keys_are_checked_by_listing_models(self):
+129 |         service = FakeService(models=("a", "b"), key="good")
+130 |         try:
+131 |             self.assertEqual(check_key(service.base, {"Authorization": "Bearer good"}), ("ok", ["a", "b"], ""))
+132 |             state, offered, detail = check_key(service.base, {"Authorization": "Bearer bad"})
+133 |             self.assertEqual((state, offered), ("rejected", []))
+134 |             self.assertIn("HTTP 401", detail)
+135 |         finally:
+136 |             service.close()
+137 |         self.assertEqual(check_key(service.base, {})[0], "unreachable")     # nothing answers now
+138 | 
+```
+- Against a fake service with a key: the right key is `ok` with the two models, a wrong one `rejected` with `HTTP 401`
+  in the detail; once the service is closed, `unreachable`.
+
+```python
+139 |     def test_local_servers_are_found_with_their_models(self):
+140 |         ollama = FakeService(models=None, ollama=["qwen3:8b"])
+141 |         studio = FakeService(models=("qwen/qwen3-8b",))
+142 |         try:
+143 |             mine = (LocalServer("Ollama", ollama.root, "ollama"),
+144 |                     LocalServer("LM Studio", studio.base, "openai"),
+145 |                     LocalServer("again", studio.base + "/", "openai"),        # tried only once
+146 |                     LocalServer("nothing", "http://127.0.0.1:9/v1", "openai"))
+147 |             with mock.patch.object(providers, "LOCAL_SERVERS", ()):
+148 |                 found = scan_local_servers(mine)
+149 |         finally:
+150 |             ollama.close()
+151 |             studio.close()
+152 |         self.assertEqual([(server.title, models) for server, models in found],
+153 |                          [("Ollama", ["qwen3:8b"]), ("LM Studio", ["qwen/qwen3-8b"])])
+154 | 
+155 | 
+```
+- A fake Ollama and a fake LM Studio are found with their models; the same address with a trailing `/` is asked only
+  once; a port where nothing listens is left out. The real default ports are switched off for the test, so a server
+  running on the developer's computer cannot change the result.
+
+## The client
+```python
+156 | class ClientTests(unittest.TestCase):
+```
+```python
+157 |     def client(self, service, provider_name, stream=True):
+158 |         config = replace(Config(), api_base=service.base, api_key="k", model="m1", stream=stream)
+159 |         return OpenAICompatClient(config, find_provider(provider_name))
+160 | 
+```
+- An `OpenAICompatClient` for the fake service with a given provider entry, streaming or not.
+
+```python
+161 |     def test_a_service_gets_its_headers_and_answer_length(self):
+162 |         service = FakeService()
+163 |         try:
+164 |             reply = self.client(service, "anthropic").chat([{"role": "user", "content": "hello"}], [])
+165 |         finally:
+166 |             service.close()
+167 |         path, headers, body = service.requests[-1]
+168 |         self.assertEqual(path, "/v1/chat/completions")
+169 |         self.assertEqual((headers["x-api-key"], headers["anthropic-version"]), ("k", "2023-06-01"))
+170 |         self.assertEqual(body["max_tokens"], 16384)
+171 |         self.assertEqual((reply.message["content"], reply.prompt_tokens), ("hi", 5))
+172 | 
+```
+```python
+173 |     def test_a_refused_field_is_left_out_from_then_on(self):
+174 |         service = FakeService(refuse=("temperature",))
+175 |         try:
+176 |             client = self.client(service, "openai", stream=False)
+177 |             self.assertEqual(client.chat([{"role": "user", "content": "a"}], []).message["content"], "hi")
+178 |             self.assertEqual(client.dropped, {"temperature"})
+179 |             client.chat([{"role": "user", "content": "b"}], [])
+180 |         finally:
+181 |             service.close()
+182 |         posts = [body for path, _headers, body in service.requests if path.endswith("/completions")]
+183 |         self.assertEqual(len(posts), 3)                  # refused, sent again, then right at once
+184 |         self.assertNotIn("temperature", posts[2])
+185 | 
+```
+```python
+186 |     def test_other_refusals_are_reported(self):
+187 |         service = FakeService(refuse=("messages",))      # not an optional field: nothing to drop
+188 |         try:
+189 |             with self.assertRaises(LLMError) as caught:
+190 |                 self.client(service, "openai").chat([{"role": "user", "content": "a"}], [])
+191 |         finally:
+192 |             service.close()
+193 |         self.assertEqual(caught.exception.status, 400)
+194 |         self.assertEqual(len(service.requests), 1)
+195 | 
+196 | 
+```
+- As Anthropic: the request carries `x-api-key`, `anthropic-version` and `max_tokens` 16 384, and the streamed answer
+  and its token count arrive.
+- A service that refuses `temperature`: the first request is refused, the client leaves the field out and succeeds,
+  remembers it (`dropped`), and the next conversation is sent without it at once — three requests in all.
+- A refusal that names no optional field is raised as an `LLMError` (HTTP 400) after one request.
+
+## Configuration
+```python
+197 | class OnlineConfigTests(unittest.TestCase):
+```
+```python
+198 |     def test_the_online_service_comes_from_the_environment(self):
+199 |         env = clean_env({"LOCALAGENT_PROVIDER": "OpenAI", "OPENAI_API_KEY": "sk",
+200 |                          "LOCALAGENT_PROVIDER_MODEL": "gpt-5-mini"})
+201 |         with mock.patch.dict(os.environ, env, clear=True):
+202 |             config = Config.from_env()
+203 |         self.assertEqual((config.provider, config.provider_key, config.provider_model, config.provider_base),
+204 |                          ("openai", "sk", "gpt-5-mini", "https://api.openai.com/v1"))
+205 |         with mock.patch.dict(os.environ, {**env, "LOCALAGENT_PROVIDER_BASE": "https://proxy/v1/"}, clear=True):
+206 |             self.assertEqual(Config.from_env().provider_base, "https://proxy/v1")
+207 |         with mock.patch.dict(os.environ, clean_env({"LOCALAGENT_PROVIDER": "nope"}), clear=True):
+208 |             with self.assertRaisesRegex(ValueError, "unknown provider 'nope'"):
+209 |                 Config.from_env()
+210 |         with mock.patch.dict(os.environ, clean_env({"LOCALAGENT_LOCAL_SERVER": "lmstudio"}), clear=True):
+211 |             with self.assertRaisesRegex(ValueError, "LOCALAGENT_LOCAL_SERVER"):
+212 |                 Config.from_env()
+213 | 
+```
+```python
+214 |     def test_what_is_missing_is_said(self):
+215 |         self.assertIn("GEMINI_API_KEY", online_problem(Config()))
+216 |         openai = replace(Config(), provider="openai", provider_base="https://api.openai.com/v1")
+217 |         self.assertIn("OPENAI_API_KEY", online_problem(openai))
+218 |         self.assertIn("no OpenAI model is chosen", online_problem(replace(openai, provider_key="k")))
+219 |         self.assertEqual(online_problem(replace(openai, provider_key="k", provider_model="m")), "")
+220 |         custom = replace(Config(), provider="custom", provider_base="", provider_model="m")
+221 |         self.assertIn("address", online_problem(custom))
+222 |         self.assertEqual(online_problem(replace(custom, provider_base="http://box/v1")), "")  # no key needed
+223 | 
+224 | 
+```
+- `LOCALAGENT_PROVIDER=OpenAI` (any case) with `OPENAI_API_KEY` and a model gives the service, its key, model and
+  address; `LOCALAGENT_PROVIDER_BASE` replaces the address (without its trailing `/`); an unknown provider and a wrong
+  `LOCALAGENT_LOCAL_SERVER` are explained errors.
+- `online_problem` names the missing Gemini key, the missing OpenAI key, the missing model, the missing custom address
+  — and says nothing for a complete setup, or for a custom address with a model but no key.
+
+## Modes, the doctor, the first start
+```python
+225 | class HostedModeTests(unittest.TestCase):
+```
+```python
+226 |     def test_another_service_answers_with_the_local_model_as_backup(self):
+227 |         config = replace(Config(), provider="openai", provider_model="gpt-5-mini",
+228 |                          provider_base="https://api.openai.com/v1", provider_key="k")
+229 |         with mock.patch.object(cli, "server_up", return_value=False), \
+230 |                 mock.patch.object(cli, "ollama_up", return_value=False), \
+231 |                 mock.patch.object(cli, "can_start", return_value=True), \
+232 |                 mock.patch.object(cli, "describe_local", return_value="a local model"):
+233 |             auto, notes = cli.choose_mode(config, "auto")
+234 |             online, _ = cli.choose_mode(config, "online")
+235 |         self.assertEqual((auto.backend, auto.fallback_backend), ("hosted", "local"))
+236 |         self.assertEqual(notes[0], "mode auto: OpenAI gpt-5-mini answers (OPENAI_API_KEY is set)")
+237 |         self.assertEqual((online.backend, online.fallback_backend), ("hosted", ""))
+238 |         with mock.patch.object(cli, "find_model_file", return_value=Path("Qwen3-8B.gguf")):
+239 |             self.assertEqual(cli.model_label(auto), "openai:gpt-5-mini > local:Qwen3-8B")
+240 |         chain = make_hosted(auto)
+241 |         self.assertIsInstance(chain, FallbackBackend)
+242 |         self.assertEqual([entry.name for entry in chain._entries], ["openai:gpt-5-mini", "local"])
+243 |         self.assertEqual(chain._entries[0].backend._provider.name, "openai")
+244 |         self.assertIsNotNone(chain._probe)
+245 |         with self.assertRaisesRegex(ValueError, "no OpenAI model is chosen"):
+246 |             make_hosted(replace(auto, provider_model=""))
+247 | 
+```
+- With OpenAI set up: `auto` gives backend `hosted` with the local backup and the note `mode auto: OpenAI gpt-5-mini
+  answers (OPENAI_API_KEY is set)`; `online` has no backup; the label reads `openai:gpt-5-mini > local:Qwen3-8B`;
+  `make_hosted` builds the chain `openai:gpt-5-mini`, `local` with the OpenAI entry and a probe; without a model it
+  refuses with the reason.
+
+```python
+248 |     def test_the_provider_flag(self):
+249 |         with mock.patch.dict(os.environ, clean_env({"OPENROUTER_API_KEY": "or"}), clear=True):
+250 |             config = cli.build_config(cli.build_parser().parse_args(
+251 |                 ["--provider", "openrouter:qwen/qwen3-coder:free"]))
+252 |             with self.assertRaisesRegex(ValueError, "unknown provider 'nope'"):
+253 |                 cli.build_config(cli.build_parser().parse_args(["--provider", "nope"]))
+254 |         self.assertEqual((config.provider, config.provider_model, config.provider_key, config.provider_base),
+255 |                          ("openrouter", "qwen/qwen3-coder:free", "or", "https://openrouter.ai/api/v1"))
+256 |         saved = clean_env({"LOCALAGENT_PROVIDER": "groq", "LOCALAGENT_PROVIDER_MODEL": "m"})
+257 |         with mock.patch.dict(os.environ, saved, clear=True):
+258 |             kept = cli.build_config(cli.build_parser().parse_args(["--provider", "groq"]))
+259 |         self.assertEqual(kept.provider_model, "m")        # the same service keeps its saved model
+260 | 
+```
+- `--provider openrouter:qwen/qwen3-coder:free` keeps the model's own colon and reads the OpenRouter key; an unknown
+  name is a `ValueError`; naming the saved service without a model keeps the saved model.
+
+```python
+261 |     def test_a_chosen_local_server_is_trusted(self):
+262 |         config = replace(Config(), local_server="ollama", model="qwen3:8b")
+263 |         with mock.patch.object(cli, "server_up") as probed:
+264 |             self.assertEqual(cli.local_kind(config), "ollama")
+265 |         probed.assert_not_called()                       # checked when it is used, not before
+266 |         with mock.patch("localagent.localserver.ollama_up", return_value=False), \
+267 |                 mock.patch("localagent.localserver.server_up", return_value=True):
+268 |             self.assertEqual(running_local(config), "")  # the server at api_base does not count
+269 |             self.assertIn("not running now", describe_local(config))
+270 |         local = make_backend(replace(config, backend="local"))
+271 |         self.assertIsInstance(local, LocalModel)
+272 |         self.assertEqual(local._kind, "ollama")
+273 | 
+```
+- A chosen Ollama is the local kind without any network check; when Ollama is down, a server at `api_base` does not
+  count and the description says Ollama is not running; offline mode builds a `LocalModel` limited to Ollama.
+
+```python
+274 |     def test_doctor_checks_another_service(self):
+275 |         service = FakeService(models=("models/m1",), key="k")        # named the way Gemini does
+276 |         config = replace(Config(), backend="hosted", mode="online", provider="openai", provider_model="m1",
+277 |                          provider_base=service.base, provider_key="k")
+278 |         try:
+279 |             healthy, lines = run_doctor(config)
+280 |             missing = run_doctor(replace(config, provider_model="m9"))
+281 |             refused = run_doctor(replace(config, provider_key="wrong"))
+282 |         finally:
+283 |             service.close()
+284 |         self.assertTrue(healthy)
+285 |         self.assertIn("ok    model m1", lines)
+286 |         self.assertTrue(any("key accepted" in line for line in lines))
+287 |         self.assertFalse(missing[0])
+288 |         self.assertTrue(any(line.startswith("FAIL  model m9 is not offered") for line in missing[1]))
+289 |         self.assertTrue(any("refused the key (HTTP 401)" in line for line in refused[1]))
+290 | 
+```
+- Against a fake service with a key that names its model the way Gemini does (`models/m1`): healthy, `key accepted`,
+  `ok    model m1`. A model it does not offer and a wrong key each fail with the reason.
+
+```python
+291 |     def test_the_first_start_offers_the_setup(self):
+292 |         args = cli.build_parser().parse_args([])
+293 |         nothing = replace(Config(), gemini_api_key="")
+294 |         terminal = mock.Mock(**{"stdin.isatty.return_value": True, "stdout.isatty.return_value": True})
+295 |         with mock.patch.object(cli, "sys", terminal), \
+296 |                 mock.patch.object(cli, "local_kind", return_value=""), \
+297 |                 mock.patch.object(cli, "run_subcommand", return_value=0) as setup, \
+298 |                 contextlib.redirect_stdout(io.StringIO()):
+299 |             self.assertTrue(cli.guided_first_run(nothing, args, read=lambda _q: ""))
+300 |             setup.assert_called_once_with("setup", [])
+301 |             self.assertFalse(cli.guided_first_run(nothing, args, read=lambda _q: "n"))
+302 |             self.assertFalse(cli.guided_first_run(replace(nothing, gemini_api_key="k"), args,
+303 |                                                   read=lambda _q: ""))      # online works already
+304 |             scripted = cli.build_parser().parse_args(["-p", "hi"])
+305 |             self.assertFalse(cli.guided_first_run(nothing, scripted, read=lambda _q: ""))
+306 |         self.assertEqual(setup.call_count, 1)
+307 | 
+308 | 
+```
+- With a "terminal" faked and nothing set up: Enter runs the setup once; `n` declines; a working online model and a
+  `-p` run are never asked.
+
+## The guided setup
+```python
+309 | class WizardTests(unittest.TestCase):
+```
+```python
+310 |     def run_setup(self, answers=(), secrets=(), env=None, found=(), check=("ok", ["m1"], ""),
+311 |                   llama=None, model=None, saved_before=None):
+312 |         """Run the guided setup with typed ``answers`` (input ends after them), pasted
+313 |         ``secrets``, local servers ``found``, and every key check answering ``check``.
+314 |         Returns (exit code, everything said, the saved "env", the check_key mock)."""
+315 |         said: list[str] = []
+316 |         replies, keys = iter(answers), iter(secrets)
+317 | 
+318 |         def ask(_question):
+319 |             try:
+320 |                 return next(replies)
+321 |             except StopIteration:
+322 |                 raise EOFError from None
+323 | 
+324 |         with tempfile.TemporaryDirectory() as tmp:
+325 |             settings = Path(tmp) / "settings.json"
+326 |             if saved_before is not None:
+327 |                 settings.write_text(json.dumps({"env": saved_before}), encoding="utf-8")
+328 |             state = {"llama": llama, "model": model}
+329 | 
+330 |             def fetch_llama(_progress):
+331 |                 state["llama"] = Path(tmp) / "llama-server"
+332 |                 return Path(tmp)
+333 | 
+334 |             def fetch_model(pick, _progress):
+335 |                 state["model"] = Path(tmp) / pick.file
+336 |                 return state["model"]
+337 | 
+338 |             with mock.patch.dict(os.environ, clean_env(env), clear=True), \
+339 |                     mock.patch.object(wizard, "check_key", return_value=check) as checked, \
+340 |                     mock.patch.object(wizard, "find_llama_server", side_effect=lambda _c: state["llama"]), \
+341 |                     mock.patch.object(wizard, "find_model_file", side_effect=lambda _c: state["model"]), \
+342 |                     mock.patch.object(wizard, "install_llama", side_effect=fetch_llama), \
+343 |                     mock.patch.object(wizard, "install_model", side_effect=fetch_model), \
+344 |                     mock.patch.object(wizard, "running_local", return_value=""), \
+345 |                     mock.patch.object(wizard, "can_start", return_value=False), \
+346 |                     mock.patch.object(wizard, "total_memory_gb", return_value=16.0), \
+347 |                     mock.patch.object(wizard, "docker_available", return_value=False):
+348 |                 code = wizard.run_setup(Config.from_env(), ask=ask, secret=lambda _q: next(keys, ""),
+349 |                                         say=said.append, settings_file=settings,
+350 |                                         progress=lambda _d, _t: None, scan=lambda _own: list(found))
+351 |             saved = json.loads(settings.read_text(encoding="utf-8")).get("env", {}) \
+352 |                 if settings.exists() else None
+353 |         return code, "\n".join(said), saved, checked
+354 | 
+```
+- Runs `run_setup` in a clean environment with typed answers (input "ends" after them), pasted keys, a fake list of
+  running servers, a fake key check, and fake downloads that make llama.cpp and the model appear; returns the exit
+  code, everything said, the saved `env` (`None` when no file was written) and the key-check mock.
+
+```python
+355 |     def test_a_free_gemini_key_is_checked_and_saved(self):
+356 |         code, said, saved, _ = self.run_setup(answers=("", "3"), secrets=("good-key",))
+357 |         self.assertEqual(code, 0)
+358 |         self.assertEqual(saved, {"GEMINI_API_KEY": "good-key", "LOCALAGENT_PROVIDER": "gemini"})
+359 |         self.assertIn("Ready (online only)", said)
+360 | 
+```
+```python
+361 |     def test_a_key_already_set_is_found_and_a_good_model_suggested(self):
+362 |         code, said, saved, checked = self.run_setup(
+363 |             answers=("", "", "3"), env={"OPENAI_API_KEY": "sk"},
+364 |             check=("ok", ["gpt-4.1", "gpt-5-mini", "whisper-1"], ""))
+365 |         self.assertEqual(code, 0)
+366 |         self.assertIn("[key found]", said)                # offered first, as the default
+367 |         self.assertEqual(saved, {"LOCALAGENT_PROVIDER": "openai", "LOCALAGENT_PROVIDER_MODEL": "gpt-5-mini"})
+368 |         self.assertEqual(checked.call_args.args, ("https://api.openai.com/v1", {"Authorization": "Bearer sk"}))
+369 | 
+```
+```python
+370 |     def test_a_refused_key_saves_nothing(self):
+371 |         code, said, saved, _ = self.run_setup(answers=("5", "3"), secrets=("bad",),
+372 |                                               check=("rejected", [], "answered HTTP 401"))
+373 |         self.assertEqual((code, saved), (1, None))
+374 |         self.assertIn("Groq refused the key", said)
+375 |         self.assertIn("No model is ready yet", said)
+376 | 
+```
+```python
+377 |     def test_any_openai_compatible_address(self):
+378 |         code, _, saved, checked = self.run_setup(
+379 |             answers=("8", "http://box.test:9000/v1/", "", "3"), check=("ok", ["embed-x", "big-model"], ""))
+380 |         self.assertEqual(code, 0)
+381 |         self.assertEqual(saved, {"LOCALAGENT_PROVIDER": "custom", "LOCALAGENT_PROVIDER_MODEL": "big-model",
+382 |                                  "LOCALAGENT_PROVIDER_BASE": "http://box.test:9000/v1"})
+383 |         self.assertEqual(checked.call_args.args, ("http://box.test:9000/v1", {}))   # no key: none sent
+384 | 
+```
+- Enter, Enter: Gemini with the pasted key — exactly the key and the provider are saved; online only.
+- With `OPENAI_API_KEY` set, OpenAI is marked `[key found]` and suggested; Enter twice saves OpenAI and `gpt-5-mini`
+  (not the key: it is already in the environment); the check went to OpenAI's address with the bearer header.
+- A refused Groq key saves nothing at all (no file is even created).
+- A custom address (its trailing `/` dropped) with no key: the check is sent without key headers, the chat model
+  `big-model` is suggested over `embed-x`, and service, model and address are saved.
+
+```python
+385 |     def test_a_running_ollama_is_offered_first(self):
+386 |         ollama = LocalServer("Ollama", Config.host, "ollama")
+387 |         code, said, saved, _ = self.run_setup(answers=("9", "", ""),
+388 |                                               found=[(ollama, ["nomic-embed-text", "llama3.1:8b", "qwen3:8b"])])
+389 |         self.assertEqual(code, 0)
+390 |         self.assertEqual(saved, {"LOCALAGENT_LOCAL_SERVER": "ollama", "LOCALAGENT_MODEL": "qwen3:8b"})
+391 |         self.assertIn("Ready (offline only)", said)
+392 | 
+```
+```python
+393 |     def test_lm_studio_keeps_its_address(self):
+394 |         studio = LocalServer("LM Studio", "http://127.0.0.1:1234/v1", "openai")
+395 |         _, _, saved, _ = self.run_setup(answers=("9", "1", ""), found=[(studio, ["qwen/qwen3-8b"])])
+396 |         self.assertEqual(saved, {"LOCALAGENT_LOCAL_SERVER": "openai", "LOCALAGENT_MODEL": "qwen/qwen3-8b",
+397 |                                  "LOCALAGENT_API_BASE": "http://127.0.0.1:1234/v1"})
+398 | 
+```
+```python
+399 |     def test_the_free_model_is_downloaded_and_used(self):
+400 |         code, said, saved, _ = self.run_setup(
+401 |             answers=("9", "1", "y", "y"),
+402 |             saved_before={"LOCALAGENT_API_BASE": "http://127.0.0.1:1234/v1", "LOCALAGENT_MODEL": "old"})
+403 |         self.assertEqual(code, 0)
+404 |         self.assertIn("llama.cpp installed in", said)
+405 |         self.assertIn("model saved", said)
+406 |         self.assertEqual(saved, {"LOCALAGENT_LOCAL_SERVER": "openai"})   # the old server is forgotten
+407 | 
+```
+```python
+408 |     def test_another_address_is_tried_as_ollama_then_openai(self):
+409 |         def models_at(server, timeout):
+410 |             return None if server.kind == "ollama" else ["remote-model"]
+411 |         with mock.patch.object(wizard, "server_models", side_effect=models_at):
+412 |             _, _, saved, _ = self.run_setup(answers=("9", "2", "192.168.1.20:8080/v1", ""))
+413 |         self.assertEqual(saved, {"LOCALAGENT_LOCAL_SERVER": "openai", "LOCALAGENT_MODEL": "remote-model",
+414 |                                  "LOCALAGENT_API_BASE": "http://192.168.1.20:8080/v1"})
+415 | 
+```
+- A running Ollama is choice 1 and Enter takes `qwen3:8b`: kind and model saved, no address (it is the default).
+- LM Studio saves kind `openai`, its model and its address.
+- With nothing found: "download a free model for me", yes, yes — llama.cpp and the model arrive, kind `openai` is
+  saved, and the server address and model of an earlier choice are forgotten.
+- Another address typed without `http://`: asked as Ollama first (nothing), then as an OpenAI-style server (one
+  model), and saved with `http://` in front.
+
+```python
+416 |     def test_ending_input_changes_nothing(self):
+417 |         code, said, saved, _ = self.run_setup()
+418 |         self.assertEqual((code, saved), (1, None))
+419 |         self.assertIn("skipped", said)
+420 | 
+```
+```python
+421 |     def test_a_wrong_number_is_asked_again(self):
+422 |         code, said, _, _ = self.run_setup(answers=("42", "9", "3"))
+423 |         self.assertIn("please type a number from 1 to 9", said)
+424 |         self.assertEqual(code, 1)
+425 | 
+```
+```python
+426 |     def test_answers_piped_in_by_a_script_work(self):
+427 |         code, said, _, _ = self.run_setup(answers=("﻿9", "3"))     # Windows PowerShell's mark
+428 |         self.assertNotIn("please type a number", said)
+429 |         self.assertEqual(code, 1)
+430 |         with mock.patch.object(wizard.sys, "stdin", io.StringIO("piped-key\n")), \
+431 |                 mock.patch.object(wizard.getpass, "getpass") as hidden, \
+432 |                 contextlib.redirect_stdout(io.StringIO()):
+433 |             self.assertEqual(wizard.read_secret("key? "), "piped-key")
+434 |         hidden.assert_not_called()                    # it would wait for the keyboard forever
+435 | 
+```
+```python
+436 |     def test_an_environment_variable_that_wins_is_pointed_out(self):
+437 |         _, said, saved, _ = self.run_setup(answers=("", "", "3"),
+438 |                                            env={"LOCALAGENT_PROVIDER": "gemini", "GROQ_API_KEY": "g"},
+439 |                                            check=("ok", ["llama-3.3-70b-versatile"], ""))
+440 |         self.assertEqual(saved["LOCALAGENT_PROVIDER"], "groq")
+441 |         self.assertIn("LOCALAGENT_PROVIDER is also set in your environment", said)
+442 | 
+443 | 
+```
+- Input that ends at once: nothing saved, exit code 1.
+- `42` is answered with "please type a number from 1 to 9" and asked again.
+- An answer starting with Windows PowerShell's byte-order mark is understood; with piped input a key is read like any
+  answer, never with `getpass` (which would wait for the keyboard).
+- A real `LOCALAGENT_PROVIDER` in the environment would beat the saved choice, and the setup says so.
+
+```python
+444 | if __name__ == "__main__":
+445 |     unittest.main()
 ```
 - Lets you run the file directly.

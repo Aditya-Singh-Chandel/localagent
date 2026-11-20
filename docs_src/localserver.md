@@ -43,7 +43,8 @@ already had (`serve.ps1` uses them), so nothing had to move.
 @@ localagent/localserver.py running_local @@
 - `server_up`: an OpenAI-style server answers `/models` (llama.cpp, LM Studio, vLLM). `ollama_up`: Ollama answers
   `/api/tags`. `running_local` asks both, the OpenAI-style address first. (`server_up` used to live in `cli.py`; the CLI
-  now imports it from here.)
+  now imports it from here.) With `local_server` set (`localagent setup` sets it), only that kind is asked — a chosen
+  Ollama is not replaced by some other server that happens to answer.
 
 ## Finding the files
 @@ localagent/localserver.py _gpu_build @@
@@ -65,7 +66,8 @@ already had (`serve.ps1` uses them), so nothing had to move.
 
 @@ localagent/localserver.py describe_local @@
 - One line for `/model`, `--doctor` and the start-up notes: the running server, or the model that would be started, or
-  "none" with the guide to follow.
+  "none" with the guide to follow. A chosen server that is down is named as such: Ollama "not running now: start
+  Ollama", or the server at your address "not answering now" (when no model could be started there instead).
 
 ## Never leaving a 5 GB model behind
 @@ localagent/localserver.py after_describe_local @@
