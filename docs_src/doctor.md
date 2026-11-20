@@ -33,7 +33,9 @@ ok    server reachable at http://127.0.0.1:8080/v1
 
 ## The checks
 @@ localagent/doctor.py _check_tools @@
-- ruff and mypy are the second and third verification layers. Missing → a *warning* (the compile check still works).
+- ruff is the second verification layer of every Python write: missing → a *warning* (the compile check still works).
+  mypy, the third, runs only with `--type-check`: missing → just a *note*. The Windows download leaves mypy out to stay
+  half the size, so its doctor would otherwise warn about something nobody asked for.
 
 @@ localagent/doctor.py _check_sandbox @@
 - With the local sandbox there is nothing to check (just a note). With Docker: is the engine running, and has the sandbox

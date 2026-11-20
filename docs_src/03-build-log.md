@@ -383,7 +383,7 @@ What was done, with your agreement at each step:
    endings); the excluded files were removed from the commit but **kept on disk**. 261 tracked files became 112.
 2. A scan of every tracked text file for API keys, tokens, private keys, e-mail addresses and personal paths: none.
 3. The commit rewritten with a descriptive message, the author changed to GitHub's private address
-   `<id>+Aditya-Singh-Chandel@users.noreply.github.com` (set for this repository only) — the commit still shows your
+   `<id>+<github-name>@users.noreply.github.com` (set for this repository only) — the commit still shows the owner's
    account; afterwards no object in the repository mentions a Gmail address.
 4. The old objects purged: `.git` went from **727 MB to 437 KB**; the largest object left is a 142 KB docs page.
 5. The repository made **private** (at your choice). GitHub's free secret scanning only covers public repositories,
@@ -465,6 +465,20 @@ are now read like any answer when no person is typing); and `--doctor` called Ge
 Gemini lists its models as `models/<name>`. The other services were tested against a local stand-in that answers the
 way they do (`tests/test_providers.py`) — no paid keys were used.
 
+**A website you host yourself (`tools/build_site.py`).** The download site is not on GitHub Pages: its address would
+show the GitHub account, and the site was to show no user name at all. Instead the build makes one folder of plain
+files for any host — the landing page, all 41 documentation pages rendered from Markdown by a small renderer written
+for exactly the syntax these docs use, and the downloads themselves. No fonts, scripts or images come from other
+sites. The build reads the repository owner's name from the git address and refuses to finish if any page shows it —
+it caught one on its first run (an example commit address in this log, now written as `<github-name>`). Every link
+and every tag is checked too. Tested like a visitor: the site was served locally and crawled — 44 pages, no broken
+link, and the three downloads byte for byte identical to `dist\` — and screenshotted on a desktop and at a true phone
+width (390 px, inside a frame: headless Edge refuses windows narrower than 504 px, which first made the phone layout
+look broken when it was not). The screenshots found three real problems: documentation pages were wider than a phone
+(a grid column grew to fit the longest code line), long headings did not wrap, and the contents box dropped the
+underscores of names like `read_secret`. The Windows zip lost mypy, which only `--type-check` uses: 35.7 MB became
+22.8 MB, which also fits hosts that refuse files over 25 MB.
+
 ## 7. Errors met and how each was fixed
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -510,11 +524,12 @@ way they do (`tests/test_providers.py`) — no paid keys were used.
 ```
 
 ## 9. Status and honest limits
-* **Now (version 0.6, 20 Nov 2026):** 216 unit tests pass (real Docker when running, a fake MCP server, fake model and
-  llama.cpp servers, local web servers, every installed language checker); ruff and mypy clean; docs audit passes (35
-  pages, every code line documented exactly once). The local model was run for real through the new automatic start,
-  in auto and offline mode (section 6g). Not yet measured on 0.6: the full eval suite. The CI workflow (Linux +
-  Windows) runs on the first push.
+* **Now (version 0.6, 21 Nov 2026):** 254 unit tests pass (real Docker when running, a fake MCP server, fake model,
+  llama.cpp and online-service servers, local web servers, every installed language checker); ruff and mypy clean;
+  docs audit passes (41 pages, every code line documented exactly once); CI is green on Linux (Python 3.10-3.14),
+  Windows and the real Docker sandbox. Checked live: the local model through the automatic start (section 6g), and
+  the setup, a hand-started llama.cpp server and the generic online-service path (section 6i). Not checked live:
+  the paid services (no keys were used) and the full eval suite on 0.6.
 * The bullets below are the history of earlier versions, kept as they were written.
 * (0.5) 136 unit tests passed; ruff and mypy clean; docs audit passed.
 * **Final eval on the real model (Qwen3-8B, 9 GPU layers, temperature 0): 4/4 tasks passed** -

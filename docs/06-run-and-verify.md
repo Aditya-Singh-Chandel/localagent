@@ -94,7 +94,14 @@ Everything about it: `01-setup-and-models.md`.
 .\.venv\Scripts\python tools\build_release.py
 ```
 makes `dist\localagent-0.6.0-py3-none-any.whl` (pip/pipx), `dist\localagent-0.6.0-windows-x64.zip` (portable, Python
-included, ~36 MB) and `dist\SHA256SUMS.txt`. What is inside and how it was tested: `build_release.md`.
+included, ~23 MB) and `dist\SHA256SUMS.txt`. What is inside and how it was tested: `build_release.md`.
+
+**The website** is built from those files and the docs:
+```
+.\.venv\Scripts\python tools\build_site.py            # site\ : one folder for any web host, checked
+.\.venv\Scripts\python tools\build_site.py --serve    # and look at it on http://127.0.0.1:8000
+```
+How to put it online (Netlify, Cloudflare Pages, your own server) without showing a GitHub account: `build_site.md`.
 
 ## 8b. Publishing the project safely (git and GitHub)
 The repository is set up so that only source, tests, docs and scripts are ever committed:

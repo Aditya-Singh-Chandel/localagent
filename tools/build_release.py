@@ -4,6 +4,7 @@ installed (it carries its own Python).
 Usage (from the project folder, with the project's .venv):
     python tools/build_release.py              # writes dist/ and prints what it made
     python tools/build_release.py --tag v0.6.0 # the same, after checking the tag is this version
+    python tools/build_release.py --with-mypy  # the Windows zip with mypy too (about twice the size)
 
 dist/localagent-<version>-py3-none-any.whl     pip install / pipx install, any system
 dist/localagent-<version>-windows-x64.zip      unzip, double-click install.cmd, done
@@ -13,6 +14,7 @@ The embeddable Python is downloaded once (checksum-pinned) into build/cache/.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import shutil
 import subprocess
@@ -73,6 +75,7 @@ OpenAI, Anthropic, OpenRouter, Groq, Mistral, DeepSeek; offline with a model on 
 
 Python {python} is included; nothing else has to be installed. Docker Desktop is optional (a sealed
 box for running code). Check the setup at any time:  localagent --doctor
+Type checks (--type-check) need mypy, which this download leaves out to stay small.
 Uninstall: double-click uninstall.cmd, then delete this folder (and %USERPROFILE%\\.localagent).
 License: MIT (LICENSE). Included third-party software: THIRD_PARTY_NOTICES.md.
 """
@@ -101,8 +104,9 @@ def add_lib_to_pth(python_dir: Path) -> None:
     pth.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def build_windows_bundle(wheel: Path, build: Path, dist: Path) -> Path:
-    """The portable folder (embedded Python + agent + ruff/mypy + launchers), zipped."""
+def build_windows_bundle(wheel: Path, build: Path, dist: Path, with_mypy: bool = False) -> Path:
+    """The portable folder (embedded Python + agent + ruff + launchers), zipped; mypy only when
+    asked for - it would double the download and is used only with --type-check."""
     name = f"localagent-{__version__}-windows-x64"
     stage = build / name
     if stage.exists():
@@ -111,9 +115,10 @@ def build_windows_bundle(wheel: Path, build: Path, dist: Path) -> Path:
                           PYTHON_SIZE)
     extract_archive(python_zip, stage / "python")
     add_lib_to_pth(stage / "python")
+    tools = ["ruff", "mypy"] if with_mypy else ["ruff"]
     run(sys.executable, "-m", "pip", "install", "-q", "--target", str(stage / "lib"),
         "--python-version", PYTHON_VERSION.rsplit(".", 1)[0], "--only-binary=:all:",
-        "--platform", "win_amd64", f"{wheel}[dev]")
+        "--platform", "win_amd64", str(wheel), *tools)
     shutil.copytree(ROOT / "docker", stage / "lib" / "docker")   # for the sandbox-image hint
     files = {"localagent.cmd": LAUNCHER, "install.cmd": INSTALL_CMD, "uninstall.cmd": UNINSTALL_CMD,
              "install.ps1": INSTALL_PS1, "uninstall.ps1": UNINSTALL_PS1,
@@ -153,8 +158,12 @@ def release_notes(version: str, changelog: str) -> str:
 
 def main(argv: list[str]) -> int:
     """Build everything into dist/ (and the release notes into build/) and list it."""
-    if argv[:1] == ["--tag"] and argv[1:2] != [f"v{__version__}"]:
-        raise SystemExit(f"tag {argv[1:2]} does not match the version in localagent/__init__.py "
+    parser = argparse.ArgumentParser(description="Build the wheel and the portable Windows zip.")
+    parser.add_argument("--tag", help="stop unless this tag (e.g. v0.6.0) names this version")
+    parser.add_argument("--with-mypy", action="store_true", help="put mypy into the Windows zip too")
+    args = parser.parse_args(argv)
+    if args.tag is not None and args.tag != f"v{__version__}":
+        raise SystemExit(f"tag {args.tag} does not match the version in localagent/__init__.py "
                          f"(v{__version__})")
     dist, build = ROOT / "dist", ROOT / "build"
     dist.mkdir(exist_ok=True)
@@ -165,7 +174,7 @@ def main(argv: list[str]) -> int:
     notes.write_text(release_notes(__version__, (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")),
                      encoding="utf-8")
     wheel = build_wheel(dist)
-    bundle = build_windows_bundle(wheel, build, dist)
+    bundle = build_windows_bundle(wheel, build, dist, args.with_mypy)
     sums = write_checksums([wheel, bundle], dist)
     for made in (wheel, bundle, sums, notes):
         print(f"{made.stat().st_size / 1e6:8.1f} MB  {made.relative_to(ROOT)}")

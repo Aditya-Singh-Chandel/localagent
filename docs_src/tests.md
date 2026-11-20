@@ -1120,3 +1120,81 @@ configuration, the modes with another service, the doctor's check, the first-sta
 
 @@ tests/test_providers.py footer @@
 - Lets you run the file directly.
+
+---
+# `tests/test_site.py` — the website builder
+
+**Role:** proves `tools/build_site.py`: the Markdown it renders, the problems its checks find, and a whole site built
+from the real `docs\` and `website\`, checked, and served over HTTP. The download files are small stand-ins, so the
+tests need no release build and no network. 13 tests, about 5 seconds.
+
+## Helpers
+@@ tests/test_site.py header @@
+- Loads `tools/build_site.py` by its path (the `tools` folder is not a package) as `site`. `VERSION` is the agent's
+  version, which the download file names contain.
+
+@@ tests/test_site.py link @@
+- The link rule of a tiny site with two pages, `cli` and `tools`: outside addresses and `#sections` stay, those two
+  pages become `.html`, anything else is not on the site.
+
+@@ tests/test_site.py Quiet @@
+@@ tests/test_site.py Quiet.log_message @@
+- The standard file server without a log line for every request.
+
+@@ tests/test_site.py fake_dist @@
+- Writes small stand-ins for the zip, the wheel and `SHA256SUMS.txt`.
+
+## Inline Markdown
+@@ tests/test_site.py InlineTests @@
+@@ tests/test_site.py InlineTests.test_code_links_and_emphasis @@
+@@ tests/test_site.py InlineTests.test_nothing_becomes_a_tag_or_a_placeholder @@
+@@ tests/test_site.py InlineTests.test_words_with_marks_stay_as_they_are @@
+@@ tests/test_site.py InlineTests.test_addresses @@
+- `` `cli.md` `` becomes a link to `cli.html`; bold, italics, and a link whose label holds code all come out right.
+- `<script>` is shown, never run; `&` is escaped; `{{name}}` becomes `&#123;&#123;name}}`, so it can never be taken for
+  an unfilled template.
+- `snake_case_name`, `17*3` and an escaped `\|` stay as written.
+- A bare address leaves the full stop outside and keeps `&` working; `<https://...>` and an address in brackets
+  become links; a link to a file that is not on the site shows only its label.
+
+## Blocks
+@@ tests/test_site.py BlockTests @@
+@@ tests/test_site.py BlockTests.render @@
+@@ tests/test_site.py BlockTests.test_headings_get_unique_ids @@
+@@ tests/test_site.py BlockTests.test_paragraphs_lists_and_quotes @@
+@@ tests/test_site.py BlockTests.test_tables_and_code @@
+- Headings get ids (code keeps its underscore: `read_secret`), a second "Same" gets `same-2`, and only headings from
+  level 2 on get a `#` link.
+- A line starting with "2026." stays in its paragraph; a list starting at 3 keeps its number and its continuation
+  lines and nested list; a blank line between items makes each item a paragraph; a quote holds a paragraph.
+- A table with one-dash rules (`:-:`, `--:`) gets centred and right-aligned columns by class, fills a short row and
+  keeps an escaped pipe inside code; a code block is escaped and named by its language; `---` is a rule.
+
+## Pages and templates
+@@ tests/test_site.py PageTests @@
+@@ tests/test_site.py PageTests.test_titles_descriptions_order_and_templates @@
+- Titles come from the first heading (a file name, a folder name, a guide's name); a long description is cut at a word
+  with "..."; an unknown page lands in "More"; a value that contains `{{b}}` is put in as it is, and a template asking
+  for an unknown value stops the build; sizes read "101 KB" and "22.8 MB".
+
+## The whole site
+@@ tests/test_site.py SiteTests @@
+@@ tests/test_site.py SiteTests.test_the_real_site_is_built_checked_and_served @@
+- Builds the real site with an address, then runs the full check with the **real** owner name read from git — so CI
+  proves on every push that no page shows it. The sitemap lists the pages and `robots.txt` names it. A local web server
+  then serves the folder: the home page names the zip and has its canonical link, a docs page marks itself in the menu,
+  the zip arrives byte for byte, and a missing page is a 404.
+
+@@ tests/test_site.py SiteTests.test_downloads_can_live_elsewhere @@
+@@ tests/test_site.py SiteTests.test_problems_are_found @@
+@@ tests/test_site.py SiteTests.test_a_folder_that_is_not_a_site_is_never_replaced @@
+@@ tests/test_site.py SiteTests.test_the_owner_is_read_from_the_remote @@
+- With `--downloads-url` no download is copied, the links point there, and the site still checks clean.
+- A broken page is caught on every count: an unfilled placeholder, a wrong closing tag, a tag never closed, a missing
+  file, a missing section, and a private name in a text file.
+- A folder holding someone's own file is never deleted by a build into it; without release files the build stops.
+- The owner comes from both forms of a GitHub address (`https://` and `git@`), with and without dashes; any other
+  address gives nothing to look for.
+
+@@ tests/test_site.py footer @@
+- Lets you run the file directly.

@@ -8,7 +8,7 @@
      0.0 MB  dist\SHA256SUMS.txt                          checksums to publish next to them
 ```
 **The Windows zip** holds everything: Python itself (the official "embeddable" Python 3.14.10 from python.org, about
-12 MB), the agent, ruff and mypy (its verification layers), launchers and two double-clickable helpers. A user
+12 MB), the agent, ruff (its lint layer), launchers and two double-clickable helpers. A user
 unzips it, double-clicks `install.cmd` (it adds the folder to their PATH and starts the guided setup right there),
 opens a new terminal and types
 `localagent setup`. Tested exactly like that (20 Nov 2026): unzipped into a fresh folder, `--version`, the bundled
@@ -23,7 +23,7 @@ localagent-0.6.0-windows-x64\
   README.txt            the four steps above
   LICENSE, THIRD_PARTY_NOTICES.md
   python\               embeddable Python 3.14.10 (its python314._pth also lists ..\lib)
-  lib\                  localagent, ruff, mypy, and docker\ (for the sandbox image)
+  lib\                  localagent, ruff, and docker\ (for the sandbox image)
 ```
 
 ## Publishing a release (`.github/workflows/release.yml`)
@@ -72,7 +72,9 @@ website: `tools/build_site.py` (see `build_site.md`) builds a complete, self-con
 @@ tools/build_release.py build_windows_bundle @@
 - Starts from an empty staging folder in `build\`. Downloads the embeddable Python (verified, cached in
   `build\cache\`) and unpacks it into `python\`.
-- `pip install --target lib` installs the wheel *with its `dev` extra* (ruff, mypy) into `lib\`. `--platform win_amd64
+- `pip install --target lib` installs the wheel and ruff into `lib\` — and mypy only with `--with-mypy`: mypy and its
+  compiled parts are about 48 MB unpacked, which doubled the download (35.7 MB with it), yet it runs only with
+  `--type-check`. Without it the zip is about half the size and fits hosts that limit a file to 25 MB. `--platform win_amd64
   --python-version 3.14 --only-binary=:all:` makes pip choose the files for the **bundled** Python, not for the one
   running the build. ruff finds its program in `lib\bin\` (it looks next to its package for exactly this kind of
   install).
@@ -92,10 +94,12 @@ website: `tools/build_site.py` (see `build_site.md`) builds a complete, self-con
 
 @@ tools/build_release.py main @@
 @@ tools/build_release.py footer @@
+- The options are read with `argparse`: `--tag` and `--with-mypy`.
 - `--tag v0.6.0` (what the release workflow passes) first checks that the tag names the version in
   `localagent/__init__.py`. A tag that does not match stops everything before a single file is built: a release can
   never carry the files of another version.
 - Then it writes the release notes to `build\RELEASE_NOTES.md`, removes this version's old files from `dist\`, builds
   the wheel, the bundle and the checksums, and lists them all with their sizes. `dist\` and `build\` are in
   `.gitignore`: release files are published, not committed.
-- The footer hands the command-line words after the script's name (`sys.argv[1:]`) to `main`.
+- The footer hands the command-line words after the script's name (`sys.argv[1:]`) to `main`, which passes
+  `--with-mypy` on to `build_windows_bundle`.

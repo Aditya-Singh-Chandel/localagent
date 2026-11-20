@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>localagent — the coding agent that keeps working offline</title>
+<meta name="description" content="A free coding agent for your terminal. It reads your project, edits files, runs the tests and verifies every change — with Gemini's free key, your own key for OpenAI, Anthropic and others, or a model on your own computer.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="localagent — the coding agent that keeps working offline">
+<meta property="og:description" content="Ask in plain words: it edits, runs the tests and verifies every change. Online with the service you choose, offline with a model on your computer.">
+<meta property="og:image" content="{{site_url}}assets/social.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0b1020">
+{{canonical}}
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="index.html"><img src="assets/logo.svg" alt="" width="30" height="30"><span>localagent</span></a>
+    <nav class="top-nav" aria-label="Main">
+      <a href="#features">Features</a>
+      <a href="#brains">Models</a>
+      <a href="#install">Install</a>
+      <a href="docs/index.html">Docs</a>
+      <a class="button small" href="#install">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Version {{version}} · free · open source (MIT)</p>
+    <h1>The coding agent that keeps working <span class="accent">offline</span>.</h1>
+    <p class="lead">Ask in plain words. localagent reads your project, edits files, runs the tests — and verifies every
+      change before it keeps it. It thinks with an online model when you are connected, and with a model on your own
+      computer when you are not.</p>
+    <div class="actions">
+      <a class="button" id="primary-download" href="{{downloads}}{{zip_name}}">Download for Windows <small>{{zip_size}} · Python included</small></a>
+      <a class="button ghost" href="#install">Linux, macOS &amp; pip</a>
+    </div>
+    <p class="fine">Windows 10/11 (64-bit): unzip, double-click <code>install.cmd</code>, answer a few questions. ·
+      <a href="{{downloads}}SHA256SUMS.txt">checksums</a></p>
+  </div>
+</section>
+
+<section class="demo" aria-label="Example session">
+  <div class="wrap">
+    <figure>
+      <img src="assets/demo.svg" width="824" height="581" alt="A real localagent session: it runs the failing tests, reads the code, makes a verified one-line fix, and the tests pass.">
+      <figcaption>A real session, only shortened: the bug found and fixed, the tests passing — 3 model calls, 6 seconds.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="features" class="section">
+  <div class="wrap">
+    <h2>Built to be trusted with your code</h2>
+    <p class="section-lead">An agent that edits files and runs programs has to be careful. These are the rules it follows.</p>
+    <div class="grid">
+      <article class="card">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h13l-3-3M20 16H7l3 3"/></svg>
+        <h3>Online and offline</h3>
+        <p>An online model answers while you are connected. When the connection drops, a model on your computer takes
+          over — by itself, in the middle of a conversation — and the online model returns when the internet does.</p>
+      </article>
+      <article class="card">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/></svg>
+        <h3>Verified before it is kept</h3>
+        <p>Every file it writes is checked by the language's own tools — Python, JavaScript, TypeScript, Go, Rust, C/C++
+          and more. Broken code is rolled back byte for byte, and the errors go back to the model to fix.</p>
+      </article>
+      <article class="card">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.6-3 8.4-7 10-4-1.6-7-5.4-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+        <h3>Safe by default</h3>
+        <p>Nothing runs without your approval unless your own rules allow it. Code can run in a sealed Docker box with no
+          network. <code>/undo</code> takes a change back and never touches your own edits.</p>
+      </article>
+      <article class="card">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12V4h8l10 10-8 7z"/><circle cx="7.5" cy="7.5" r="1.3"/></svg>
+        <h3>Free to run</h3>
+        <p>Gemini's free key, or a free model on your own computer. It is built to finish tasks in as few model calls as
+          possible: a question in one call, a small fix in about three.</p>
+      </article>
+      <article class="card">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9l3 3-3 3M12.5 15H17"/></svg>
+        <h3>Works the way you expect</h3>
+        <p>Plans you approve first, a live checklist, a diff of every edit, <code>/undo</code>, <code>/resume</code>,
+          project notes, permission rules, hooks, MCP tool servers and your own slash commands.</p>
+      </article>
+      <article class="card">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+        <h3>Private when it matters</h3>
+        <p>In offline mode nothing leaves your computer. A local model listens only on your own machine and is stopped
+          when you are done.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="brains" class="section soft">
+  <div class="wrap">
+    <h2>Bring any brain — or let it bring one</h2>
+    <p class="section-lead">The guided setup finds what you already have and offers the rest. Pick one, or one of each:
+      online for speed, offline as the backup.</p>
+    <div class="columns three">
+      <div class="panel">
+        <h3>A free online model</h3>
+        <p>Google Gemini, with a free key — no card needed. The cheapest models answer first; the strongest step in
+          only when a task struggles, so the daily quota lasts.</p>
+        <ul class="chips"><li>Gemini</li></ul>
+      </div>
+      <div class="panel">
+        <h3>Your own key</h3>
+        <p>Already pay for a service? Paste its key (it is checked before it is saved) and pick a model. A key you have
+          set for other tools is found by itself.</p>
+        <ul class="chips"><li>OpenAI</li><li>Anthropic</li><li>OpenRouter</li><li>Groq</li><li>Mistral</li><li>DeepSeek</li><li>any OpenAI-compatible address</li></ul>
+      </div>
+      <div class="panel">
+        <h3>A model on your computer</h3>
+        <p>A model server you already run is found and offered first. Nothing yet? One question, and setup downloads a
+          free model sized for your memory, checked against its publisher's checksum.</p>
+        <ul class="chips"><li>Ollama</li><li>LM Studio</li><li>llama.cpp</li><li>vLLM</li><li>Jan</li><li>Qwen3 8B · 4B · 1.7B</li></ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <ol class="steps">
+      <li><strong>You ask.</strong> “The tests fail — find the bug and fix it.” In any project folder, in plain words.</li>
+      <li><strong>It works with tools.</strong> The model can only <em>ask</em> to read, edit or run — the program
+        checks every request, verifies every write and asks you before anything runs.</li>
+      <li><strong>You stay in control.</strong> You see each diff as it happens, and <code>/undo</code> puts the last
+        change back.</li>
+    </ol>
+  </div>
+</section>
+
+<section id="modes" class="section soft">
+  <div class="wrap">
+    <h2>Online, offline, or automatic</h2>
+    <div class="table-wrap">
+      <table class="modes">
+        <thead><tr><th>Mode</th><th>Who answers</th><th>Best for</th></tr></thead>
+        <tbody>
+          <tr><td><code>auto</code> <span class="tag">default</span></td><td>the online model, and your local model the moment it cannot be reached</td><td>everyday work</td></tr>
+          <tr><td><code>online</code></td><td>the online model only</td><td>speed and the strongest answers</td></tr>
+          <tr><td><code>offline</code></td><td>your local model only</td><td>no internet, private code, no quota</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Switch at any time with <code>/model offline</code>, <code>/model online</code> or <code>/model auto</code> — the
+      conversation and your files stay.</p>
+  </div>
+</section>
+
+<section id="install" class="section">
+  <div class="wrap">
+    <h2>Install</h2>
+    <div class="columns">
+      <div class="panel">
+        <h3>Windows <span class="tag">recommended</span></h3>
+        <ol>
+          <li><a href="{{downloads}}{{zip_name}}">Download {{zip_name}}</a> ({{zip_size}}).</li>
+          <li>Unzip it somewhere permanent, for example <code>C:\Tools\localagent</code>.</li>
+          <li>Double-click <code>install.cmd</code>: it adds the folder to your PATH and starts the guided setup.</li>
+          <li>Open a new terminal in a project folder and type <code>localagent</code>.</li>
+        </ol>
+        <p class="fine">Python is included; nothing else needs installing.</p>
+      </div>
+      <div class="panel">
+        <h3>Linux, macOS, or any Python 3.10+</h3>
+        <p><a href="{{downloads}}{{wheel_name}}">Download the wheel</a> ({{wheel_size}}), then:</p>
+        <pre><code>pipx install {{wheel_name}}
+localagent setup</code></pre>
+        <p class="fine">No pipx? <code>python3 -m pip install --user {{wheel_name}}</code> works too.</p>
+      </div>
+    </div>
+    <p class="verify">Check a download before you run it — on Windows <code>certutil -hashfile {{zip_name}} SHA256</code>,
+      elsewhere <code>sha256sum -c SHA256SUMS.txt</code> — and compare with <a href="{{downloads}}SHA256SUMS.txt">SHA256SUMS.txt</a>.</p>
+  </div>
+</section>
+
+<section class="section soft">
+  <div class="wrap narrow">
+    <h2>Questions</h2>
+    <details><summary>Is it really free?</summary>
+      <p>Yes. The program is free and open source (MIT license). Gemini has a free daily quota, and a local model costs
+        nothing at all. Paid services such as OpenAI or Anthropic bill you for what you use, at their prices.</p></details>
+    <details><summary>Does my code leave my computer?</summary>
+      <p>In offline mode, never. Online, the parts of your project the agent reads are sent to the service you chose,
+        under that service's terms — on Gemini's free tier Google may use them to improve its products. Use offline
+        mode for private code.</p></details>
+    <details><summary>What do I need for a local model?</summary>
+      <p>About 6 GB of free memory for the recommended 8B model (computers with 8 GB get a smaller one). The setup
+        downloads llama.cpp and the model; the agent starts the model when needed and stops it when you leave. If you
+        already run Ollama or LM Studio, it simply uses that.</p></details>
+    <details><summary>Which languages does it work with?</summary>
+      <p>It can read and edit any text file. It checks Python, JavaScript, TypeScript, Go, Rust, C, C++, PHP, Ruby,
+        shell, PowerShell, JSON, TOML and YAML before keeping them, and runs tests with pytest, unittest, npm, go or
+        cargo.</p></details>
+    <details><summary>Is it safe to let an AI run code?</summary>
+      <p>Nothing runs without your approval unless one of your own rules allows it. With Docker, code runs in a sealed
+        container that sees only your project and has no internet. You see a diff of every edit, and can undo it.</p></details>
+    <details><summary>Can I change my mind later?</summary>
+      <p>Any time: run <code>localagent setup</code> again, or switch for one run with
+        <code>localagent --provider groq</code> or <code>localagent --offline</code>.
+        <code>localagent --doctor</code> checks everything.</p></details>
+  </div>
+</section>
+</main>
+
+<footer class="bottom">
+  <div class="wrap bottom-row">
+    <span>localagent {{version}} · MIT license</span>
+    <nav aria-label="Footer"><a href="docs/index.html">Documentation</a><a href="docs/05-user-manual.html">User manual</a><a href="docs/04-start-from-zero.html">Start from zero</a><a href="{{downloads}}SHA256SUMS.txt">Checksums</a></nav>
+  </div>
+</footer>
+</body>
+</html>

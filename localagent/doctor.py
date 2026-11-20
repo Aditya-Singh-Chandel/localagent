@@ -39,11 +39,15 @@ def _installed_models(host: str) -> list[str]:
 
 
 def _check_tools(lines: list[str]) -> None:
-    for tool in ("ruff", "mypy"):
-        if importlib.util.find_spec(tool):
-            lines.append(f"ok    {tool} installed (verification layer active)")
-        else:
-            lines.append(f"warn  {tool} missing: pip install -e '.[dev]'")
+    """ruff checks every Python write; mypy is used only with --type-check."""
+    if importlib.util.find_spec("ruff"):
+        lines.append("ok    ruff installed (verification layer active)")
+    else:
+        lines.append("warn  ruff missing: pip install ruff (the compile check still works)")
+    if importlib.util.find_spec("mypy"):
+        lines.append("ok    mypy installed (used with --type-check)")
+    else:
+        lines.append("note  mypy not installed: only --type-check needs it (pip install mypy)")
 
 
 def _check_sandbox(config: Config, lines: list[str]) -> bool:

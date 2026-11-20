@@ -5004,3 +5004,285 @@ configuration, the modes with another service, the doctor's check, the first-sta
 445 |     unittest.main()
 ```
 - Lets you run the file directly.
+
+---
+# `tests/test_site.py` — the website builder
+
+**Role:** proves `tools/build_site.py`: the Markdown it renders, the problems its checks find, and a whole site built
+from the real `docs\` and `website\`, checked, and served over HTTP. The download files are small stand-ins, so the
+tests need no release build and no network. 13 tests, about 5 seconds.
+
+## Helpers
+```python
+  1 | """Tests for the website builder (tools/build_site.py): the Markdown it renders, the checks it
+  2 | runs, and a whole site built from the real docs, checked, and served over HTTP like a visitor
+  3 | would see it. Nothing is uploaded anywhere; the download files are small stand-ins."""
+  4 | import importlib.util
+  5 | import tempfile
+  6 | import threading
+  7 | import unittest
+  8 | import urllib.error
+  9 | import urllib.request
+ 10 | from functools import partial
+ 11 | from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+ 12 | from pathlib import Path
+ 13 | from unittest import mock
+ 14 | 
+ 15 | ROOT = Path(__file__).resolve().parent.parent
+ 16 | _SPEC = importlib.util.spec_from_file_location("build_site", ROOT / "tools" / "build_site.py")
+ 17 | assert _SPEC is not None and _SPEC.loader is not None
+ 18 | site = importlib.util.module_from_spec(_SPEC)
+ 19 | _SPEC.loader.exec_module(site)
+ 20 | VERSION = site.__version__
+ 21 | 
+ 22 | 
+```
+- Loads `tools/build_site.py` by its path (the `tools` folder is not a package) as `site`. `VERSION` is the agent's
+  version, which the download file names contain.
+
+```python
+ 23 | def link(target):
+ 24 |     """The link rule of a tiny site with two pages, cli and tools."""
+ 25 |     if target.startswith(("http", "#")):
+ 26 |         return target
+ 27 |     name = target.rsplit("/", 1)[-1]
+ 28 |     return name[:-3] + ".html" if name in ("cli.md", "tools.md") else None
+ 29 | 
+ 30 | 
+```
+- The link rule of a tiny site with two pages, `cli` and `tools`: outside addresses and `#sections` stay, those two
+  pages become `.html`, anything else is not on the site.
+
+```python
+ 31 | class Quiet(SimpleHTTPRequestHandler):
+ 32 |     """The standard file server without a log line per request."""
+ 33 | 
+```
+```python
+ 34 |     def log_message(self, *_args):
+ 35 |         pass
+ 36 | 
+ 37 | 
+```
+- The standard file server without a log line for every request.
+
+```python
+ 38 | def fake_dist(folder: Path) -> Path:
+ 39 |     """Small stand-ins for the three release files."""
+ 40 |     folder.mkdir(parents=True, exist_ok=True)
+ 41 |     (folder / f"localagent-{VERSION}-windows-x64.zip").write_bytes(b"PK zip " * 300)
+ 42 |     (folder / f"localagent-{VERSION}-py3-none-any.whl").write_bytes(b"PK wheel")
+ 43 |     (folder / "SHA256SUMS.txt").write_text("abc  file\n", encoding="utf-8")
+ 44 |     return folder
+ 45 | 
+ 46 | 
+```
+- Writes small stand-ins for the zip, the wheel and `SHA256SUMS.txt`.
+
+## Inline Markdown
+```python
+ 47 | class InlineTests(unittest.TestCase):
+```
+```python
+ 48 |     def test_code_links_and_emphasis(self):
+ 49 |         out = site.inline("See `cli.md`, **bold** and *it* [the `tools` page](tools.md)", link)
+ 50 |         self.assertEqual(out, 'See <a href="cli.html"><code>cli.md</code></a>, <strong>bold</strong> and '
+ 51 |                               '<em>it</em> <a href="tools.html">the <code>tools</code> page</a>')
+ 52 | 
+```
+```python
+ 53 |     def test_nothing_becomes_a_tag_or_a_placeholder(self):
+ 54 |         out = site.inline("<script>x</script> & {{name}} `a<b`", link)
+ 55 |         self.assertEqual(out, "&lt;script&gt;x&lt;/script&gt; &amp; &#123;&#123;name}} <code>a&lt;b</code>")
+ 56 | 
+```
+```python
+ 57 |     def test_words_with_marks_stay_as_they_are(self):
+ 58 |         self.assertEqual(site.inline("snake_case_name 17*3 a \\| b", link), "snake_case_name 17*3 a | b")
+ 59 | 
+```
+```python
+ 60 |     def test_addresses(self):
+ 61 |         out = site.inline("Go to https://example.org/a?b=1&c=2. Or <https://x.org>, (https://y.org/z)", link)
+ 62 |         self.assertEqual(out, 'Go to <a href="https://example.org/a?b=1&amp;c=2">https://example.org/a?b=1&amp;c=2'
+ 63 |                               '</a>. Or <a href="https://x.org">https://x.org</a>, (<a href="https://y.org/z">'
+ 64 |                               "https://y.org/z</a>)")
+ 65 |         self.assertEqual(site.inline("[the license](../LICENSE)", link), "the license")   # not on the site
+ 66 | 
+ 67 | 
+```
+- `` `cli.md` `` becomes a link to `cli.html`; bold, italics, and a link whose label holds code all come out right.
+- `<script>` is shown, never run; `&` is escaped; `{{name}}` becomes `&#123;&#123;name}}`, so it can never be taken for
+  an unfilled template.
+- `snake_case_name`, `17*3` and an escaped `\|` stay as written.
+- A bare address leaves the full stop outside and keeps `&` working; `<https://...>` and an address in brackets
+  become links; a link to a file that is not on the site shows only its label.
+
+## Blocks
+```python
+ 68 | class BlockTests(unittest.TestCase):
+```
+```python
+ 69 |     def render(self, text):
+ 70 |         renderer = site.Renderer(link)
+ 71 |         return renderer.render(text), renderer.headings
+ 72 | 
+```
+```python
+ 73 |     def test_headings_get_unique_ids(self):
+ 74 |         out, headings = self.render("# Title\n## `read_secret`\n## Same\n## Same")
+ 75 |         self.assertIn('<h1 id="title">Title</h1>', out)
+ 76 |         self.assertIn('<h2 id="read_secret"><code>read_secret</code><a class="anchor" href="#read_secret"', out)
+ 77 |         self.assertEqual([ident for _, ident, _ in headings], ["title", "read_secret", "same", "same-2"])
+ 78 | 
+```
+```python
+ 79 |     def test_paragraphs_lists_and_quotes(self):
+ 80 |         out, _ = self.render("Text\n2026. still text\n\n3. three\n   more\n4. four\n   - nested\n\n> quoted")
+ 81 |         self.assertIn("<p>Text\n2026. still text</p>", out)
+ 82 |         self.assertIn('<ol start="3"><li>three\nmore</li><li>four\n<ul><li>nested</li></ul></li></ol>', out)
+ 83 |         self.assertIn("<blockquote><p>quoted</p></blockquote>", out)
+ 84 |         loose, _ = self.render("- one\n\n- two")
+ 85 |         self.assertEqual(loose, "<ul><li><p>one</p></li><li><p>two</p></li></ul>")
+ 86 | 
+```
+```python
+ 87 |     def test_tables_and_code(self):
+ 88 |         out, _ = self.render("| A | B | C |\n|---|:-:|--:|\n| `x\\|y` | 2 |\n\n```python\nif a < b:\n```\n---")
+ 89 |         self.assertIn('<th>A</th><th class="al-c">B</th><th class="al-r">C</th>', out)
+ 90 |         self.assertIn('<td><code>x|y</code></td><td class="al-c">2</td><td class="al-r"></td>', out)
+ 91 |         self.assertIn('<pre><code class="language-python">if a &lt; b:</code></pre>', out)
+ 92 |         self.assertTrue(out.endswith("<hr>"))
+ 93 | 
+ 94 | 
+```
+- Headings get ids (code keeps its underscore: `read_secret`), a second "Same" gets `same-2`, and only headings from
+  level 2 on get a `#` link.
+- A line starting with "2026." stays in its paragraph; a list starting at 3 keeps its number and its continuation
+  lines and nested list; a blank line between items makes each item a paragraph; a quote holds a paragraph.
+- A table with one-dash rules (`:-:`, `--:`) gets centred and right-aligned columns by class, fills a short row and
+  keeps an escaped pipe inside code; a code block is escaped and named by its language; `---` is a rule.
+
+## Pages and templates
+```python
+ 95 | class PageTests(unittest.TestCase):
+```
+```python
+ 96 |     def test_titles_descriptions_order_and_templates(self):
+ 97 |         self.assertEqual(site.page_title("# `localagent/fetch.py` — downloads you can trust\n"),
+ 98 |                          ("fetch.py", "downloads you can trust"))
+ 99 |         self.assertEqual(site.page_title("# `tests/` — proving it works")[0], "tests")
+100 |         self.assertEqual(site.page_title("# Roadmap — what comes next")[0], "Roadmap")
+101 |         long = "# T\n\n" + "word " * 60
+102 |         self.assertTrue(site.describe(long).endswith("...") and len(site.describe(long)) <= 155)
+103 |         groups = dict(site.doc_order(["cli", "00-overview", "brand-new"]))
+104 |         self.assertEqual(groups, {"Guides": ["00-overview"], "Commands and settings": ["cli"], "More": ["brand-new"]})
+105 |         self.assertEqual(site.fill("<b>{{a}}</b>", {"a": "{{b}}"}), "<b>{{b}}</b>")    # values are not re-read
+106 |         with self.assertRaises(SystemExit):
+107 |             site.fill("{{a}} {{nmae}}", {"a": "1"})
+108 |         self.assertEqual((site.size_text(101_403), site.size_text(22_788_740)), ("101 KB", "22.8 MB"))
+109 | 
+110 | 
+```
+- Titles come from the first heading (a file name, a folder name, a guide's name); a long description is cut at a word
+  with "..."; an unknown page lands in "More"; a value that contains `{{b}}` is put in as it is, and a template asking
+  for an unknown value stops the build; sizes read "101 KB" and "22.8 MB".
+
+## The whole site
+```python
+111 | class SiteTests(unittest.TestCase):
+```
+```python
+112 |     def test_the_real_site_is_built_checked_and_served(self):
+113 |         with tempfile.TemporaryDirectory() as tmp:
+114 |             dist, out = fake_dist(Path(tmp) / "dist"), Path(tmp) / "site"
+115 |             pages = site.build(out, dist, site_url="https://example.test")
+116 |             self.assertEqual(site.check_site(out, site.private_words()), [])   # never shows the owner
+117 |             self.assertIn("providers", pages)
+118 |             self.assertIn("https://example.test/docs/cli.html", (out / "sitemap.xml").read_text(encoding="utf-8"))
+119 |             self.assertIn("Sitemap: https://example.test/sitemap.xml", (out / "robots.txt").read_text(encoding="utf-8"))
+120 |             server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Quiet, directory=str(out)))
+121 |             threading.Thread(target=server.serve_forever, daemon=True).start()
+122 |             base = f"http://127.0.0.1:{server.server_address[1]}/"
+123 |             try:
+124 |                 home = urllib.request.urlopen(base, timeout=10).read().decode("utf-8")
+125 |                 doc = urllib.request.urlopen(base + "docs/wizard.html", timeout=10).read().decode("utf-8")
+126 |                 zipped = urllib.request.urlopen(base + f"downloads/localagent-{VERSION}-windows-x64.zip",
+127 |                                                 timeout=10).read()
+128 |                 with self.assertRaises(urllib.error.HTTPError) as missing:
+129 |                     urllib.request.urlopen(base + "docs/nothing.html", timeout=10)
+130 |                 missing.exception.close()
+131 |             finally:
+132 |                 server.shutdown()
+133 |                 server.server_close()
+134 |         self.assertIn(f"localagent-{VERSION}-windows-x64.zip", home)
+135 |         self.assertIn('<link rel="canonical" href="https://example.test/">', home)
+136 |         self.assertIn('aria-current="page">wizard.py</a>', doc)
+137 |         self.assertEqual(zipped, b"PK zip " * 300)
+138 | 
+```
+- Builds the real site with an address, then runs the full check with the **real** owner name read from git — so CI
+  proves on every push that no page shows it. The sitemap lists the pages and `robots.txt` names it. A local web server
+  then serves the folder: the home page names the zip and has its canonical link, a docs page marks itself in the menu,
+  the zip arrives byte for byte, and a missing page is a 404.
+
+```python
+139 |     def test_downloads_can_live_elsewhere(self):
+140 |         with tempfile.TemporaryDirectory() as tmp:
+141 |             dist, out = fake_dist(Path(tmp) / "dist"), Path(tmp) / "site"
+142 |             site.build(out, dist, downloads_url="https://files.example.test/v1")
+143 |             home = (out / "index.html").read_text(encoding="utf-8")
+144 |             self.assertFalse((out / "downloads").exists())
+145 |             self.assertIn(f'href="https://files.example.test/v1/localagent-{VERSION}-windows-x64.zip"', home)
+146 |             self.assertEqual(site.check_site(out, []), [])
+147 | 
+```
+```python
+148 |     def test_problems_are_found(self):
+149 |         with tempfile.TemporaryDirectory() as tmp:
+150 |             out = Path(tmp)
+151 |             (out / "index.html").write_text('<div><a href="gone.html">x</a><a href="#nowhere">y</a> {{x}}</p>',
+152 |                                             encoding="utf-8")
+153 |             (out / "notes.txt").write_text("made by Jane Doe", encoding="utf-8")
+154 |             problems = "\n".join(site.check_site(out, ["Jane-Doe", "Jane Doe"]))
+155 |         for expected in ("was not filled in", "</p> closes <div>", "never closed: div",
+156 |                          "missing file: gone.html", "missing section: #nowhere", "notes.txt: shows 'Jane Doe'"):
+157 |             self.assertIn(expected, problems)
+158 | 
+```
+```python
+159 |     def test_a_folder_that_is_not_a_site_is_never_replaced(self):
+160 |         with tempfile.TemporaryDirectory() as tmp:
+161 |             dist, out = fake_dist(Path(tmp) / "dist"), Path(tmp) / "mine"
+162 |             out.mkdir()
+163 |             (out / "thesis.docx").write_bytes(b"precious")
+164 |             with self.assertRaises(SystemExit):
+165 |                 site.build(out, dist)
+166 |             self.assertEqual((out / "thesis.docx").read_bytes(), b"precious")
+167 |             with self.assertRaises(SystemExit):                          # no release files yet
+168 |                 site.build(Path(tmp) / "new", Path(tmp) / "empty")
+169 | 
+```
+```python
+170 |     def test_the_owner_is_read_from_the_remote(self):
+171 |         for address in ("https://github.com/Some-Owner/repo.git", "git@github.com:Some-Owner/repo.git"):
+172 |             answer = mock.Mock(stdout=address + "\n")
+173 |             with mock.patch.object(site.subprocess, "run", return_value=answer):
+174 |                 self.assertEqual(site.private_words(), ["Some Owner", "Some-Owner"])
+175 |         with mock.patch.object(site.subprocess, "run", return_value=mock.Mock(stdout="https://example.org/x\n")):
+176 |             self.assertEqual(site.private_words(), [])
+177 | 
+178 | 
+```
+- With `--downloads-url` no download is copied, the links point there, and the site still checks clean.
+- A broken page is caught on every count: an unfilled placeholder, a wrong closing tag, a tag never closed, a missing
+  file, a missing section, and a private name in a text file.
+- A folder holding someone's own file is never deleted by a build into it; without release files the build stops.
+- The owner comes from both forms of a GitHub address (`https://` and `git@`), with and without dashes; any other
+  address gives nothing to look for.
+
+```python
+179 | if __name__ == "__main__":
+180 |     unittest.main()
+```
+- Lets you run the file directly.

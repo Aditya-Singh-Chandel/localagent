@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}} — localagent docs</title>
+<meta name="description" content="{{description}}">
+<meta name="theme-color" content="#0b1020">
+{{canonical}}
+<link rel="icon" href="../assets/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../style.css">
+<script src="../site.js" defer></script>
+</head>
+<body class="doc">
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="../index.html"><img src="../assets/logo.svg" alt="" width="30" height="30"><span>localagent</span></a>
+    <nav class="top-nav" aria-label="Main">
+      <a href="../index.html#features">Features</a>
+      <a href="../index.html#brains">Models</a>
+      <a href="index.html">Docs</a>
+      <a class="button small" href="../index.html#install">Download</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap doc-layout">
+  <details class="doc-nav" id="doc-nav">
+    <summary>All pages</summary>
+    {{nav}}
+  </details>
+  <main id="main" class="doc-main">
+    <article class="prose">
+{{content}}
+    </article>
+    <nav class="pager" aria-label="Previous and next page">{{pager}}</nav>
+  </main>
+</div>
+
+<footer class="bottom">
+  <div class="wrap bottom-row">
+    <span>localagent {{version}} · MIT license</span>
+    <nav aria-label="Footer"><a href="../index.html">Home</a><a href="index.html">Documentation</a><a href="../index.html#install">Download</a></nav>
+  </div>
+</footer>
+</body>
+</html>

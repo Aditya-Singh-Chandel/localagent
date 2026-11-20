@@ -5,7 +5,8 @@
 <p align="center">
 <b>A coding agent for your terminal that keeps working offline.</b><br>
 Ask in plain words: it reads your project, edits files, runs the tests, and verifies every change before keeping it —
-with Google Gemini when you are online, and with a model on your own computer when you are not.
+with an online model when you are connected (Gemini's free key, or your own key for OpenAI, Anthropic and others),
+and with a model on your own computer when you are not.
 </p>
 
 <p align="center">
@@ -20,16 +21,20 @@ with Google Gemini when you are online, and with a model on your own computer wh
 
 ## Highlights
 
-- **Online and offline.** Gemini answers while you are online; the moment the internet goes away, a model on your own
-  computer takes over — by itself, mid-conversation — and Gemini returns when the connection does. `/model offline`
-  keeps everything on your machine.
+- **Online and offline.** An online model answers while you are connected; the moment the internet goes away, a model
+  on your own computer takes over — by itself, mid-conversation — and the online model returns when the connection
+  does. `/model offline` keeps everything on your machine.
+- **Any brain you like.** Google Gemini with a free key; your own key for OpenAI, Anthropic, OpenRouter, Groq, Mistral,
+  DeepSeek or any OpenAI-compatible address; a model server you already run (Ollama, LM Studio, llama.cpp, vLLM, Jan);
+  or a free model that setup downloads and runs for you. `localagent setup` finds what you have and checks every key.
 - **Verified before it is kept.** Every file it writes is checked by the language's own tools (Python, JavaScript,
   TypeScript, Go, Rust, C/C++, PHP, Ruby, shell, PowerShell, JSON, TOML, YAML). Broken code is rolled back, byte for
   byte, and the errors go back to the model.
 - **Safe by default.** Nothing runs without your approval unless one of *your* rules allows it; code can run in a
   locked-down Docker sandbox; edits keep each file's own line endings; `/undo` never touches your own later edits.
 - **Free to run.** Gemini's free tier (cheap models first, strong ones only when a task struggles) and/or a local
-  model. It is built to finish a task in as few model calls as possible: a question in 1, a small fix in about 3.
+  model — paid services only if you choose them. It is built to finish a task in as few model calls as possible: a
+  question in 1, a small fix in about 3.
 - **Works the way you expect.** `/plan`, a live checklist, a diff of every edit, `/undo`, `/resume`, `-p` for
   scripts, `!command`, `# notes`, `@file`, permission rules, hooks, MCP tool servers and custom slash commands.
 - **No dependencies.** Pure Python standard library. On Windows a single zip carries everything, Python included.
@@ -39,10 +44,10 @@ with Google Gemini when you are online, and with a model on your own computer wh
 **Windows — nothing to install first**
 1. Download `localagent-<version>-windows-x64.zip` from
    [Releases](https://github.com/Aditya-Singh-Chandel/localagent/releases/latest).
-2. Unzip it somewhere permanent (for example `C:\Tools\localagent`) and double-click `install.cmd`.
-3. Open a new terminal and run `localagent setup` — it asks for a free Gemini key and offers the offline model that
-   fits your computer.
-4. In any project folder: `localagent`.
+2. Unzip it somewhere permanent (for example `C:\Tools\localagent`) and double-click `install.cmd`. It adds the
+   folder to your PATH and starts the guided setup: an online service and key (Gemini's is free), and/or a model on
+   your computer — one you already run, or a free one it downloads.
+3. Open a new terminal in any project folder and type `localagent`.
 
 **Any system with Python 3.10+**
 ```
@@ -50,7 +55,8 @@ pipx install git+https://github.com/Aditya-Singh-Chandel/localagent
 localagent setup
 ```
 
-Check everything at any time with `localagent --doctor`.
+Change your choices any time with `localagent setup`, or for one run with `--provider` (e.g. `--provider groq`) or
+`--offline`. Check everything with `localagent --doctor`.
 
 ## Using it
 
@@ -79,12 +85,15 @@ localagent -p "list the TODO comments with file:line"   # one answer, for script
 
 | Mode | Who answers | When to use it |
 |---|---|---|
-| `auto` (default) | Gemini; the local model when Gemini cannot be reached or its quota is used up | everyday work |
-| `online` | Gemini only | fastest and strongest, needs the internet |
+| `auto` (default) | the online model; the local model when it cannot be reached or its quota is used up | everyday work |
+| `online` | the online model only | fastest and strongest, needs the internet |
 | `offline` | the local model only | no internet, private code, no quota |
 
-`localagent setup` downloads llama.cpp and a model sized for your memory (Qwen3 8B, 4B or 1.7B), checked against the
-publisher's checksum and resumable. The agent starts the model when it is needed and stops it when you leave.
+| Online | Key | Offline |
+|---|---|---|
+| Google Gemini (default) | free | a server you run: Ollama, LM Studio, llama.cpp, vLLM, Jan, or one on another computer |
+| OpenAI, Anthropic, OpenRouter, Groq, Mistral, DeepSeek | yours | or a free Qwen3 model (8B, 4B or 1.7B, sized for your memory) that setup downloads |
+| any OpenAI-compatible address | yours, if it needs one | — checked against the publisher's checksum, started when needed, stopped when you leave |
 
 ## How it works
 
@@ -105,7 +114,7 @@ every line of code is documented in its page under [docs/](docs).
 | [Start from zero](docs/04-start-from-zero.md) | every step from an empty computer, no prior knowledge needed |
 | [Run and verify](docs/06-run-and-verify.md) | every way to run it, and how to check that it works |
 | [User manual](docs/05-user-manual.md) | every command, flag, setting and tool |
-| [Online and offline](docs/01-setup-and-models.md) | Gemini, the local model, the modes |
+| [Online and offline](docs/01-setup-and-models.md) | the online services, local models and modes |
 | [How it works](docs/00-overview.md) | the architecture, one request through the code, the safety rules |
 | [Roadmap](docs/02-roadmap.md) and [build log](docs/03-build-log.md) | what is built, what is next, and why every decision was made |
 
@@ -113,7 +122,7 @@ every line of code is documented in its page under [docs/](docs).
 
 ```
 python -m venv .venv && .venv\Scripts\python -m pip install -e ".[dev]"
-.venv\Scripts\python -m unittest discover -s tests -t .     # 216 tests, no model needed
+.venv\Scripts\python -m unittest discover -s tests -t .     # 254 tests, no model needed
 .venv\Scripts\python tools\build_docs.py                    # rebuild and audit the docs
 .venv\Scripts\python tools\build_release.py                 # the wheel and the portable Windows zip
 .venv\Scripts\python tools\build_site.py                    # the website, ready to upload anywhere
