@@ -1,0 +1,14 @@
+# Keep the image small and free of secrets/large files.
+.venv
+models
+bin
+workspace
+sessions
+.localagent
+docs
+docs_src
+tests
+**/__pycache__
+.mypy_cache
+.ruff_cache
+.git

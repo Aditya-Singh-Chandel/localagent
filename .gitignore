@@ -1,0 +1,47 @@
+# What git must never record. (A comment must sit on its own line: text after a pattern is
+# part of the pattern.) Explained in docs/06-run-and-verify.md, "Publishing the project safely".
+
+# ---- big downloads: get them again with docs/01-setup-and-models.md ----
+models/
+*.gguf
+bin/
+
+# ---- private data ----
+# conversation logs and "always allow" answers (one folder per project)
+.localagent/
+# workspaces of the HTTP service (python -m localagent.server --root sessions)
+sessions/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+id_ecdsa*
+credentials.json
+
+# ---- generated files ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+*.tmp
+
+# ---- editors and operating systems ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

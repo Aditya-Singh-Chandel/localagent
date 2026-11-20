@@ -1,0 +1,22 @@
+# Runs the agent as an HTTP service (see docs/server.md).
+# Start:  docker compose up -d --build      Stop:  docker compose down
+# Needs:  GEMINI_API_KEY and LOCALAGENT_TOKEN set in your environment (or a .env file).
+services:
+  agent-server:
+    build: .
+    image: localagent:latest
+    entrypoint: ["python", "-m", "localagent.server", "--host", "0.0.0.0", "--port", "8000",
+                 "--root", "/app/sessions", "--auto-approve"]
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY first}
+      LOCALAGENT_TOKEN: ${LOCALAGENT_TOKEN:?set LOCALAGENT_TOKEN to a long random secret}
+    command: []
+    ports:
+      - "127.0.0.1:8000:8000"        # reachable only from this computer
+    volumes:
+      - ./sessions:/app/sessions      # each session's files stay on your disk
+      - ${USERPROFILE:-~}/.localagent:/home/agent/.localagent  # quota counters shared with the host
+    mem_limit: 2g
+    cpus: 2
+    restart: unless-stopped
+

@@ -1,0 +1,29 @@
+[project]
+name = "localagent"
+version = "0.5.0"
+description = "A verifying coding agent (Gemini or local models) with a Docker sandbox"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []                      # standard library only
+
+[project.optional-dependencies]
+dev = ["ruff", "mypy"]                 # extra verification layers
+
+[project.scripts]
+localagent = "localagent.cli:main"     # installs a `localagent` command
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["localagent*"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E9", "F", "B"]
+
+[tool.mypy]
+ignore_missing_imports = true

@@ -1,0 +1,9 @@
+# Line endings: text files are stored with LF in the repository and checked out in each
+# computer's own style, so a Windows and a Linux contributor never fight over them.
+* text=auto
+# Shell scripts must keep LF even on Windows, or sh cannot run them.
+*.sh text eol=lf
+.githooks/* text eol=lf
+# Batch files need CRLF to run correctly.
+*.cmd text eol=crlf
+*.bat text eol=crlf
