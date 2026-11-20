@@ -41,9 +41,10 @@ GPU_WORDS = ("cuda", "vulkan", "metal", "rocm", "hip", "sycl")
 THIS_COMPUTER = frozenset({"127.0.0.1", "localhost", "::1"})
 NO_LOCAL_MODEL = (
     "No local model is available. Offline work needs llama.cpp's llama-server program and a "
-    ".gguf model file: put them in ~/.localagent/llama/ and ~/.localagent/models/ (or set "
-    "LOCALAGENT_LLAMA_SERVER and LOCALAGENT_MODEL_FILE), or start Ollama or LM Studio. "
-    "Step by step: docs/01-setup-and-models.md")
+    ".gguf model file. The quickest way: run  localagent setup  (it downloads both, verified). "
+    "By hand: put them in ~/.localagent/llama/ and ~/.localagent/models/ (or set "
+    "LOCALAGENT_LLAMA_SERVER and LOCALAGENT_MODEL_FILE), or start Ollama or LM Studio.")
+SETUP_HINT = "run: localagent setup"
 
 
 def _get(url: str, timeout: float = 1.0) -> int:
@@ -127,7 +128,7 @@ def describe_local(config: Config) -> str:
     model = find_model_file(config)
     if can_start(config) and model is not None:
         return f"{model.name} with llama.cpp (started when needed)"
-    return "none - see docs/01-setup-and-models.md"
+    return f"none set up ({SETUP_HINT})"
 
 
 _JOBS: list[int] = []                                   # Windows job handles kept open (see below)

@@ -99,7 +99,7 @@ From now on **always** start Python as `.\.venv\Scripts\python` so this private 
 ```
 .\.venv\Scripts\python -m unittest discover -s tests -t .
 ```
-After about 30–40 seconds it should end with `Ran 200 tests ... OK`. These are automatic tests that use a *pretend* AI
+After about 30–40 seconds it should end with `Ran 216 tests ... OK`. These are automatic tests that use a *pretend* AI
 model, so they work without any setup. If you see `OK`, the program itself is healthy.
 
 ---
@@ -126,6 +126,9 @@ for you and slows down or switches model automatically (see `ratelimit.md`, `res
 **Privacy:** on the free plan Google may use what you send to improve its products. Do not send private or secret code.
 
 ### Step 7 (Option B, optional). A model on your own computer
+**The easy way:** once Step 11 is done, run `localagent setup` (or `localagent models download qwen3-8b`): it picks a
+model that fits your computer, downloads it and llama.cpp, checks both, and puts them in the right place. The manual
+way follows.
 This needs ~5 GB of downloads and 16 GB of RAM. It is the backup when Gemini is unavailable — no internet, or the daily
 quota used up — and the only brain in offline mode (nothing then leaves your computer).
 1. Download the model file **Qwen3-8B-Q4_K_M.gguf** from <https://huggingface.co/Qwen/Qwen3-8B-GGUF> (Files tab) into

@@ -39,7 +39,9 @@ used). `offline`: only the local model, started for you if needed. Switch at any
 - `PLAN_FOLLOW_UP` is sent after you accept a plan from `/plan`; it starts with "Implement", so the agent's "you changed
   nothing" safeguards apply to it.
 - `BUILT_IN` lists the built-in commands (custom commands cannot replace them). `MODE_TEXT` describes each mode for
-  `/model`. `NOTHING_HELP` is shown when no model at all is available: both ways to set one up.
+  `/model`. `NOTHING_HELP` is shown when no model at all is available: `localagent setup` first, then both ways to set
+  one up by hand. `SUBCOMMANDS` are the product commands handled before the flags; `COMMANDS_EPILOG` lists them at the
+  end of `--help`.
 - `MENTION` finds `@path` words — only at the start or after a space, so `me@example.com` is not one. `COLORS` and
   `FAILURE_WORDS` decide which progress lines are coloured.
 
@@ -241,11 +243,19 @@ used). `offline`: only the local model, started for you if needed. Switch at any
   conversation is logged like any other, so `localagent -c` can continue it in the chat.
 - Exit code 0 when answered and the changed files pass the check, 1 when the model failed or a changed file is broken.
 
+## The product commands
+@@ localagent/cli.py run_subcommand @@
+- `localagent setup` and `localagent models ...` (see `models.md`). They are recognised **before** the flag parser,
+  so they need no flags of their own and the chat's flags stay as they were. The settings files' `env` is applied
+  and the configuration read; a problem there is one `setup problem` line. Ctrl+C during a download says how to
+  continue it (exit code 130, the usual code for "stopped by Ctrl+C").
+
 ## `main` — start-up
 @@ localagent/cli.py main @@
 - First makes the output robust: with output piped or redirected on Windows, Python writes in the old Windows code
   page, where one emoji or arrow in a model's answer or a diff would crash the program with `UnicodeEncodeError`;
   `errors="replace"` shows such a character as `?` instead (found in review).
+- A first word `setup` or `models` goes to `run_subcommand`.
 - Loads the settings files of the workspace and applies their `env` **before** building the config (so a settings file
   can set the mode, the model file or anything else). A broken `settings.json`, or a typo in a variable such as
   `LOCALAGENT_NUM_CTX=8k`, is printed as one `setup problem` line with exit code 2 instead of a traceback.

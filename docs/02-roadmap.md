@@ -121,30 +121,44 @@ Every item started from a problem that was **reproduced first** (see `03-build-l
 | **Context** | Overview summarises crowded folders (this project: from 32 DLL names to the real code) | `context.py`, `sandbox.py` |
 | **Publishing** | `.gitignore`, `.gitattributes`, commit guard (size, keys, `.env`, private author e-mail), version in one place | `tools/check_commit.py`, `.githooks/`, `pyproject.toml` |
 
-Result: 200 tests (59 new), lint and types clean, docs audit 35 pages, live checks with Gemini and the real
+Result: 201 tests (60 new); with Phase 11: 216, lint and types clean, docs audit 35 pages, live checks with Gemini and the real
 `llama-server.exe`.
+
+### Phase 11 ✅ Ready to download (product readiness)
+| Built | Where |
+|---|---|
+| MIT license, third-party notices, package metadata (the wheel carries them) | `LICENSE`, `THIRD_PARTY_NOTICES.md`, `pyproject.toml` |
+| `localagent setup`: the guided first run (key checked then saved, model sized to memory, Docker) | `models.py` |
+| `localagent models`: list / download / use, with a catalog of three Qwen3 sizes | `models.py` |
+| Verified, resumable downloads; safe unpacking of zip and tar.gz | `fetch.py` |
+| Portable Windows zip with Python 3.14 included, `install.cmd`/`uninstall.cmd`; wheel; `SHA256SUMS.txt` | `tools/build_release.py` |
+| `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`; CI on Python 3.10-3.14 and Windows | repository root, `ci.yml` |
+| Advice points to `localagent setup` instead of a docs file a download does not contain | `localserver.py`, `doctor.py`, `cli.py` |
+
+Tested as a user would: the zip unzipped into an empty folder ran `--version`, found its own ruff and mypy, rejected
+broken code, reported correctly in `--doctor`, and answered a real request in 1 call.
 
 ---
 ## Everything that could come next (the full backlog)
 Collected from a review of the whole project. ⭐ = high value for its cost. Ordered within each area by priority.
 
 ### A. Before the download website (product readiness)
-1. ⭐ **A license** (MIT, Apache-2.0, or "all rights reserved") — without one nobody may legally use a published copy.
-   Your decision; nothing is chosen yet.
-2. ⭐ **One-step installer for Windows** that needs no Python knowledge: an installer (or zip) carrying an embedded
-   Python and the package, adding `localagent` to the PATH; `install.ps1` today assumes a source checkout.
-3. ⭐ **First-run setup** (`localagent setup`): asks for the Gemini key (stored in the user settings file), checks Docker,
-   offers to download llama.cpp and a model sized for the computer's memory.
-4. ⭐ **Model manager**: `localagent models` to list, download (from Hugging Face, checksum-verified) and choose local
-   models; hardware detection that recommends a size.
+1. ✅ A license — MIT (Phase 11).
+2. ✅ One-step Windows download — the portable zip with Python included (Phase 11). Still open: a signed `.exe`
+   installer (Windows SmartScreen warns about unsigned downloads; a code-signing certificate costs money).
+3. ✅ First-run setup — `localagent setup` (Phase 11).
+4. ✅ Model manager — `localagent models` (Phase 11).
 5. Publish to PyPI so `pipx install localagent` works on every system; then winget / Scoop packages.
 6. `install.sh` for macOS and Linux; test there (CI already runs Linux).
-7. Releases on GitHub with notes (the build log already has the material), `CHANGELOG.md`, `SECURITY.md`,
-   `CONTRIBUTING.md`.
-8. ⭐ **CI on Windows** too (the product's main platform; several 0.6 fixes are Windows-specific) — added to `ci.yml`.
+7. Releases on GitHub with notes (✅ `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md` exist; the release itself
+   needs a public place for the files — the repository is private, see B).
+8. ✅ CI on Windows too, and Python 3.14 (Phases 10-11).
 9. Update check (`localagent --version` says when a newer release exists), uninstaller.
 
-### B. The website (after A)
+### B. The website (next)
+0. ⭐ **Where the files live** — a decision: the repository is private, so its releases cannot be downloaded by the
+   public. Options: make it public; a second, public repository only for releases and the site; or a host such as
+   Cloudflare Pages / Netlify for the site plus a storage bucket for the zip.
 1. Landing page: what it does, a short demo (recorded terminal), online vs offline, privacy.
 2. Download page per operating system, with checksums and install steps.
 3. Documentation site generated from `docs/` (it is already Markdown); search.

@@ -68,6 +68,15 @@ A mistyped command (`/hepl`) is answered locally — it never costs a model call
 shows calls, tokens, time and **which model answered**.
 
 ---
+### Commands outside the chat
+| Command | Does | File |
+|---|---|---|
+| `localagent setup` | guided first run: checks or asks for the Gemini key (saved in your user settings), suggests a model for this computer's memory and offers to download it and llama.cpp, checks Docker | `models.py` |
+| `localagent models` | installed models (`*` = in use), the catalog, the suggestion for this computer | `models.py` |
+| `localagent models download NAME` | fetch `qwen3-8b`, `qwen3-4b` or `qwen3-1.7b` — resumable, checksum-verified | `models.py`, `fetch.py` |
+| `localagent models use NAME-or-FILE` | the model offline mode uses from now on | `models.py` |
+
+---
 ## 4. Start-up flags
 | Flag | Meaning |
 |---|---|
@@ -238,6 +247,7 @@ tokens; a plain question takes 1 call. Each call carries a fixed
 | `%USERPROFILE%\.localagent\bin\localagent.cmd` | the launcher written by `install.ps1` |
 | `%USERPROFILE%\.localagent\llama\`, `models\` | where an installed copy keeps llama.cpp and the local model (`01-setup-and-models.md`) |
 | `%USERPROFILE%\.localagent\llama-server.log` | what the local model server printed (read it when it will not start) |
+| `*.part` next to a model or in `llama\downloads\` | an unfinished download; the same command continues it (delete to start over) |
 
 ## 13. Ways to run it
 Chat, one request with `-p`, inside Docker, as an HTTP service, online or offline, and the evals — each with exact,

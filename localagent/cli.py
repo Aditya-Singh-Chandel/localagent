@@ -26,9 +26,10 @@ from .checkpoint import Checkpoints
 from .config import MODES, Config, gemini_history, overlay
 from .doctor import run_doctor
 from .llm import ChatBackend, LLMError
-from .localserver import (NO_LOCAL_MODEL, LocalModel, can_start, describe_local, find_model_file,
-                          ollama_up, server_up, stop_local_servers)
+from .localserver import (NO_LOCAL_MODEL, SETUP_HINT, LocalModel, can_start, describe_local,
+                          find_model_file, ollama_up, server_up, stop_local_servers)
 from .meter import Meter
+from .models import run_models, run_setup
 from .runners import sandbox_image_ready
 from .sandbox import SandboxError, looks_binary, resolve_inside, run_command, shell_argv
 from .session import SessionLog, latest_session, list_sessions, load_session, session_title
@@ -65,9 +66,14 @@ BUILT_IN = {"/quit", "/exit", "/help", "/reset", "/clear", "/undo", "/stats", "/
             "/plan", "/model", "/online", "/offline", "/auto", "/resume", "/permissions", "/doctor"}
 MODE_TEXT = {"auto": "Gemini, and the local model when Gemini cannot be reached",
              "online": "Gemini only", "offline": "the local model only"}
-NOTHING_HELP = ("No model is available yet. Set one up (or both):\n"
+NOTHING_HELP = ("No model is available yet. The guided setup takes a minute:  localagent setup\n"
+                "Or by hand (one or both):\n"
                 f"  online:  {GEMINI_KEY_HELP}\n  offline: {NO_LOCAL_MODEL}\n"
                 "Then run  localagent --doctor  to check.")
+SUBCOMMANDS = ("setup", "models")                # product commands, handled before the flags
+COMMANDS_EPILOG = ("commands:\n  localagent setup            guided first run: Gemini key, offline "
+                   "model, Docker\n  localagent models           local models: list, download NAME, "
+                   "use NAME-or-FILE")
 MENTION = re.compile(r"(?<!\S)@([^\s@]+)")       # "@src/app.py", not an e-mail address
 COLORS = {"+": "32", "-": "31", "@": "36"}       # diff lines: green, red, cyan
 FAILURE_WORDS = ("REJECTED", "ERROR", "DENIED", "NOT RUN", "NOT FINISHED")
@@ -134,7 +140,9 @@ def model_flags(args: argparse.Namespace) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     """Define the command-line flags."""
-    parser = argparse.ArgumentParser(prog="localagent", description="A verifying coding agent")
+    parser = argparse.ArgumentParser(prog="localagent", description="A verifying coding agent",
+                                     epilog=COMMANDS_EPILOG,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=f"localagent {__version__}")
     parser.add_argument("-p", "--print", dest="prompt", metavar="REQUEST",
                         help="answer one request, print the answer and exit ('-' reads it from input)")
@@ -191,7 +199,7 @@ def choose_mode(config: Config, mode: str, ctx_chosen: bool = False) -> tuple[Co
         notes = [f"mode {mode}: Gemini answers (GEMINI_API_KEY is set)"]
         if mode == "auto":
             notes.append("offline backup: " + (describe_local(config) if backup else
-                                               "none set up (see docs/01-setup-and-models.md)"))
+                                               f"none set up ({SETUP_HINT})"))
         return config, notes
     if not local_kind(config):
         raise ValueError(NO_LOCAL_MODEL if mode == "offline" else NOTHING_HELP)
@@ -576,12 +584,30 @@ def run_once(config: Config, backend: ChatBackend, toolbox: ToolBox, meter: Mete
     return 1 if problems else 0
 
 
+def run_subcommand(name: str, words: list[str]) -> int:
+    """`localagent setup` and `localagent models ...` (see models.py); no chat is started."""
+    try:
+        apply_env(load_settings(Path(os.environ.get("LOCALAGENT_WORKSPACE", "."))))
+        config = Config.from_env()
+    except ValueError as exc:
+        print(f"setup problem: {exc}")
+        return 2
+    try:
+        return run_setup(config) if name == "setup" else run_models(words, config)
+    except KeyboardInterrupt:                      # a download stopped: it continues next time
+        print("\n[stopped - run the same command again to continue]")
+        return 130
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point: choose the setup, build the components, then chat (or answer once)."""
     for stream in (sys.stdout, sys.stderr):        # a character the console cannot show must
         if hasattr(stream, "reconfigure"):         # not crash the program (piped output on Windows)
             stream.reconfigure(errors="replace")
-    args = build_parser().parse_args(argv)
+    words = sys.argv[1:] if argv is None else argv
+    if words and words[0] in SUBCOMMANDS:
+        return run_subcommand(words[0], words[1:])
+    args = build_parser().parse_args(words)
     workspace = args.workspace or Path(os.environ.get("LOCALAGENT_WORKSPACE", "."))
     try:
         settings = load_settings(workspace)        # its "env" applies before the config is read

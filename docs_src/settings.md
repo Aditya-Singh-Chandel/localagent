@@ -78,6 +78,11 @@ Patterns use shell-style wildcards: `*` any text, `?` one character. Matching is
   accumulate, so a project cannot remove a user's deny rule). MCP server definitions, hooks and `env` variables are
   merged by name (the project wins on a clash); a project's `test_command` replaces the user's.
 
+@@ localagent/settings.py save_user_env @@
+- Writes one `env` variable into your **user** settings file and keeps everything else in it (rules, servers, other
+  variables). `localagent setup` saves the Gemini key this way and `localagent models use` the chosen model, so both
+  apply to every project from the next start on.
+
 @@ localagent/settings.py apply_env @@
 - Sets each `env` variable that is not set yet and returns the names it set. The CLI calls it **before** reading the
   configuration, so `"env": {"LOCALAGENT_MODE": "offline"}` works exactly like `setx LOCALAGENT_MODE offline` — but a

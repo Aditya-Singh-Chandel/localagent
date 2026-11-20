@@ -17,12 +17,11 @@ from pathlib import Path
 from . import __version__
 from .backends import model_limits
 from .config import Config
-from .localserver import can_start, describe_local, find_llama_server, find_model_file, running_local
+from .localserver import (SETUP_HINT, can_start, describe_local, find_llama_server, find_model_file,
+                          running_local)
 from .ratelimit import RateLimiter
 from .runners import docker_available
 from .sandbox import run_command
-
-SETUP_DOC = "docs/01-setup-and-models.md"
 
 
 def _get_json(url: str, headers: dict[str, str] | None = None) -> dict:
@@ -102,9 +101,9 @@ def _check_local(config: Config, lines: list[str]) -> bool:
                      f"started with {program} when needed")
         return True
     if program is None:
-        lines.append(f"FAIL  llama.cpp's llama-server was not found (see {SETUP_DOC})")
+        lines.append(f"FAIL  llama.cpp's llama-server was not found ({SETUP_HINT})")
     if model is None:
-        lines.append(f"FAIL  no .gguf model file was found (see {SETUP_DOC})")
+        lines.append(f"FAIL  no .gguf model file was found ({SETUP_HINT})")
     if program is not None and model is not None:
         lines.append(f"FAIL  nothing answers at {config.api_base}, and a server can only be "
                      "started for an address on this computer")
@@ -144,7 +143,7 @@ def _check_gemini(config: Config, lines: list[str]) -> bool:
                          "without it):")
             lines += ["      " + line[6:] for line in found]
     elif config.mode == "auto":
-        lines.append(f"note  no offline backup: without internet nothing answers (see {SETUP_DOC})")
+        lines.append(f"note  no offline backup: without internet nothing answers ({SETUP_HINT})")
     return healthy
 
 

@@ -10,7 +10,11 @@ Python, the `.venv`, Docker and your Gemini key are in place. (Commands checked 
 2. Open **PowerShell**.
 
 ## 2. Install the `localagent` command (once)
-From the agent's folder:
+**From the download (no Python needed):** unzip `localagent-0.6.0-windows-x64.zip` somewhere permanent (e.g.
+`C:\Tools\localagent`), double-click `install.cmd`, open a new terminal, then run `localagent setup` (Gemini key,
+offline model, Docker — a minute plus downloads).
+
+**From this source folder:**
 ```
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
@@ -85,7 +89,14 @@ The session's files are in `sessions\<id>\`. Details: `server.md`; as a Docker s
 needs about 6 GB of free memory. In the default auto mode it takes over by itself when the internet goes away.
 Everything about it: `01-setup-and-models.md`.
 
-## 8. Publishing the project safely (git and GitHub)
+## 8. Building the download files
+```
+.\.venv\Scripts\python tools\build_release.py
+```
+makes `dist\localagent-0.6.0-py3-none-any.whl` (pip/pipx), `dist\localagent-0.6.0-windows-x64.zip` (portable, Python
+included, ~36 MB) and `dist\SHA256SUMS.txt`. What is inside and how it was tested: `build_release.md`.
+
+## 8b. Publishing the project safely (git and GitHub)
 The repository is set up so that only source, tests, docs and scripts are ever committed:
 - `.gitignore` keeps out the model (`models/`, `*.gguf`), the llama.cpp programs (`bin/`), conversation logs
   (`.localagent/`), virtual environments, caches, build output, `.env` files and keys.
@@ -106,14 +117,14 @@ The repository is set up so that only source, tests, docs and scripts are ever c
 ## 9. Check that everything works (cheapest first)
 | # | Command (from the agent's folder) | Costs | Good result |
 |---|---|---|---|
-| 1 | `.\.venv\Scripts\python -m localagent --doctor` | nothing | lines start with `ok` or `note`, no `FAIL` |
-| 2 | `.\.venv\Scripts\python -m unittest discover -s tests -t .` | nothing, ~40 s | `Ran 201 tests ... OK` |
+| 1 | `.\.venv\Scripts\python -m localagent --doctor` (or `localagent setup`) | nothing | lines start with `ok` or `note`, no `FAIL` |
+| 2 | `.\.venv\Scripts\python -m unittest discover -s tests -t .` | nothing, ~40 s | `Ran 216 tests ... OK` |
 | 3 | `.\.venv\Scripts\python tools/build_docs.py` | nothing | `docs OK: 35 pages, every code line documented exactly once` |
 | 4 | `localagent -p "In one sentence: what does @calc.py compute?"` in a folder with a `calc.py` | 1 Gemini call | a one-sentence answer, `[1 model calls ...]` |
 | 5 | `localagent` in an empty folder, ask it to build something small with tests | ~5-12 Gemini calls | it finishes and the tests it ran pass |
 | 6 | `.\.venv\Scripts\python -m evals.run_evals --sandbox docker` | ~50-65 calls, ~7 min | `15/15 tasks passed` |
 
-Results on 20 Nov 2026 (version 0.6): doctor clean (local model found), 201 tests OK, docs OK, check 4 answered
+Results on 20 Nov 2026 (version 0.6): doctor clean (local model found), 216 tests OK, docs OK, check 4 answered
 correctly in 1 call (5.6 s).
 
 ## 10. If something does not work

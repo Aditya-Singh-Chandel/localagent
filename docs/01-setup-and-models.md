@@ -39,12 +39,19 @@ these places, first match wins:
 | program | `LOCALAGENT_LLAMA_SERVER` | `%USERPROFILE%\.localagent\llama\` (any sub-folder) | `bin\llamacpp-vulkan\`, `bin\llamacpp\` |
 | model | `LOCALAGENT_MODEL_FILE` | `%USERPROFILE%\.localagent\models\*.gguf` | `models\*.gguf` |
 
+**The easy way:** `localagent setup` (or `localagent models download <name>`) downloads both, checks them against
+their publishers' checksums, and puts them where the agent looks. A broken download continues where it stopped.
+```
+localagent models                     what is installed, what fits this computer
+localagent models download qwen3-4b   qwen3-8b (4.7 GB, 16 GB memory) / qwen3-4b (2.3 GB, 8 GB) / qwen3-1.7b (1.7 GB)
+localagent models use qwen3-4b        offline mode uses this one from now on
+```
 On this computer both are already in the project's `bin\` and `models\` folders, so nothing needs doing.
 `localagent --doctor` shows what it found:
 ```
 ok    local model: Qwen3-8B-Q4_K_M.gguf (5027 MB), started with ...\bin\llamacpp-vulkan\llama-server.exe when needed
 ```
-**On another computer:** download a llama.cpp release for Windows from github.com/ggml-org/llama.cpp/releases (the
+**By hand, on another computer:** download a llama.cpp release for Windows from github.com/ggml-org/llama.cpp/releases (the
 `win-vulkan-x64` zip works with most graphics cards; `win-cpu-x64` without one), unzip it into
 `%USERPROFILE%\.localagent\llama\`, and put a model into `%USERPROFILE%\.localagent\models\`. A good size for 16 GB of
 memory is an 8B model at 4-bit, for example `Qwen3-8B-Q4_K_M.gguf` from huggingface.co/Qwen/Qwen3-8B-GGUF (5 GB). These

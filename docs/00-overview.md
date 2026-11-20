@@ -53,7 +53,8 @@ Four ideas carry the whole design:
  └────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 Lower layers never import higher ones, so each piece can be tested alone (that is what `tests/` does with a *fake*
-model). `doctor.py` checks the setup; `__main__.py` makes `python -m localagent` work.
+model). `doctor.py` checks the setup; `models.py` (with `fetch.py`) is `localagent setup` and `localagent models`;
+`__main__.py` makes `python -m localagent` work.
 
 ---
 ## 3. One request, followed through the code
@@ -191,6 +192,7 @@ Read the pages in this order; each builds only on the ones before it.
 | 17 | `server.md`, `package.md` | `server.py`, `__init__/__main__` | the HTTP service; `python -m` |
 | 18 | `evals.md`, `tests.md` | `evals/*`, `tests/*` | how quality is measured and proven |
 | 19 | `build_docs.md`, `check_commit.md`, `docker.md` | `tools/`, Docker files | how these docs, the commit guard and the images work |
+| 20 | `fetch.md`, `models.md`, `build_release.md` | `fetch.py`, `models.py`, `tools/build_release.py` | the product side: verified downloads, `setup`/`models`, the download files |
 
 The other pages: `04-start-from-zero` (setup from nothing), `06-run-and-verify` (every way to run it, checks, and
 publishing to GitHub safely), `05-user-manual` (every command, flag and setting), `01-setup-and-models` (online and
@@ -215,7 +217,7 @@ offline), `02-roadmap` (what is built, what could come next), `03-build-log` (ev
   (`AGENT.md` ~ `CLAUDE.md`, `#` notes), supports MCP tool servers, hooks, custom slash commands, `/undo`, `-c` and
   `/resume`, `/model`, `-p`, `!` commands and `@` file mentions. The difference is the model: free Gemini lite models
   are weaker than Claude on big, subtle changes.
-- **"How do you know it all works?"** 200 automated tests with a fake model (no internet needed), 15 real coding tasks
+- **"How do you know it all works?"** 216 automated tests with a fake model (no internet needed), 15 real coding tasks
   scored automatically (15/15 on 5 Nov 2026), and docs that are machine-checked against the code.
 
 ## 9. Honest limits

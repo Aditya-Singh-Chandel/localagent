@@ -396,6 +396,26 @@ A restore point of the pre-session source was also zipped to `..\localagent-v0.5
 **Numbers.** Tests 141 → **201** (60 new, all passing; 2 skipped as before), ruff and mypy clean, docs audit **35 pages**
 (two new: `localserver.md`, `check_commit.md`).
 
+## 6h. Phase 11: a license, the real offline model, and a product to download
+**Your requests:** "make the necessary license", the memory is now free for checking the local model, refine the
+product as much as possible, and work on the next step (making it downloadable, before the website).
+
+| # | Done | Why / evidence |
+|---|---|---|
+| 1 | MIT license, third-party notices (llama.cpp, LLVM OpenMP, Qwen3, ruff, mypy, embeddable Python), license metadata | the most common license for developer tools; a bundle that carries other people's programs must carry their licenses |
+| 2 | The real offline model tested end to end, and a byte-order-mark bug fixed | see section 6g: 9 calls → 4 calls, no false failure |
+| 3 | `localagent setup` and `localagent models` | a downloaded product must set itself up; checked live on this PC (everything found, nothing downloaded) |
+| 4 | `fetch.py`: verified, resumable downloads | Hugging Face's CDN answered a Range request with 206 and the right bytes (GGUF signature), so a 5 GB download continues after a break |
+| 5 | The download sources checked before writing the code | python.org offers embeddable zips only for bug-fix releases (3.12.16 and 3.13.18 were source-only), so the bundle uses 3.14.10; llama.cpp's "latest" release was a placeholder (`v1.0.0`) and the builds are `b12588` and similar; Linux and macOS builds are `.tar.gz`, Windows ones `.zip` |
+| 6 | The portable Windows zip and the wheel (`tools/build_release.py`) | 35.7 MB, built in 88 s; unzipped into an empty folder it worked without any installed Python: `--version`, ruff 0.17.6 and mypy 2.4.1 found, broken code rejected (F821), `--doctor` correct, a real request answered in 1 call / 9.7 s |
+| 7 | Messages say "run: localagent setup" instead of naming a docs file | the bundle's doctor told users to "see docs/01-setup-and-models.md", which a download does not contain |
+| 8 | `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`; CI adds Python 3.14 | the files people look for on a project page; 3.14 is the bundled Python |
+
+**Git.** The 0.6 work and the license are two commits on the branch `release-0.6` (the guard passed both); this phase
+adds a third. Pushing to GitHub was **blocked by Claude Code's safety system** (sending data to an outside service needs
+your own action), so the push is yours: `git push -u origin main` and `git push -u origin release-0.6`, then open a pull
+request (or `gh pr create`).
+
 ## 7. Errors met and how each was fixed
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -432,7 +452,7 @@ A restore point of the pre-session source was also zipped to `..\localagent-v0.5
 ```
 
 ## 9. Status and honest limits
-* **Now (version 0.6, 20 Nov 2026):** 201 unit tests pass (real Docker when running, a fake MCP server, fake model and
+* **Now (version 0.6, 20 Nov 2026):** 216 unit tests pass (real Docker when running, a fake MCP server, fake model and
   llama.cpp servers, local web servers, every installed language checker); ruff and mypy clean; docs audit passes (35
   pages, every code line documented exactly once). The local model was run for real through the new automatic start,
   in auto and offline mode (section 6g). Not yet measured on 0.6: the full eval suite. The CI workflow (Linux +

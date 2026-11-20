@@ -13,12 +13,17 @@ byte; code runs in a locked-down **Docker sandbox**; nothing runs without your a
 **Cost:** free — Gemini's free tier (cheap "lite" models first, strong models only when a task struggles, client-side
 rate limiting, retries) and/or the local model.
 
+**Just want to use it on Windows?** Download `localagent-<version>-windows-x64.zip`, unzip it somewhere permanent,
+double-click `install.cmd`, open a new terminal and type `localagent setup` — Python is included, nothing else is
+needed (build the zip with `tools/build_release.py`).
 **New here? Read `docs/04-start-from-zero.md`** — every step from an empty computer, no prior knowledge needed.
 **Already set up? `docs/06-run-and-verify.md`** — how to run it every way, and how to check that everything works.
 
 | Task | Command (PowerShell) |
 |---|---|
-| Install the `localagent` command (once) | `powershell -ExecutionPolicy Bypass -File .\install.ps1`, then open a new terminal |
+| Guided first run: Gemini key, offline model, Docker | `localagent setup` |
+| Local models: list / download / choose | `localagent models`, `localagent models download qwen3-4b`, `localagent models use qwen3-4b` |
+| Install the `localagent` command from this source folder (once) | `powershell -ExecutionPolicy Bypass -File .\install.ps1`, then open a new terminal |
 | Work on a project | `cd C:\my\project` then `localagent` (setup is chosen automatically) |
 | Only the local model / only Gemini | `localagent --offline` / `localagent --online` (or `/model` in the chat) |
 | One answer, for scripts | `localagent -p "what does this project do?"` |
@@ -31,6 +36,7 @@ rate limiting, retries) and/or the local model.
 | Measure quality | `.venv\Scripts\python -m evals.run_evals --sandbox docker [--offline] [--trace]` |
 | Rebuild + audit docs | `.venv\Scripts\python tools/build_docs.py` |
 | Turn on the commit guard (once per clone) | `git config core.hooksPath .githooks` |
+| Build the download files (wheel + portable Windows zip) | `.venv\Scripts\python tools/build_release.py` |
 
 In the chat: `/plan <request>`, `/model [online|offline|auto]`, `/init` (write `AGENT.md` notes), `/compact`, `/undo`,
 `/clear`, `/resume`, `/stats`, `/permissions`, `/doctor`, `/help`, `/quit`; `!command` runs a command yourself,
@@ -45,5 +51,8 @@ Docs reading order: `04-start-from-zero` (set up) → `00-overview` (how it all 
 `05-user-manual` (reference) → the file pages in the order listed in `00-overview` → `03-build-log` → `02-roadmap`.
 `docs/` is generated from `docs_src/` — edit `docs_src/`, never `docs/`.
 
-Not included in the repository (see `.gitignore`): the local model (`models/`) and llama.cpp (`bin/`) — download them as
-described in `docs/01-setup-and-models.md`.
+Not included in the repository (see `.gitignore`): the local model (`models/`) and llama.cpp (`bin/`) — `localagent
+setup` downloads both (checksum-verified), or see `docs/01-setup-and-models.md`.
+
+License: MIT (`LICENSE`); third-party parts: `THIRD_PARTY_NOTICES.md`. Changes: `CHANGELOG.md`. Security: `SECURITY.md`.
+Contributing: `CONTRIBUTING.md`.

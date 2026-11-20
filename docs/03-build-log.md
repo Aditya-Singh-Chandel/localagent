@@ -361,9 +361,17 @@ call and back when Google is reachable again.
   attached file again); after one sentence in prompt rule 1, **1 call / 2 004 tokens / 5.6 s**.
 - The real `llama-server.exe` started with the agent's exact command line and a missing model: it rejected no argument
   and failed only on the model; the agent reported the log's last lines and left nothing running. The full
-  start → wait → answer → stop cycle runs in the tests against a fake server. **Not done:** loading the real 5 GB model —
-  only 4.2 GB of memory was free, and last time Windows stopped the server under memory pressure. To try it:
-  close the browser, then `localagent --offline -p "say hi"`.
+  start → wait → answer → stop cycle also runs in the tests against a fake server.
+- **The real offline model, end to end** (once 6.8 GB of memory was free):
+  - *Auto mode, internet "gone"* (Gemini's address made unresolvable, quota counts sent to a scratch file): Gemini was
+    marked unreachable at once (no retry waits), llama.cpp started with Qwen3-8B by itself, loaded in about 20 s, and
+    answered correctly ("adds 1 ... incorrect") — 2 calls, 50 s of model time, 70 s in all; then it was stopped.
+  - *`localagent --offline -p ...` from the command line:* it answered correctly, but **revealed a bug**: the test file had
+    been written by PowerShell with a byte-order mark, which the Python check took for a syntax error (see `verify.md`,
+    `_compile_stage`). The local model then spent 9 calls and 191 s on a file that was fine. Fixed (compile the raw
+    bytes; let an edit that names the mark remove it; ruff's "cannot read this encoding" is not a code error) and run
+    again: **4 calls, 88 s, correct answer, no false failure, the file untouched.** Both times no `llama-server` process
+    was left afterwards.
 - Bad variable → `setup problem: LOCALAGENT_NUM_CTX must be a whole number such as 8192 (it is '8k')`, exit code 2.
 
 **Putting it on GitHub safely.** Your first commit (made before this session's changes) could not have been pushed and
@@ -385,8 +393,28 @@ What was done, with your agreement at each step:
 7. CI: the workflow's token limited to reading, and a Windows job added.
 A restore point of the pre-session source was also zipped to `..\localagent-v0.5.0-backup.zip`.
 
-**Numbers.** Tests 141 → **200** (59 new, all passing; 2 skipped as before), ruff and mypy clean, docs audit **35 pages**
+**Numbers.** Tests 141 → **201** (60 new, all passing; 2 skipped as before), ruff and mypy clean, docs audit **35 pages**
 (two new: `localserver.md`, `check_commit.md`).
+
+## 6h. Phase 11: a license, the real offline model, and a product to download
+**Your requests:** "make the necessary license", the memory is now free for checking the local model, refine the
+product as much as possible, and work on the next step (making it downloadable, before the website).
+
+| # | Done | Why / evidence |
+|---|---|---|
+| 1 | MIT license, third-party notices (llama.cpp, LLVM OpenMP, Qwen3, ruff, mypy, embeddable Python), license metadata | the most common license for developer tools; a bundle that carries other people's programs must carry their licenses |
+| 2 | The real offline model tested end to end, and a byte-order-mark bug fixed | see section 6g: 9 calls → 4 calls, no false failure |
+| 3 | `localagent setup` and `localagent models` | a downloaded product must set itself up; checked live on this PC (everything found, nothing downloaded) |
+| 4 | `fetch.py`: verified, resumable downloads | Hugging Face's CDN answered a Range request with 206 and the right bytes (GGUF signature), so a 5 GB download continues after a break |
+| 5 | The download sources checked before writing the code | python.org offers embeddable zips only for bug-fix releases (3.12.16 and 3.13.18 were source-only), so the bundle uses 3.14.10; llama.cpp's "latest" release was a placeholder (`v1.0.0`) and the builds are `b12588` and similar; Linux and macOS builds are `.tar.gz`, Windows ones `.zip` |
+| 6 | The portable Windows zip and the wheel (`tools/build_release.py`) | 35.7 MB, built in 88 s; unzipped into an empty folder it worked without any installed Python: `--version`, ruff 0.17.6 and mypy 2.4.1 found, broken code rejected (F821), `--doctor` correct, a real request answered in 1 call / 9.7 s |
+| 7 | Messages say "run: localagent setup" instead of naming a docs file | the bundle's doctor told users to "see docs/01-setup-and-models.md", which a download does not contain |
+| 8 | `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`; CI adds Python 3.14 | the files people look for on a project page; 3.14 is the bundled Python |
+
+**Git.** The 0.6 work and the license are two commits on the branch `release-0.6` (the guard passed both); this phase
+adds a third. Pushing to GitHub was **blocked by Claude Code's safety system** (sending data to an outside service needs
+your own action), so the push is yours: `git push -u origin main` and `git push -u origin release-0.6`, then open a pull
+request (or `gh pr create`).
 
 ## 7. Errors met and how each was fixed
 | Symptom | Cause | Fix |
@@ -424,11 +452,11 @@ A restore point of the pre-session source was also zipped to `..\localagent-v0.5
 ```
 
 ## 9. Status and honest limits
-* **Now (version 0.6, 20 Nov 2026):** 200 unit tests pass (real Docker when running, a fake MCP server, fake model and
+* **Now (version 0.6, 20 Nov 2026):** 216 unit tests pass (real Docker when running, a fake MCP server, fake model and
   llama.cpp servers, local web servers, every installed language checker); ruff and mypy clean; docs audit passes (35
-  pages, every code line documented exactly once). Not yet measured on 0.6: the full eval suite, and the local model
-  loading for real through the new automatic start (see section 6g). The CI workflow (Linux + Windows) runs on the
-  first push.
+  pages, every code line documented exactly once). The local model was run for real through the new automatic start,
+  in auto and offline mode (section 6g). Not yet measured on 0.6: the full eval suite. The CI workflow (Linux +
+  Windows) runs on the first push.
 * The bullets below are the history of earlier versions, kept as they were written.
 * (0.5) 136 unit tests passed; ruff and mypy clean; docs audit passed.
 * **Final eval on the real model (Qwen3-8B, 9 GPU layers, temperature 0): 4/4 tasks passed** -

@@ -903,3 +903,80 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 
 @@ tests/test_phase10.py footer @@
 - Lets you run the file directly.
+
+---
+# `tests/test_product.py` — the product commands
+
+**Role:** proves the parts that turn the agent into a downloadable product — verified and resumable downloads, safe
+unpacking, the model catalog, `localagent setup` and `localagent models` — without downloading anything real: a small
+local file server plays GitHub and Hugging Face. 15 tests, about 3 seconds.
+
+## Helpers
+@@ tests/test_product.py header @@
+- `DATA` is 1 MB of test content and `DATA_SHA` its checksum, standing in for a model file.
+
+@@ tests/test_product.py RangeServer @@
+@@ tests/test_product.py RangeServer.__init__ @@
+@@ tests/test_product.py RangeServer.close @@
+- A file server on a free local port that records every `Range` header it receives, answers a Range request with `206`
+  and the rest of the file (or, with `honour_range=False`, ignores it and sends everything with `200`), and with
+  `cut_at` sends only that many bytes — a connection that "breaks".
+
+## Downloads
+@@ tests/test_product.py DownloadTests @@
+@@ tests/test_product.py DownloadTests.serve @@
+@@ tests/test_product.py DownloadTests.test_a_download_is_verified_and_kept_once @@
+@@ tests/test_product.py DownloadTests.test_a_wrong_checksum_deletes_the_file @@
+- A download arrives complete and reports progress up to its size; asking again sends no second request.
+- With a wrong checksum the download fails and nothing is left in the folder — not even the part.
+
+@@ tests/test_product.py DownloadTests.test_an_interrupted_download_continues_where_it_stopped @@
+@@ tests/test_product.py DownloadTests.test_a_server_ignoring_the_range_sends_everything_again @@
+- A connection that breaks after 300 000 bytes leaves exactly that part and the advice to run again; the next run asks
+  only for `bytes=300000-` and ends with the complete, verified file.
+- A server that ignores the Range request still ends with the right file (the part is started again).
+
+@@ tests/test_product.py DownloadTests.test_archives_are_unpacked_only_inside_their_folder @@
+- A normal zip unpacks; a zip with `../outside.txt` is refused and writes nothing outside; a `.tar.gz` (the Linux and
+  macOS format) unpacks too.
+
+## Catalog and llama.cpp
+@@ tests/test_product.py CatalogTests @@
+@@ tests/test_product.py CatalogTests.test_the_suggestion_follows_the_memory @@
+- 15.7 GB → the 8B model, 7.8 GB → 4B, 4 GB → 1.7B, unknown → 4B; names match in any case; this computer's memory is
+  read; every catalog entry has a 64-character checksum and a matching address.
+
+@@ tests/test_product.py CatalogTests.test_the_newest_llama_build_with_a_checksum_is_chosen @@
+- Three releases: a placeholder like llama.cpp's real `v1.0.0`, one whose file has no checksum, and one with both
+  builds. The Vulkan build of the third is chosen; a platform no release has gives a clear error.
+
+@@ tests/test_product.py CatalogTests.test_llama_cpp_is_installed_from_a_verified_archive @@
+@@ tests/test_product.py CatalogTests.test_a_model_goes_to_the_models_folder @@
+- A zip holding a fake `llama-server.exe`, served locally, is downloaded, verified, unpacked into its build folder,
+  and its archive deleted.
+- A model download is asked for with the catalog's address, checksum and size, into the models folder.
+
+## Setup and the models command
+@@ tests/test_product.py SetupTests @@
+@@ tests/test_product.py SetupTests.run_setup @@
+- Runs `run_setup` with the key check, the finders, the installers and Docker replaced, typed answers from a list, a
+  pasted key, and a settings file in a temporary folder; returns the exit code, everything said, and what was saved.
+
+@@ tests/test_product.py SetupTests.test_a_pasted_key_is_checked_and_saved @@
+@@ tests/test_product.py SetupTests.test_a_rejected_key_is_not_saved_and_missing_parts_are_offered @@
+@@ tests/test_product.py SetupTests.test_declining_everything_leaves_no_model @@
+- A good pasted key is saved under `env`, and with llama.cpp and a model present the result is "Ready, online and
+  offline".
+- A rejected key is not saved; the missing llama.cpp and model are offered and installed; offline alone counts as ready.
+- Skipping the key and declining both downloads ends with "No model is ready yet" and exit code 1.
+
+@@ tests/test_product.py SetupTests.test_models_list_and_use @@
+@@ tests/test_product.py SetupTests.test_saving_a_setting_keeps_the_others @@
+@@ tests/test_product.py SetupTests.test_the_commands_are_reached_from_the_command_line @@
+- The list marks the model in use with `*`; `use qwen3-4b` saves its full path; a model that is not there, an unknown
+  download and an unknown action each return 2.
+- Saving two variables keeps the permission rules already in the file.
+- `localagent models use qwen3-4b` and `localagent setup` reach their functions; `--help` names the commands.
+
+@@ tests/test_product.py footer @@
+- Lets you run the file directly.
