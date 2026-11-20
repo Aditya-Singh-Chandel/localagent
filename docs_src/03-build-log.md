@@ -262,12 +262,12 @@ typo command — 0 calls; a TypeScript file — 2 calls, checked by the new Type
 **Found in a final review** (both now fixed and documented): a helper agent could reset or trigger the main agent's
 escalation (it shares the model chain); and with piped output on Windows, one emoji in an answer could crash the CLI.
 
-**The API-key decision.** You offered nine more keys from nine more Google projects, created to multiply the free
-quota. I checked Google's rules instead of assuming: limits are enforced per project; the Google APIs Terms say you
-"will not attempt to circumvent" the documented limits; and Google has restricted projects (quota set to 0) for
-"operating multiple projects as a single project". Using them could get the *main* project cut off and break the
-agent, so they were not used or stored; the project was finished on the original key (lite models) plus the free local
-model. For more quota the supported route is billing on one project — the new `paid` preset uses it.
+**One key, by design.** Spreading requests over several free keys from several Google projects would multiply
+the quota, so the question came up and Google's rules were checked: limits are enforced per project; the Google APIs
+Terms say users "will not attempt to circumvent" the documented limits; and Google has restricted projects (quota set
+to 0) for "operating multiple projects as a single project". The agent therefore works with exactly one key and makes
+the most of it (lite models first, the local model as backup). For more quota the supported route is billing on one
+project — the `paid` preset uses it.
 
 **Final verification (5 Nov 2026).** Everything was run the way a new user would, and every problem found was fixed,
 tested and documented:

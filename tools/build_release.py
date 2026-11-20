@@ -2,11 +2,13 @@
 installed (it carries its own Python).
 
 Usage (from the project folder, with the project's .venv):
-    python tools/build_release.py          # writes dist/ and prints what it made
+    python tools/build_release.py              # writes dist/ and prints what it made
+    python tools/build_release.py --tag v0.6.0 # the same, after checking the tag is this version
 
 dist/localagent-<version>-py3-none-any.whl     pip install / pipx install, any system
 dist/localagent-<version>-windows-x64.zip      unzip, double-click install.cmd, done
 dist/SHA256SUMS.txt                            checksums to publish next to the downloads
+build/RELEASE_NOTES.md                         this version's CHANGELOG section, for the release page
 The embeddable Python is downloaded once (checksum-pinned) into build/cache/.
 """
 from __future__ import annotations
@@ -130,19 +132,39 @@ def write_checksums(files: list[Path], dist: Path) -> Path:
     return target
 
 
-def main() -> int:
-    """Build everything into dist/ and list it."""
+def release_notes(version: str, changelog: str) -> str:
+    """This version's section of CHANGELOG.md (from its "## <version>" heading to the next one),
+    with a line on checking the downloads."""
+    lines = changelog.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.startswith(f"## {version} ")), None)
+    if start is None:
+        raise SystemExit(f"CHANGELOG.md has no section '## {version} ...': write it before releasing")
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    body = "\n".join(lines[start + 1:end]).strip()
+    return (f"{body}\n\nCheck a download against `SHA256SUMS.txt`: on Windows "
+            "`certutil -hashfile <file> SHA256`, elsewhere `sha256sum -c SHA256SUMS.txt`.\n")
+
+
+def main(argv: list[str]) -> int:
+    """Build everything into dist/ (and the release notes into build/) and list it."""
+    if argv[:1] == ["--tag"] and argv[1:2] != [f"v{__version__}"]:
+        raise SystemExit(f"tag {argv[1:2]} does not match the version in localagent/__init__.py "
+                         f"(v{__version__})")
     dist, build = ROOT / "dist", ROOT / "build"
     dist.mkdir(exist_ok=True)
+    build.mkdir(exist_ok=True)
     for old in dist.glob(f"localagent-{__version__}*"):
         old.unlink()
+    notes = build / "RELEASE_NOTES.md"
+    notes.write_text(release_notes(__version__, (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")),
+                     encoding="utf-8")
     wheel = build_wheel(dist)
     bundle = build_windows_bundle(wheel, build, dist)
     sums = write_checksums([wheel, bundle], dist)
-    for made in (wheel, bundle, sums):
+    for made in (wheel, bundle, sums, notes):
         print(f"{made.stat().st_size / 1e6:8.1f} MB  {made.relative_to(ROOT)}")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

@@ -1180,7 +1180,7 @@ last test uses real Docker, and it is skipped automatically when Docker is not r
  14 | from localagent.openai_compat import OpenAICompatClient, to_openai
  15 | from localagent.ratelimit import QuotaExhausted, RateLimiter, pacific_day
  16 | from localagent.resilient import Entry, FallbackBackend, estimate_tokens, server_delay
- 17 | from localagent.runners import DockerRunner, LocalRunner, docker_available
+ 17 | from localagent.runners import DockerRunner, LocalRunner, docker_available, sandbox_image_ready
  18 | from localagent.tools import ToolBox
  19 | 
  20 | from .test_phase2 import FakeServer
@@ -1597,39 +1597,43 @@ last test uses real Docker, and it is skipped automatically when Docker is not r
 307 | 
 ```
 ```python
-308 |     @unittest.skipUnless(docker_available(), "Docker is not running")
-309 |     def test_docker_sandbox_isolation_end_to_end(self):
-310 |         with tempfile.TemporaryDirectory() as tmp:
-311 |             config = replace(Config(), workspace=Path(tmp), sandbox="docker", command_timeout=20)
-312 |             box = ToolBox(config, lambda _a: True)
-313 |             try:
-314 |                 box.call("write_file", {"path": "hi.py", "content": "print('from container')\n"})
-315 |                 self.assertIn("from container", box.call("run_python", {"path": "hi.py"}))
-316 |                 who = box.call("run_shell", {"command": "whoami && pwd"})
-317 |                 self.assertIn("agent", who)                  # not root
-318 |                 self.assertIn("/work", who)
-319 |                 net = box.call("run_shell", {"command": "python -c \"import urllib.request as u; "
-320 |                                              "u.urlopen('http://example.com', timeout=5)\""})
-321 |                 self.assertNotIn("exit code 0", net)         # no network by default
-322 |                 slow = replace(config, command_timeout=2)
-323 |                 runner = DockerRunner(slow, Path(tmp))
-324 |                 code, _ = runner.run("shell", ["sleep 30"])
-325 |                 runner.stop()
-326 |                 self.assertEqual(code, 124)                  # timeout kills the command
-327 |             finally:
-328 |                 box.close()
-329 | 
-330 | 
+308 |     @unittest.skipUnless(docker_available() and sandbox_image_ready("localagent-sandbox:latest"),
+309 |                          "Docker is not running, or the sandbox image is not built")
+310 |     def test_docker_sandbox_isolation_end_to_end(self):
+311 |         with tempfile.TemporaryDirectory() as tmp:
+312 |             config = replace(Config(), workspace=Path(tmp), sandbox="docker", command_timeout=20)
+313 |             box = ToolBox(config, lambda _a: True)
+314 |             try:
+315 |                 box.call("write_file", {"path": "hi.py", "content": "print('from container')\n"})
+316 |                 self.assertIn("from container", box.call("run_python", {"path": "hi.py"}))
+317 |                 who = box.call("run_shell", {"command": "id -u && pwd"}).splitlines()
+318 |                 self.assertEqual(who[0], "exit code 0")
+319 |                 self.assertNotEqual(who[1], "0")             # not root
+320 |                 self.assertEqual(who[2], "/work")
+321 |                 net = box.call("run_shell", {"command": "python -c \"import urllib.request as u; "
+322 |                                              "u.urlopen('http://example.com', timeout=5)\""})
+323 |                 self.assertNotIn("exit code 0", net)         # no network by default
+324 |                 slow = replace(config, command_timeout=2)
+325 |                 runner = DockerRunner(slow, Path(tmp))
+326 |                 code, _ = runner.run("shell", ["sleep 30"])
+327 |                 runner.stop()
+328 |                 self.assertEqual(code, 124)                  # timeout kills the command
+329 |             finally:
+330 |                 box.close()
+331 | 
+332 | 
 ```
 - Locally the shell is refused (code 126) and the `run_shell` tool is not even offered to the model.
 - With `sandbox="docker"` the tool is offered and an empty command is rejected — without starting a container.
-- **Real Docker (skipped if Docker is off):** a written file runs in the container and prints `from container`;
-  `whoami && pwd` shows the non-root user `agent` in `/work`; opening a web page fails (no network); `sleep 30` with a
-  2-second limit returns the timeout code 124. The container is removed in `finally`.
+- **Real Docker (skipped unless Docker runs *and* the sandbox image is built — CI's `sandbox` job builds it):** a
+  written file runs in the container and prints `from container`; `id -u && pwd` shows a user id other than 0 (not
+  root) in `/work`; opening a web page fails (no network); `sleep 30` with a 2-second limit returns the timeout code
+  124. The container is removed in `finally`. The user is checked by its number, not by the name `agent`: on Linux the
+  container runs as your own user id (see `runners.md`).
 
 ```python
-331 | if __name__ == "__main__":
-332 |     unittest.main()
+333 | if __name__ == "__main__":
+334 |     unittest.main()
 ```
 - Lets you run the file directly.
 
@@ -1643,72 +1647,73 @@ No model and no network are needed (scripted fakes again); the JavaScript test r
 ## Helpers
 ```python
   1 | """Tests for the Claude-Code-like features: any-folder use, more languages, todo, shell, compaction."""
-  2 | import json
-  3 | import os
-  4 | import shutil
-  5 | import tempfile
-  6 | import unittest
-  7 | from dataclasses import replace
-  8 | from pathlib import Path
-  9 | 
- 10 | from localagent.agent import COMPACT_PROMPT, Agent
- 11 | from localagent.checkpoint import Checkpoints
- 12 | from localagent.cli import INIT_PROMPT, build_config, build_parser
- 13 | from localagent.config import Config
- 14 | from localagent.context import project_tree
- 15 | from localagent.meter import Meter
- 16 | from localagent.runners import LocalRunner
- 17 | from localagent.sandbox import walk_files
- 18 | from localagent.tools import ToolBox
- 19 | from localagent.verify import verify_file
- 20 | 
- 21 | from .test_agent import FakeBackend, tool_call
- 22 | 
+  2 | import importlib.util
+  3 | import json
+  4 | import os
+  5 | import shutil
+  6 | import tempfile
+  7 | import unittest
+  8 | from dataclasses import replace
+  9 | from pathlib import Path
+ 10 | 
+ 11 | from localagent.agent import COMPACT_PROMPT, Agent
+ 12 | from localagent.checkpoint import Checkpoints
+ 13 | from localagent.cli import INIT_PROMPT, build_config, build_parser
+ 14 | from localagent.config import Config
+ 15 | from localagent.context import project_tree
+ 16 | from localagent.meter import Meter
+ 17 | from localagent.runners import LocalRunner
+ 18 | from localagent.sandbox import walk_files
+ 19 | from localagent.tools import ToolBox
+ 20 | from localagent.verify import verify_file
+ 21 | 
+ 22 | from .test_agent import FakeBackend, tool_call
  23 | 
+ 24 | 
 ```
 - Imports the pieces under test and the fake model helpers from `test_agent.py`.
 
 ```python
- 24 | def box_for(tmp: str, **kw) -> ToolBox:
- 25 |     """ToolBox on a temp folder that approves everything."""
- 26 |     return ToolBox(replace(Config(), workspace=Path(tmp), **kw), approve=lambda _a: True)
- 27 | 
+ 25 | def box_for(tmp: str, **kw) -> ToolBox:
+ 26 |     """ToolBox on a temp folder that approves everything."""
+ 27 |     return ToolBox(replace(Config(), workspace=Path(tmp), **kw), approve=lambda _a: True)
  28 | 
+ 29 | 
 ```
 - A toolbox on a temporary folder that approves everything; extra settings can be passed.
 
 ## Folder walking
 ```python
- 29 | class WalkTests(unittest.TestCase):
+ 30 | class WalkTests(unittest.TestCase):
 ```
 ```python
- 30 |     def test_skipped_folders_are_never_entered(self):
- 31 |         with tempfile.TemporaryDirectory() as tmp:
- 32 |             root = Path(tmp)
- 33 |             for name in ("src/app.py", "node_modules/pkg/index.js", ".localagent/x.json",
- 34 |                          "venv/lib/a.py", "README.md"):
- 35 |                 (root / name).parent.mkdir(parents=True, exist_ok=True)
- 36 |                 (root / name).write_text("x", encoding="utf-8")
- 37 |             found = [p.relative_to(root).as_posix() for p in walk_files(root)]
- 38 |             self.assertEqual(found, ["README.md", "src/app.py"])          # sorted, pruned
- 39 |             self.assertEqual(project_tree(root, 10), "README.md\nsrc/app.py")
- 40 |             snap = Checkpoints(root)
- 41 |             snap.take()
- 42 |             (root / "node_modules/pkg/index.js").write_text("changed", encoding="utf-8")
- 43 |             self.assertEqual(snap.undo(), "nothing to undo")              # not snapshotted at all
- 44 | 
+ 31 |     def test_skipped_folders_are_never_entered(self):
+ 32 |         with tempfile.TemporaryDirectory() as tmp:
+ 33 |             root = Path(tmp)
+ 34 |             for name in ("src/app.py", "node_modules/pkg/index.js", ".localagent/x.json",
+ 35 |                          "venv/lib/a.py", "README.md"):
+ 36 |                 (root / name).parent.mkdir(parents=True, exist_ok=True)
+ 37 |                 (root / name).write_text("x", encoding="utf-8")
+ 38 |             found = [p.relative_to(root).as_posix() for p in walk_files(root)]
+ 39 |             self.assertEqual(found, ["README.md", "src/app.py"])          # sorted, pruned
+ 40 |             self.assertEqual(project_tree(root, 10), "README.md\nsrc/app.py")
+ 41 |             snap = Checkpoints(root)
+ 42 |             snap.take()
+ 43 |             (root / "node_modules/pkg/index.js").write_text("changed", encoding="utf-8")
+ 44 |             self.assertEqual(snap.undo(), "nothing to undo")              # not snapshotted at all
+ 45 | 
 ```
 ```python
- 45 |     def test_search_uses_glob_on_file_names(self):
- 46 |         with tempfile.TemporaryDirectory() as tmp:
- 47 |             box = box_for(tmp)
- 48 |             (Path(tmp) / "a.js").write_text("const needle = 1;\n", encoding="utf-8")
- 49 |             (Path(tmp) / "b.py").write_text("needle = 2\n", encoding="utf-8")
- 50 |             self.assertIn("a.js:1", box.call("search", {"pattern": "needle", "glob": "*.js"}))
- 51 |             self.assertNotIn("a.js", box.call("search", {"pattern": "needle", "glob": "*.py"}))
- 52 |             self.assertIn("a.js:1", box.call("search", {"pattern": "needle"}))   # default: all
- 53 | 
+ 46 |     def test_search_uses_glob_on_file_names(self):
+ 47 |         with tempfile.TemporaryDirectory() as tmp:
+ 48 |             box = box_for(tmp)
+ 49 |             (Path(tmp) / "a.js").write_text("const needle = 1;\n", encoding="utf-8")
+ 50 |             (Path(tmp) / "b.py").write_text("needle = 2\n", encoding="utf-8")
+ 51 |             self.assertIn("a.js:1", box.call("search", {"pattern": "needle", "glob": "*.js"}))
+ 52 |             self.assertNotIn("a.js", box.call("search", {"pattern": "needle", "glob": "*.py"}))
+ 53 |             self.assertIn("a.js:1", box.call("search", {"pattern": "needle"}))   # default: all
  54 | 
+ 55 | 
 ```
 - A project with `node_modules`, `.localagent` and `venv` folders: only `README.md` and `src/app.py` are found (sorted),
   the prompt's file list shows exactly those two, and a change inside `node_modules` is invisible to `/undo` snapshots.
@@ -1716,91 +1721,94 @@ No model and no network are needed (scripted fakes again); the JavaScript test r
 
 ## Languages
 ```python
- 55 | class LanguageTests(unittest.TestCase):
+ 56 | class LanguageTests(unittest.TestCase):
 ```
 ```python
- 56 |     def check(self, name: str, text: str) -> bool:
- 57 |         with tempfile.TemporaryDirectory() as tmp:
- 58 |             path = Path(tmp) / name
- 59 |             path.write_text(text, encoding="utf-8")
- 60 |             return verify_file(path, Path(tmp)).ok
- 61 | 
+ 57 |     def check(self, name: str, text: str) -> bool:
+ 58 |         with tempfile.TemporaryDirectory() as tmp:
+ 59 |             path = Path(tmp) / name
+ 60 |             path.write_text(text, encoding="utf-8")
+ 61 |             return verify_file(path, Path(tmp)).ok
+ 62 | 
 ```
 ```python
- 62 |     def test_json_and_toml(self):
- 63 |         self.assertTrue(self.check("a.json", '{"a": 1}'))
- 64 |         self.assertFalse(self.check("a.json", '{"a": 1,}'))
- 65 |         self.assertTrue(self.check("p.toml", 'name = "x"\n'))
- 66 |         self.assertFalse(self.check("p.toml", "name = \n"))
- 67 |         self.assertTrue(self.check("notes.md", "anything at all {"))           # unchecked type
- 68 | 
+ 63 |     def test_json_and_toml(self):
+ 64 |         self.assertTrue(self.check("a.json", '{"a": 1}'))
+ 65 |         self.assertFalse(self.check("a.json", '{"a": 1,}'))
+ 66 |         self.assertTrue(self.check("p.toml", 'name = "x"\n'))
+ 67 |         if importlib.util.find_spec("tomllib"):          # Python 3.11+; on 3.10 TOML is not checked
+ 68 |             self.assertFalse(self.check("p.toml", "name = \n"))
+ 69 |         self.assertTrue(self.check("notes.md", "anything at all {"))           # unchecked type
+ 70 | 
 ```
 ```python
- 69 |     @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
- 70 |     def test_javascript_with_node(self):
- 71 |         self.assertTrue(self.check("a.js", "const x = 1;\nmodule.exports = { x };\n"))
- 72 |         self.assertFalse(self.check("a.js", "const x = ;\n"))
- 73 | 
+ 71 |     @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
+ 72 |     def test_javascript_with_node(self):
+ 73 |         self.assertTrue(self.check("a.js", "const x = 1;\nmodule.exports = { x };\n"))
+ 74 |         self.assertFalse(self.check("a.js", "const x = ;\n"))
+ 75 | 
 ```
 ```python
- 74 |     def test_bad_json_write_is_rolled_back_and_workspace_check_sees_it(self):
- 75 |         with tempfile.TemporaryDirectory() as tmp:
- 76 |             box = box_for(tmp)
- 77 |             self.assertIn("REJECTED", box.call("write_file", {"path": "c.json", "content": "{oops"}))
- 78 |             self.assertFalse((Path(tmp) / "c.json").exists())
- 79 |             (Path(tmp) / "d.json").write_text("[1,", encoding="utf-8")            # broken behind our back
- 80 |             self.assertEqual(len(box.check_workspace()), 1)
- 81 | 
- 82 | 
+ 76 |     def test_bad_json_write_is_rolled_back_and_workspace_check_sees_it(self):
+ 77 |         with tempfile.TemporaryDirectory() as tmp:
+ 78 |             box = box_for(tmp)
+ 79 |             self.assertIn("REJECTED", box.call("write_file", {"path": "c.json", "content": "{oops"}))
+ 80 |             self.assertFalse((Path(tmp) / "c.json").exists())
+ 81 |             (Path(tmp) / "d.json").write_text("[1,", encoding="utf-8")            # broken behind our back
+ 82 |             self.assertEqual(len(box.check_workspace()), 1)
+ 83 | 
+ 84 | 
 ```
 - `check` writes a file and runs `verify_file` on it.
-- Valid JSON/TOML pass; a trailing comma in JSON and a missing TOML value fail; a Markdown file is never checked.
+- Valid JSON/TOML pass; a trailing comma in JSON and a missing TOML value fail (the TOML failure only on Python
+  3.11+, which has a TOML reader built in — CI's Python 3.10 job showed the test assumed it); a Markdown file is never
+  checked.
 - With Node.js: valid JavaScript passes, `const x = ;` fails.
 - Writing broken JSON is rejected and rolled back (the file does not exist); a broken JSON file made outside the agent is
   reported by the end-of-request workspace check.
 
 ## Todo and shell
 ```python
- 83 | class TodoAndShellTests(unittest.TestCase):
+ 85 | class TodoAndShellTests(unittest.TestCase):
 ```
 ```python
- 84 |     def test_todo_checklist(self):
- 85 |         with tempfile.TemporaryDirectory() as tmp:
- 86 |             box = box_for(tmp)
- 87 |             out = box.call("todo", {"items": [{"text": "read", "done": True}, {"text": "write"}]})
- 88 |             self.assertEqual(out.splitlines(), ["TODO 1/2 done", "  [x] read", "  [ ] write"])
- 89 |             self.assertEqual(len(box.todo), 2)
- 90 |             self.assertIn("ERROR", box.call("todo", {"items": []}))
- 91 |             self.assertIn("[ ] plain text", box.call("todo", {"items": ["plain text"]}))
- 92 | 
+ 86 |     def test_todo_checklist(self):
+ 87 |         with tempfile.TemporaryDirectory() as tmp:
+ 88 |             box = box_for(tmp)
+ 89 |             out = box.call("todo", {"items": [{"text": "read", "done": True}, {"text": "write"}]})
+ 90 |             self.assertEqual(out.splitlines(), ["TODO 1/2 done", "  [x] read", "  [ ] write"])
+ 91 |             self.assertEqual(len(box.todo), 2)
+ 92 |             self.assertIn("ERROR", box.call("todo", {"items": []}))
+ 93 |             self.assertIn("[ ] plain text", box.call("todo", {"items": ["plain text"]}))
+ 94 | 
 ```
 ```python
- 93 |     def test_host_shell_is_opt_in_and_asks(self):
- 94 |         with tempfile.TemporaryDirectory() as tmp:
- 95 |             self.assertNotIn("run_shell", [s["function"]["name"] for s in box_for(tmp).specs()])
- 96 |             asked: list[str] = []
- 97 |             cfg = replace(Config(), workspace=Path(tmp), allow_host_shell=True)
- 98 |             box = ToolBox(cfg, approve=lambda action: asked.append(action) or True)
- 99 |             self.assertIn("run_shell", [s["function"]["name"] for s in box.specs()])
-100 |             out = box.call("run_shell", {"command": "echo hello-shell"})
-101 |             self.assertIn("hello-shell", out)
-102 |             self.assertTrue(asked and "echo hello-shell" in asked[0])
-103 |             refused = LocalRunner(Config(), Path(tmp)).run("shell", ["echo x"])
-104 |             self.assertEqual(refused[0], 126)
-105 | 
+ 95 |     def test_host_shell_is_opt_in_and_asks(self):
+ 96 |         with tempfile.TemporaryDirectory() as tmp:
+ 97 |             self.assertNotIn("run_shell", [s["function"]["name"] for s in box_for(tmp).specs()])
+ 98 |             asked: list[str] = []
+ 99 |             cfg = replace(Config(), workspace=Path(tmp), allow_host_shell=True)
+100 |             box = ToolBox(cfg, approve=lambda action: asked.append(action) or True)
+101 |             self.assertIn("run_shell", [s["function"]["name"] for s in box.specs()])
+102 |             out = box.call("run_shell", {"command": "echo hello-shell"})
+103 |             self.assertIn("hello-shell", out)
+104 |             self.assertTrue(asked and "echo hello-shell" in asked[0])
+105 |             refused = LocalRunner(Config(), Path(tmp)).run("shell", ["echo x"])
+106 |             self.assertEqual(refused[0], 126)
+107 | 
 ```
 ```python
-106 |     def test_todo_progress_is_shown_in_full(self):
-107 |         with tempfile.TemporaryDirectory() as tmp:
-108 |             cfg = replace(Config(), workspace=Path(tmp))
-109 |             script = [tool_call("todo", items=[{"text": "step one"}, {"text": "step two"}]),
-110 |                       {"role": "assistant", "content": "ok"}]
-111 |             agent = Agent(cfg, FakeBackend(script), ToolBox(cfg, lambda _a: True), Meter())
-112 |             events: list[str] = []
-113 |             agent.run("Plan it", on_event=events.append)
-114 |             self.assertIn("     [ ] step two", events)
-115 | 
-116 | 
+108 |     def test_todo_progress_is_shown_in_full(self):
+109 |         with tempfile.TemporaryDirectory() as tmp:
+110 |             cfg = replace(Config(), workspace=Path(tmp))
+111 |             script = [tool_call("todo", items=[{"text": "step one"}, {"text": "step two"}]),
+112 |                       {"role": "assistant", "content": "ok"}]
+113 |             agent = Agent(cfg, FakeBackend(script), ToolBox(cfg, lambda _a: True), Meter())
+114 |             events: list[str] = []
+115 |             agent.run("Plan it", on_event=events.append)
+116 |             self.assertIn("     [ ] step two", events)
+117 | 
+118 | 
 ```
 - The checklist renders as `TODO 1/2 done` + `[x]`/`[ ]` lines; an empty list is an error; plain-text items work too
   (the real model sent plain strings the first time).
@@ -1810,72 +1818,72 @@ No model and no network are needed (scripted fakes again); the JavaScript test r
 
 ## Compaction and notes
 ```python
-117 | class CompactionTests(unittest.TestCase):
+119 | class CompactionTests(unittest.TestCase):
 ```
 ```python
-118 |     def make(self, tmp, script, **kw):
-119 |         cfg = replace(Config(), workspace=Path(tmp), **kw)
-120 |         backend = FakeBackend(script)
-121 |         return Agent(cfg, backend, ToolBox(cfg, lambda _a: True), Meter()), backend
-122 | 
+120 |     def make(self, tmp, script, **kw):
+121 |         cfg = replace(Config(), workspace=Path(tmp), **kw)
+122 |         backend = FakeBackend(script)
+123 |         return Agent(cfg, backend, ToolBox(cfg, lambda _a: True), Meter()), backend
+124 | 
 ```
 ```python
-123 |     def test_manual_compact_replaces_history_with_summary(self):
-124 |         with tempfile.TemporaryDirectory() as tmp:
-125 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "one"},
-126 |                                        {"role": "assistant", "content": "two"},
-127 |                                        {"role": "assistant", "content": "SUMMARY: user wants X"}])
-128 |             self.assertEqual(agent.compact(), "nothing to compact")
-129 |             agent.run("first question")
-130 |             agent.run("second question")
-131 |             result = agent.compact()
-132 |             self.assertIn("compacted", result)
-133 |             self.assertEqual([m["role"] for m in agent.messages], ["system", "user", "assistant"])
-134 |             self.assertIn("SUMMARY: user wants X", agent.messages[1]["content"])
-135 | 
+125 |     def test_manual_compact_replaces_history_with_summary(self):
+126 |         with tempfile.TemporaryDirectory() as tmp:
+127 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "one"},
+128 |                                        {"role": "assistant", "content": "two"},
+129 |                                        {"role": "assistant", "content": "SUMMARY: user wants X"}])
+130 |             self.assertEqual(agent.compact(), "nothing to compact")
+131 |             agent.run("first question")
+132 |             agent.run("second question")
+133 |             result = agent.compact()
+134 |             self.assertIn("compacted", result)
+135 |             self.assertEqual([m["role"] for m in agent.messages], ["system", "user", "assistant"])
+136 |             self.assertIn("SUMMARY: user wants X", agent.messages[1]["content"])
+137 | 
 ```
 ```python
-136 |     def test_empty_summary_keeps_history(self):
-137 |         with tempfile.TemporaryDirectory() as tmp:
-138 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "a"},
-139 |                                        {"role": "assistant", "content": "b"},
-140 |                                        {"role": "assistant", "content": ""}])
-141 |             agent.run("q1")
-142 |             agent.run("q2")
-143 |             before = len(agent.messages)
-144 |             self.assertIn("skipped", agent.compact())
-145 |             self.assertEqual(len(agent.messages), before)
-146 | 
+138 |     def test_empty_summary_keeps_history(self):
+139 |         with tempfile.TemporaryDirectory() as tmp:
+140 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "a"},
+141 |                                        {"role": "assistant", "content": "b"},
+142 |                                        {"role": "assistant", "content": ""}])
+143 |             agent.run("q1")
+144 |             agent.run("q2")
+145 |             before = len(agent.messages)
+146 |             self.assertIn("skipped", agent.compact())
+147 |             self.assertEqual(len(agent.messages), before)
+148 | 
 ```
 ```python
-147 |     def test_automatic_compaction_before_a_request(self):
-148 |         with tempfile.TemporaryDirectory() as tmp:
-149 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "x" * 400}] * 3
-150 |                                  + [{"role": "assistant", "content": "SUM"},
-151 |                                     {"role": "assistant", "content": "answer"}],
-152 |                                  num_ctx=3000, compact_at=0.1)   # the system prompt must fit
-153 |             for question in ("q1", "q2", "q3"):
-154 |                 agent.run(question)
-155 |             events: list[str] = []
-156 |             self.assertEqual(agent.run("q4", on_event=events.append), "answer")
-157 |             self.assertTrue(any("summarising" in e for e in events))
-158 |             self.assertIn("SUM", agent.messages[1]["content"])
-159 |             self.assertIn("300 words", COMPACT_PROMPT)
-160 | 
+149 |     def test_automatic_compaction_before_a_request(self):
+150 |         with tempfile.TemporaryDirectory() as tmp:
+151 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "x" * 400}] * 3
+152 |                                  + [{"role": "assistant", "content": "SUM"},
+153 |                                     {"role": "assistant", "content": "answer"}],
+154 |                                  num_ctx=3000, compact_at=0.1)   # the system prompt must fit
+155 |             for question in ("q1", "q2", "q3"):
+156 |                 agent.run(question)
+157 |             events: list[str] = []
+158 |             self.assertEqual(agent.run("q4", on_event=events.append), "answer")
+159 |             self.assertTrue(any("summarising" in e for e in events))
+160 |             self.assertIn("SUM", agent.messages[1]["content"])
+161 |             self.assertIn("300 words", COMPACT_PROMPT)
+162 | 
 ```
 ```python
-161 |     def test_reset_and_refresh_reload_agent_notes(self):
-162 |         with tempfile.TemporaryDirectory() as tmp:
-163 |             agent, _ = self.make(tmp, [])
-164 |             self.assertNotIn("USE TABS", agent.messages[0]["content"])
-165 |             (Path(tmp) / "AGENT.md").write_text("USE TABS", encoding="utf-8")
-166 |             agent.refresh_system()
-167 |             self.assertIn("USE TABS", agent.messages[0]["content"])
-168 |             agent.reset()
-169 |             self.assertEqual(len(agent.messages), 1)
-170 |             self.assertIn("USE TABS", agent.messages[0]["content"])
-171 | 
-172 | 
+163 |     def test_reset_and_refresh_reload_agent_notes(self):
+164 |         with tempfile.TemporaryDirectory() as tmp:
+165 |             agent, _ = self.make(tmp, [])
+166 |             self.assertNotIn("USE TABS", agent.messages[0]["content"])
+167 |             (Path(tmp) / "AGENT.md").write_text("USE TABS", encoding="utf-8")
+168 |             agent.refresh_system()
+169 |             self.assertIn("USE TABS", agent.messages[0]["content"])
+170 |             agent.reset()
+171 |             self.assertEqual(len(agent.messages), 1)
+172 |             self.assertIn("USE TABS", agent.messages[0]["content"])
+173 | 
+174 | 
 ```
 - A fresh agent has nothing to compact. After two requests, `compact()` leaves exactly system + summary + "Understood",
   with the model's summary inside.
@@ -1886,39 +1894,39 @@ No model and no network are needed (scripted fakes again); the JavaScript test r
 
 ## Any-folder defaults
 ```python
-173 | class AnyFolderTests(unittest.TestCase):
+175 | class AnyFolderTests(unittest.TestCase):
 ```
 ```python
-174 |     def test_defaults_work_in_current_folder_with_global_quota_file(self):
-175 |         self.assertEqual(Config().workspace, Path("."))
-176 |         self.assertEqual(Config().usage_file, Path.home() / ".localagent" / "usage.json")
-177 |         args = build_parser().parse_args(["--allow-shell"])
-178 |         self.assertTrue(build_config(args).allow_host_shell)
-179 |         self.assertTrue(INIT_PROMPT.startswith("Create AGENT.md"))
-180 | 
+176 |     def test_defaults_work_in_current_folder_with_global_quota_file(self):
+177 |         self.assertEqual(Config().workspace, Path("."))
+178 |         self.assertEqual(Config().usage_file, Path.home() / ".localagent" / "usage.json")
+179 |         args = build_parser().parse_args(["--allow-shell"])
+180 |         self.assertTrue(build_config(args).allow_host_shell)
+181 |         self.assertTrue(INIT_PROMPT.startswith("Create AGENT.md"))
+182 | 
 ```
 ```python
-181 |     def test_usage_file_can_be_moved_by_environment(self):
-182 |         old = os.environ.get("LOCALAGENT_USAGE_FILE")
-183 |         os.environ["LOCALAGENT_USAGE_FILE"] = "elsewhere.json"
-184 |         try:
-185 |             self.assertEqual(Config.from_env().usage_file, Path("elsewhere.json"))
-186 |         finally:
-187 |             if old is None:
-188 |                 del os.environ["LOCALAGENT_USAGE_FILE"]
-189 |             else:
-190 |                 os.environ["LOCALAGENT_USAGE_FILE"] = old
-191 |         self.assertTrue(json.dumps(str(Config().usage_file)))
-192 | 
-193 | 
+183 |     def test_usage_file_can_be_moved_by_environment(self):
+184 |         old = os.environ.get("LOCALAGENT_USAGE_FILE")
+185 |         os.environ["LOCALAGENT_USAGE_FILE"] = "elsewhere.json"
+186 |         try:
+187 |             self.assertEqual(Config.from_env().usage_file, Path("elsewhere.json"))
+188 |         finally:
+189 |             if old is None:
+190 |                 del os.environ["LOCALAGENT_USAGE_FILE"]
+191 |             else:
+192 |                 os.environ["LOCALAGENT_USAGE_FILE"] = old
+193 |         self.assertTrue(json.dumps(str(Config().usage_file)))
+194 | 
+195 | 
 ```
 - The workspace defaults to the current folder; the quota file lives in the home folder; `--allow-shell` reaches the
   config; `/init`'s request asks for `AGENT.md`.
 - `LOCALAGENT_USAGE_FILE` moves the quota file (the test restores the environment afterwards).
 
 ```python
-194 | if __name__ == "__main__":
-195 |     unittest.main()
+196 | if __name__ == "__main__":
+197 |     unittest.main()
 ```
 - Lets you run the file directly.
 
@@ -3505,130 +3513,146 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 472 | 
 ```
 ```python
-473 |     def test_snapshots_store_each_content_once(self):
+473 |     def test_a_same_size_edit_in_the_same_clock_tick_is_still_seen(self):
 474 |         with tempfile.TemporaryDirectory() as tmp:
-475 |             for i in range(5):
-476 |                 (Path(tmp) / f"f{i}.txt").write_text("same content", encoding="utf-8")
-477 |             points = Checkpoints(Path(tmp))
-478 |             for _ in range(3):
-479 |                 points.take()
-480 |                 points.commit()
-481 |             self.assertEqual(len(points._blobs), 1)
-482 | 
-483 | 
+475 |             path = Path(tmp) / "keep.txt"
+476 |             path.write_text("v1", encoding="utf-8")
+477 |             stamp = path.stat().st_mtime_ns
+478 |             points = Checkpoints(Path(tmp))
+479 |             points.take()
+480 |             path.write_text("v2", encoding="utf-8")              # same size ...
+481 |             os.utime(path, ns=(stamp, stamp))                    # ... and the same coarse time stamp
+482 |             self.assertIn("restored 1", points.undo())          # seen anyway (it was "racy")
+483 |             self.assertEqual(path.read_text(encoding="utf-8"), "v1")
+484 | 
+```
+```python
+485 |     def test_snapshots_store_each_content_once(self):
+486 |         with tempfile.TemporaryDirectory() as tmp:
+487 |             for i in range(5):
+488 |                 (Path(tmp) / f"f{i}.txt").write_text("same content", encoding="utf-8")
+489 |             points = Checkpoints(Path(tmp))
+490 |             for _ in range(3):
+491 |                 points.take()
+492 |                 points.commit()
+493 |             self.assertEqual(len(points._blobs), 1)
+494 | 
+495 | 
 ```
 - A request changes `a.txt` and `b.txt` and creates `c.txt`; a question changes nothing; then *you* edit `b.txt`. `/undo`
   restores `a.txt`, removes `c.txt`, leaves your `b.txt` alone and says so, naming the request; the question was never
   an undo step. A second `/undo` has nothing to do.
+- A same-size edit given the file's old time stamp (`os.utime`, imitating Windows' coarse clock) is still noticed
+  and undone. With `RACY_NS` set to 0 the test fails — it reproduces the bug CI found on Windows.
 - Five files with the same content, snapshotted three times, are stored once.
 
 ## Offline detection
 ```python
-484 | class OfflineTests(unittest.TestCase):
+496 | class OfflineTests(unittest.TestCase):
 ```
 ```python
-485 |     def chain(self, hosted, local=None, probe=None, clock=None):
-486 |         notices: list[str] = []
-487 |         entries = [Entry("gemini-x", hosted, RateLimiter("gemini-x", 100, 10**6, 100))]
-488 |         if local is not None:
-489 |             entries.append(Entry("local", local))
-490 |         backend = FallbackBackend(entries, 3, sleep=lambda _s: None, on_notice=notices.append,
-491 |                                   probe=probe, clock=clock or time.monotonic)
-492 |         return backend, notices
-493 | 
+497 |     def chain(self, hosted, local=None, probe=None, clock=None):
+498 |         notices: list[str] = []
+499 |         entries = [Entry("gemini-x", hosted, RateLimiter("gemini-x", 100, 10**6, 100))]
+500 |         if local is not None:
+501 |             entries.append(Entry("local", local))
+502 |         backend = FallbackBackend(entries, 3, sleep=lambda _s: None, on_notice=notices.append,
+503 |                                   probe=probe, clock=clock or time.monotonic)
+504 |         return backend, notices
+505 | 
 ```
 - A chain of one rate-limited ("hosted") model and optionally a local one, with an injectable probe and clock.
 
 ```python
-494 |     def test_no_internet_goes_straight_to_the_local_model_and_back(self):
-495 |         now = [1000.0]
-496 |         hosted = ScriptedBackend([LLMError("no name", dns=True), reply("online again")])
-497 |         local = ScriptedBackend([reply("local 1"), reply("local 2"), reply("local 3")])
-498 |         up = [False]
-499 |         backend, notices = self.chain(hosted, local, probe=lambda: up[0], clock=lambda: now[0])
-500 |         self.assertEqual(backend.chat([], []).message["content"], "local 1")
-501 |         self.assertEqual(hosted.calls, 1)                           # a name failure: no retries
-502 |         self.assertTrue(backend.offline and any("unreachable" in n for n in notices))
-503 |         self.assertEqual(backend.chat([], []).message["content"], "local 2")
-504 |         self.assertEqual(hosted.calls, 1)                           # skipped while offline
-505 |         now[0] += 120                                               # cool-down over, still down
-506 |         self.assertEqual(backend.chat([], []).message["content"], "local 3")
-507 |         self.assertEqual(hosted.calls, 1)
-508 |         now[0] += 120
-509 |         up[0] = True                                                # the internet is back
-510 |         self.assertEqual(backend.chat([], []).message["content"], "online again")
-511 |         self.assertFalse(backend.offline)
-512 |         self.assertTrue(any("back online" in n for n in notices))
-513 | 
+506 |     def test_no_internet_goes_straight_to_the_local_model_and_back(self):
+507 |         now = [1000.0]
+508 |         hosted = ScriptedBackend([LLMError("no name", dns=True), reply("online again")])
+509 |         local = ScriptedBackend([reply("local 1"), reply("local 2"), reply("local 3")])
+510 |         up = [False]
+511 |         backend, notices = self.chain(hosted, local, probe=lambda: up[0], clock=lambda: now[0])
+512 |         self.assertEqual(backend.chat([], []).message["content"], "local 1")
+513 |         self.assertEqual(hosted.calls, 1)                           # a name failure: no retries
+514 |         self.assertTrue(backend.offline and any("unreachable" in n for n in notices))
+515 |         self.assertEqual(backend.chat([], []).message["content"], "local 2")
+516 |         self.assertEqual(hosted.calls, 1)                           # skipped while offline
+517 |         now[0] += 120                                               # cool-down over, still down
+518 |         self.assertEqual(backend.chat([], []).message["content"], "local 3")
+519 |         self.assertEqual(hosted.calls, 1)
+520 |         now[0] += 120
+521 |         up[0] = True                                                # the internet is back
+522 |         self.assertEqual(backend.chat([], []).message["content"], "online again")
+523 |         self.assertFalse(backend.offline)
+524 |         self.assertTrue(any("back online" in n for n in notices))
+525 | 
 ```
 - The whole cycle with a fake clock: a name-lookup failure is not retried, the local model answers, and an "unreachable"
   notice appears; the next call skips the hosted model entirely; after the cool-down, with the probe still failing, it
   is skipped again (no request sent); when the probe succeeds the hosted model answers and "back online" is announced.
 
 ```python
-514 |     def test_a_repeated_network_error_also_means_offline(self):
-515 |         hosted = ScriptedBackend([LLMError("reset"), LLMError("reset")])
-516 |         backend, _ = self.chain(hosted, ScriptedBackend([reply("local")]))
-517 |         self.assertEqual(backend.chat([], []).message["content"], "local")
-518 |         self.assertEqual(hosted.calls, 2)                           # one retry, then offline
-519 | 
+526 |     def test_a_repeated_network_error_also_means_offline(self):
+527 |         hosted = ScriptedBackend([LLMError("reset"), LLMError("reset")])
+528 |         backend, _ = self.chain(hosted, ScriptedBackend([reply("local")]))
+529 |         self.assertEqual(backend.chat([], []).message["content"], "local")
+530 |         self.assertEqual(hosted.calls, 2)                           # one retry, then offline
+531 | 
 ```
 ```python
-520 |     def test_without_a_local_model_the_error_says_what_to_do(self):
-521 |         backend, _ = self.chain(ScriptedBackend([LLMError("no name", dns=True)]))
-522 |         with self.assertRaises(LLMError) as caught:
-523 |             backend.chat([], [])
-524 |         self.assertIn(OFFLINE_HELP, str(caught.exception))
-525 | 
+532 |     def test_without_a_local_model_the_error_says_what_to_do(self):
+533 |         backend, _ = self.chain(ScriptedBackend([LLMError("no name", dns=True)]))
+534 |         with self.assertRaises(LLMError) as caught:
+535 |             backend.chat([], [])
+536 |         self.assertIn(OFFLINE_HELP, str(caught.exception))
+537 | 
 ```
 ```python
-526 |     def test_a_final_error_is_not_retried(self):
-527 |         hosted = ScriptedBackend([LLMError("no name", dns=True)])
-528 |         local = ScriptedBackend([LLMError("no local model", final=True)])
-529 |         backend, _ = self.chain(hosted, local)
-530 |         with self.assertRaisesRegex(LLMError, "no local model"):
-531 |             backend.chat([], [])
-532 |         self.assertEqual(local.calls, 1)
-533 | 
-534 | 
+538 |     def test_a_final_error_is_not_retried(self):
+539 |         hosted = ScriptedBackend([LLMError("no name", dns=True)])
+540 |         local = ScriptedBackend([LLMError("no local model", final=True)])
+541 |         backend, _ = self.chain(hosted, local)
+542 |         with self.assertRaisesRegex(LLMError, "no local model"):
+543 |             backend.chat([], [])
+544 |         self.assertEqual(local.calls, 1)
+545 | 
+546 | 
 ```
 - Two network errors (no name failure) mean offline after one retry. Without a local model the error starts with
   `OFFLINE_HELP`. A `final` error from the local model is not retried (one call).
 
 ## Rate limiter, configuration
 ```python
-535 | class LimiterTests(unittest.TestCase):
+547 | class LimiterTests(unittest.TestCase):
 ```
 ```python
-536 |     def test_pacific_time_without_time_zone_data(self):
-537 |         def utc(*parts):
-538 |             return datetime(*parts, tzinfo=timezone.utc)
-539 |         self.assertEqual(_pacific_offset(utc(2026, 3, 8, 9, 59)).total_seconds(), -8 * 3600)
-540 |         self.assertEqual(_pacific_offset(utc(2026, 3, 8, 10, 0)).total_seconds(), -7 * 3600)
-541 |         self.assertEqual(_pacific_offset(utc(2026, 11, 1, 8, 59)).total_seconds(), -7 * 3600)
-542 |         self.assertEqual(_pacific_offset(utc(2026, 11, 1, 9, 0)).total_seconds(), -8 * 3600)
-543 |         july = utc(2026, 7, 2, 6, 30).timestamp()                   # 23:30 on 1 July in California
-544 |         with mock.patch.dict(sys.modules, {"zoneinfo": None}):      # as on Windows
-545 |             self.assertEqual(pacific_day(july), "2026-07-01")
-546 | 
+548 |     def test_pacific_time_without_time_zone_data(self):
+549 |         def utc(*parts):
+550 |             return datetime(*parts, tzinfo=timezone.utc)
+551 |         self.assertEqual(_pacific_offset(utc(2026, 3, 8, 9, 59)).total_seconds(), -8 * 3600)
+552 |         self.assertEqual(_pacific_offset(utc(2026, 3, 8, 10, 0)).total_seconds(), -7 * 3600)
+553 |         self.assertEqual(_pacific_offset(utc(2026, 11, 1, 8, 59)).total_seconds(), -7 * 3600)
+554 |         self.assertEqual(_pacific_offset(utc(2026, 11, 1, 9, 0)).total_seconds(), -8 * 3600)
+555 |         july = utc(2026, 7, 2, 6, 30).timestamp()                   # 23:30 on 1 July in California
+556 |         with mock.patch.dict(sys.modules, {"zoneinfo": None}):      # as on Windows
+557 |             self.assertEqual(pacific_day(july), "2026-07-01")
+558 | 
 ```
 ```python
-547 |     def test_one_shared_limiter_per_model_and_long_waits_are_announced(self):
-548 |         with tempfile.TemporaryDirectory() as tmp:
-549 |             usage = Path(tmp) / "usage.json"
-550 |             first = shared_limiter("m", 5, 1000, 50, usage)
-551 |             self.assertIs(shared_limiter("m", 5, 1000, 50, usage), first)
-552 |             heard: list[str] = []
-553 |             clock = [0.0]
-554 |             limiter = RateLimiter("w", 1, 10_000, 100, usage, clock=lambda: clock[0],
-555 |                                   sleep=lambda s: clock.__setitem__(0, clock[0] + s),
-556 |                                   on_wait=heard.append)
-557 |             limiter.before_call(10)
-558 |             limiter.before_call(10)                                 # must wait about 60 s
-559 |             self.assertTrue(heard and "per-minute limit" in heard[0])
-560 |             self.assertEqual([p.name for p in Path(tmp).iterdir()], ["usage.json"])   # no leftovers
-561 | 
-562 | 
+559 |     def test_one_shared_limiter_per_model_and_long_waits_are_announced(self):
+560 |         with tempfile.TemporaryDirectory() as tmp:
+561 |             usage = Path(tmp) / "usage.json"
+562 |             first = shared_limiter("m", 5, 1000, 50, usage)
+563 |             self.assertIs(shared_limiter("m", 5, 1000, 50, usage), first)
+564 |             heard: list[str] = []
+565 |             clock = [0.0]
+566 |             limiter = RateLimiter("w", 1, 10_000, 100, usage, clock=lambda: clock[0],
+567 |                                   sleep=lambda s: clock.__setitem__(0, clock[0] + s),
+568 |                                   on_wait=heard.append)
+569 |             limiter.before_call(10)
+570 |             limiter.before_call(10)                                 # must wait about 60 s
+571 |             self.assertTrue(heard and "per-minute limit" in heard[0])
+572 |             self.assertEqual([p.name for p in Path(tmp).iterdir()], ["usage.json"])   # no leftovers
+573 | 
+574 | 
 ```
 - The daylight-saving switches of 2026 to the minute (8 March 10:00 UTC, 1 November 09:00 UTC); and with `zoneinfo`
   made unavailable (as on Windows), 23:30 on 1 July in California is still 1 July (the old fallback said 2 July).
@@ -3636,60 +3660,60 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
   the second request; the usage folder holds only `usage.json` afterwards (no temporary files left).
 
 ```python
-563 | class ConfigTests(unittest.TestCase):
+575 | class ConfigTests(unittest.TestCase):
 ```
 ```python
-564 |     def test_bad_values_are_explained(self):
-565 |         with mock.patch.dict(os.environ, {"LOCALAGENT_NUM_CTX": "8k"}):
-566 |             with self.assertRaisesRegex(ValueError, "LOCALAGENT_NUM_CTX must be a whole number"):
-567 |                 Config.from_env()
-568 |         with mock.patch.dict(os.environ, {"LOCALAGENT_MODE": "sometimes"}):
-569 |             with self.assertRaisesRegex(ValueError, "LOCALAGENT_MODE"):
-570 |                 Config.from_env()
-571 |         with mock.patch.dict(os.environ, {"LOCALAGENT_MODE": "OFFLINE", "LOCALAGENT_GPU_LAYERS": "9"}):
-572 |             config = Config.from_env()
-573 |         self.assertEqual((config.mode, config.gpu_layers), ("offline", 9))
-574 | 
-575 | 
+576 |     def test_bad_values_are_explained(self):
+577 |         with mock.patch.dict(os.environ, {"LOCALAGENT_NUM_CTX": "8k"}):
+578 |             with self.assertRaisesRegex(ValueError, "LOCALAGENT_NUM_CTX must be a whole number"):
+579 |                 Config.from_env()
+580 |         with mock.patch.dict(os.environ, {"LOCALAGENT_MODE": "sometimes"}):
+581 |             with self.assertRaisesRegex(ValueError, "LOCALAGENT_MODE"):
+582 |                 Config.from_env()
+583 |         with mock.patch.dict(os.environ, {"LOCALAGENT_MODE": "OFFLINE", "LOCALAGENT_GPU_LAYERS": "9"}):
+584 |             config = Config.from_env()
+585 |         self.assertEqual((config.mode, config.gpu_layers), ("offline", 9))
+586 | 
+587 | 
 ```
 - `LOCALAGENT_NUM_CTX=8k` and an unknown `LOCALAGENT_MODE` raise explanations naming the variable; `OFFLINE` in capitals
   and `LOCALAGENT_GPU_LAYERS=9` are read correctly.
 
 ## The local model server
 ```python
-576 | class LocalServerTests(unittest.TestCase):
+588 | class LocalServerTests(unittest.TestCase):
 ```
 ```python
-577 |     def test_files_are_found_where_they_are_expected(self):
-578 |         with tempfile.TemporaryDirectory() as tmp:
-579 |             home = Path(tmp)
-580 |             (home / "models").mkdir()
-581 |             (home / "models" / "mmproj-x.gguf").write_text("", encoding="utf-8")
-582 |             (home / "models" / "small.gguf").write_text("", encoding="utf-8")
-583 |             with mock.patch.object(localserver, "HOME", home), \
-584 |                     mock.patch.object(localserver, "CHECKOUT", home / "none"):
-585 |                 found = localserver.find_model_file(Config())
-586 |                 self.assertEqual(found.name if found else "", "small.gguf")   # never mmproj
-587 |                 self.assertIsNone(localserver.find_llama_server(replace(Config(), llama_server="")))
-588 |                 given = home / "models" / "small.gguf"
-589 |                 self.assertEqual(localserver.find_model_file(replace(Config(), model_file=str(given))),
-590 |                                  given)
-591 | 
+589 |     def test_files_are_found_where_they_are_expected(self):
+590 |         with tempfile.TemporaryDirectory() as tmp:
+591 |             home = Path(tmp)
+592 |             (home / "models").mkdir()
+593 |             (home / "models" / "mmproj-x.gguf").write_text("", encoding="utf-8")
+594 |             (home / "models" / "small.gguf").write_text("", encoding="utf-8")
+595 |             with mock.patch.object(localserver, "HOME", home), \
+596 |                     mock.patch.object(localserver, "CHECKOUT", home / "none"):
+597 |                 found = localserver.find_model_file(Config())
+598 |                 self.assertEqual(found.name if found else "", "small.gguf")   # never mmproj
+599 |                 self.assertIsNone(localserver.find_llama_server(replace(Config(), llama_server="")))
+600 |                 given = home / "models" / "small.gguf"
+601 |                 self.assertEqual(localserver.find_model_file(replace(Config(), model_file=str(given))),
+602 |                                  given)
+603 | 
 ```
 ```python
-592 |     def test_command_line_and_where_a_server_may_be_started(self):
-593 |         server = LlamaServer(Path("llama-server"), Path("m.gguf"), "http://127.0.0.1:8123/v1", 4096)
-594 |         argv = server.argv()
-595 |         self.assertIn("--port", argv)
-596 |         self.assertEqual(argv[argv.index("--port") + 1], "8123")
-597 |         self.assertNotIn("-ngl", argv)                              # llama.cpp fits the GPU
-598 |         self.assertIn("-ngl", LlamaServer(Path("x"), Path("m.gguf"), "http://127.0.0.1:1/v1",
-599 |                                           4096, gpu_layers=9).argv())
-600 |         with mock.patch.object(localserver, "find_llama_server", return_value=Path("x")), \
-601 |                 mock.patch.object(localserver, "find_model_file", return_value=Path("m.gguf")):
-602 |             self.assertTrue(localserver.can_start(Config()))
-603 |             self.assertFalse(localserver.can_start(replace(Config(), api_base="http://gpu-box:8000/v1")))
-604 | 
+604 |     def test_command_line_and_where_a_server_may_be_started(self):
+605 |         server = LlamaServer(Path("llama-server"), Path("m.gguf"), "http://127.0.0.1:8123/v1", 4096)
+606 |         argv = server.argv()
+607 |         self.assertIn("--port", argv)
+608 |         self.assertEqual(argv[argv.index("--port") + 1], "8123")
+609 |         self.assertNotIn("-ngl", argv)                              # llama.cpp fits the GPU
+610 |         self.assertIn("-ngl", LlamaServer(Path("x"), Path("m.gguf"), "http://127.0.0.1:1/v1",
+611 |                                           4096, gpu_layers=9).argv())
+612 |         with mock.patch.object(localserver, "find_llama_server", return_value=Path("x")), \
+613 |                 mock.patch.object(localserver, "find_model_file", return_value=Path("m.gguf")):
+614 |             self.assertTrue(localserver.can_start(Config()))
+615 |             self.assertFalse(localserver.can_start(replace(Config(), api_base="http://gpu-box:8000/v1")))
+616 | 
 ```
 - With `HOME` pointed at a temporary folder: the model file is found and `mmproj-*.gguf` never chosen; no server
   program means none is found; an explicit model path wins.
@@ -3697,61 +3721,61 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
   started for `127.0.0.1` but not for a remote address.
 
 ```python
-605 |     def test_a_running_server_is_used_and_the_history_fitted(self):
-606 |         body = json.dumps({"choices": [{"message": {"content": "hi from local"}}]}).encode()
-607 |         server = FakeServer(200, body)
-608 |         self.addCleanup(server.close)
-609 |         config = replace(Config(), api_base=server.url, stream=False, local_ctx=2000)
-610 |         model = LocalModel(config)
-611 |         history = [{"role": "system", "content": "s"}] + [
-612 |             {"role": "user", "content": f"q{i} " + "w" * 3000} for i in range(4)]
-613 |         self.assertEqual(model.chat(history, []).message["content"], "hi from local")
-614 |         sent = server.received[-1]["messages"]
-615 |         self.assertLess(len(json.dumps(sent)), len(json.dumps(history)))   # shortened to fit
-616 |         self.assertTrue(model.last_model.startswith("local:"))
-617 | 
+617 |     def test_a_running_server_is_used_and_the_history_fitted(self):
+618 |         body = json.dumps({"choices": [{"message": {"content": "hi from local"}}]}).encode()
+619 |         server = FakeServer(200, body)
+620 |         self.addCleanup(server.close)
+621 |         config = replace(Config(), api_base=server.url, stream=False, local_ctx=2000)
+622 |         model = LocalModel(config)
+623 |         history = [{"role": "system", "content": "s"}] + [
+624 |             {"role": "user", "content": f"q{i} " + "w" * 3000} for i in range(4)]
+625 |         self.assertEqual(model.chat(history, []).message["content"], "hi from local")
+626 |         sent = server.received[-1]["messages"]
+627 |         self.assertLess(len(json.dumps(sent)), len(json.dumps(history)))   # shortened to fit
+628 |         self.assertTrue(model.last_model.startswith("local:"))
+629 | 
 ```
 ```python
-618 |     def test_nothing_local_is_a_final_error(self):
-619 |         config = replace(Config(), api_base="http://127.0.0.1:9/v1", host="http://127.0.0.1:9")
-620 |         with mock.patch.object(localserver, "can_start", return_value=False):
-621 |             with self.assertRaises(LLMError) as caught:
-622 |                 LocalModel(config).chat([], [])
-623 |         self.assertTrue(caught.exception.final)
-624 |         self.assertIn("No local model", str(caught.exception))
-625 | 
+630 |     def test_nothing_local_is_a_final_error(self):
+631 |         config = replace(Config(), api_base="http://127.0.0.1:9/v1", host="http://127.0.0.1:9")
+632 |         with mock.patch.object(localserver, "can_start", return_value=False):
+633 |             with self.assertRaises(LLMError) as caught:
+634 |                 LocalModel(config).chat([], [])
+635 |         self.assertTrue(caught.exception.final)
+636 |         self.assertIn("No local model", str(caught.exception))
+637 | 
 ```
 - With a fake OpenAI-style server running, the local model answers through it, and a conversation four times too big
   for a 2 000-token window reaches the server shortened.
 - With nothing running and nothing to start, the error is `final` and says "No local model".
 
 ```python
-626 |     def test_llama_server_is_started_waited_for_and_stopped(self):
-627 |         # a stopped process (or a virus scanner) may hold the log open for a moment on Windows
-628 |         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-629 |             script = Path(tmp) / "fake_llama.py"
-630 |             script.write_text(FAKE_LLAMA, encoding="utf-8")
-631 |             port = free_port()
-632 |             base = f"http://127.0.0.1:{port}/v1"
-633 |             server = LlamaServer(Path(sys.executable), Path(tmp) / "tiny.gguf", base, 2048)
-634 |             server.argv = lambda: [sys.executable, str(script), "--port", str(port)]  # type: ignore
-635 |             notices: list[str] = []
-636 |             config = replace(Config(), api_base=base, host="http://127.0.0.1:9", stream=False)
-637 |             with mock.patch.object(localserver, "LOG_FILE", Path(tmp) / "server.log"), \
-638 |                     mock.patch.object(localserver, "can_start", return_value=True), \
-639 |                     mock.patch.object(localserver, "server_for", return_value=server):
-640 |                 model = LocalModel(config, on_notice=notices.append)
-641 |                 try:
-642 |                     self.assertEqual(model.chat([{"role": "user", "content": "hi"}], [])
-643 |                                      .message["content"], "local hello")
-644 |                     self.assertTrue(server.running())
-645 |                     self.assertTrue(any("starting the local model" in n for n in notices))
-646 |                     self.assertTrue(any("ready" in n for n in notices))
-647 |                 finally:
-648 |                     server.stop()
-649 |             self.assertFalse(server.running())
-650 | 
-651 | 
+638 |     def test_llama_server_is_started_waited_for_and_stopped(self):
+639 |         # a stopped process (or a virus scanner) may hold the log open for a moment on Windows
+640 |         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+641 |             script = Path(tmp) / "fake_llama.py"
+642 |             script.write_text(FAKE_LLAMA, encoding="utf-8")
+643 |             port = free_port()
+644 |             base = f"http://127.0.0.1:{port}/v1"
+645 |             server = LlamaServer(Path(sys.executable), Path(tmp) / "tiny.gguf", base, 2048)
+646 |             server.argv = lambda: [sys.executable, str(script), "--port", str(port)]  # type: ignore
+647 |             notices: list[str] = []
+648 |             config = replace(Config(), api_base=base, host="http://127.0.0.1:9", stream=False)
+649 |             with mock.patch.object(localserver, "LOG_FILE", Path(tmp) / "server.log"), \
+650 |                     mock.patch.object(localserver, "can_start", return_value=True), \
+651 |                     mock.patch.object(localserver, "server_for", return_value=server):
+652 |                 model = LocalModel(config, on_notice=notices.append)
+653 |                 try:
+654 |                     self.assertEqual(model.chat([{"role": "user", "content": "hi"}], [])
+655 |                                      .message["content"], "local hello")
+656 |                     self.assertTrue(server.running())
+657 |                     self.assertTrue(any("starting the local model" in n for n in notices))
+658 |                     self.assertTrue(any("ready" in n for n in notices))
+659 |                 finally:
+660 |                     server.stop()
+661 |             self.assertFalse(server.running())
+662 | 
+663 | 
 ```
 - **The real start-up, with the fake server program:** `LocalModel` finds nothing running, starts the program (its
   command line replaced by the fake), waits through the "loading" answers until `/health` says 200, answers "local
@@ -3760,50 +3784,50 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 
 ## Modes and the chat
 ```python
-652 | class ModeTests(unittest.TestCase):
+664 | class ModeTests(unittest.TestCase):
 ```
 ```python
-653 |     def choose(self, mode, key="", local="", fallback=""):
-654 |         found = {"openai": (True, False, False), "ollama": (False, True, False),
-655 |                  "local": (False, False, True), "": (False, False, False)}[local]
-656 |         with mock.patch.object(cli, "server_up", return_value=found[0]), \
-657 |                 mock.patch.object(cli, "ollama_up", return_value=found[1]), \
-658 |                 mock.patch.object(cli, "can_start", return_value=found[2]), \
-659 |                 mock.patch.object(cli, "describe_local", return_value="a local model"):
-660 |             return cli.choose_mode(replace(Config(), gemini_api_key=key, fallback_backend=fallback),
-661 |                                    mode)
-662 | 
+665 |     def choose(self, mode, key="", local="", fallback=""):
+666 |         found = {"openai": (True, False, False), "ollama": (False, True, False),
+667 |                  "local": (False, False, True), "": (False, False, False)}[local]
+668 |         with mock.patch.object(cli, "server_up", return_value=found[0]), \
+669 |                 mock.patch.object(cli, "ollama_up", return_value=found[1]), \
+670 |                 mock.patch.object(cli, "can_start", return_value=found[2]), \
+671 |                 mock.patch.object(cli, "describe_local", return_value="a local model"):
+672 |             return cli.choose_mode(replace(Config(), gemini_api_key=key, fallback_backend=fallback),
+673 |                                    mode)
+674 | 
 ```
 - Runs `choose_mode` with a key or not and a chosen kind of local model (the three detection functions replaced by
   mocks, `describe_local` by a fixed text).
 
 ```python
-663 |     def test_each_mode_chooses_its_models(self):
-664 |         config, notes = self.choose("online", key="k", local="local")
-665 |         self.assertEqual((config.backend, config.fallback_backend), ("gemini", ""))
-666 |         config, notes = self.choose("auto", key="k", local="local")
-667 |         self.assertEqual((config.backend, config.fallback_backend), ("gemini", "local"))
-668 |         self.assertTrue(any("offline backup: a local model" in n for n in notes))
-669 |         config, _ = self.choose("auto", key="k", local="ollama")
-670 |         self.assertEqual(config.fallback_backend, "ollama")
-671 |         config, notes = self.choose("auto", local="openai")
-672 |         self.assertEqual((config.backend, config.num_ctx), ("local", 8192))
-673 |         self.assertIn("no GEMINI_API_KEY", notes[0])
-674 |         config, _ = self.choose("offline", key="k", local="local")
-675 |         self.assertEqual((config.backend, config.mode), ("local", "offline"))
-676 | 
+675 |     def test_each_mode_chooses_its_models(self):
+676 |         config, notes = self.choose("online", key="k", local="local")
+677 |         self.assertEqual((config.backend, config.fallback_backend), ("gemini", ""))
+678 |         config, notes = self.choose("auto", key="k", local="local")
+679 |         self.assertEqual((config.backend, config.fallback_backend), ("gemini", "local"))
+680 |         self.assertTrue(any("offline backup: a local model" in n for n in notes))
+681 |         config, _ = self.choose("auto", key="k", local="ollama")
+682 |         self.assertEqual(config.fallback_backend, "ollama")
+683 |         config, notes = self.choose("auto", local="openai")
+684 |         self.assertEqual((config.backend, config.num_ctx), ("local", 8192))
+685 |         self.assertIn("no GEMINI_API_KEY", notes[0])
+686 |         config, _ = self.choose("offline", key="k", local="local")
+687 |         self.assertEqual((config.backend, config.mode), ("local", "offline"))
+688 | 
 ```
 ```python
-677 |     def test_impossible_modes_say_what_to_do(self):
-678 |         with self.assertRaisesRegex(ValueError, "online mode needs a Gemini key"):
-679 |             self.choose("online")
-680 |         with self.assertRaisesRegex(ValueError, "No local model"):
-681 |             self.choose("offline", key="k")
-682 |         with self.assertRaisesRegex(ValueError, "No model is available yet"):
-683 |             self.choose("auto")
-684 |         with self.assertRaisesRegex(ValueError, "unknown mode"):
-685 |             self.choose("sometimes", key="k")
-686 | 
+689 |     def test_impossible_modes_say_what_to_do(self):
+690 |         with self.assertRaisesRegex(ValueError, "online mode needs a Gemini key"):
+691 |             self.choose("online")
+692 |         with self.assertRaisesRegex(ValueError, "No local model"):
+693 |             self.choose("offline", key="k")
+694 |         with self.assertRaisesRegex(ValueError, "No model is available yet"):
+695 |             self.choose("auto")
+696 |         with self.assertRaisesRegex(ValueError, "unknown mode"):
+697 |             self.choose("sometimes", key="k")
+698 | 
 ```
 - Online: Gemini, no backup. Auto with a key: Gemini plus the local backup (or Ollama). Auto without a key: the local
   model with an 8K budget and a note saying why. Offline: the local model even with a key.
@@ -3811,96 +3835,96 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
   explanation.
 
 ```python
-687 |     def test_backends_for_the_modes(self):
-688 |         self.assertIsInstance(make_backend(replace(Config(), backend="local")), LocalModel)
-689 |         chain = make_gemini(replace(Config(), gemini_api_key="k", gemini_models=("m1",),
-690 |                                     gemini_strong_models=(), fallback_backend="local"))
-691 |         last = chain._entries[-1]
-692 |         self.assertEqual(last.name, "local")
-693 |         self.assertIsInstance(last.backend, LocalModel)
-694 |         self.assertIsNotNone(chain._probe)
-695 |         with mock.patch.object(cli, "find_model_file", return_value=Path("Qwen3-8B.gguf")):
-696 |             self.assertEqual(cli.model_label(replace(Config(), backend="local")), "local:Qwen3-8B")
-697 |             self.assertTrue(cli.model_label(replace(Config(), backend="gemini", gemini_models=("m",),
-698 |                             gemini_strong_models=(), fallback_backend="local")).endswith("> local:Qwen3-8B"))
-699 | 
+699 |     def test_backends_for_the_modes(self):
+700 |         self.assertIsInstance(make_backend(replace(Config(), backend="local")), LocalModel)
+701 |         chain = make_gemini(replace(Config(), gemini_api_key="k", gemini_models=("m1",),
+702 |                                     gemini_strong_models=(), fallback_backend="local"))
+703 |         last = chain._entries[-1]
+704 |         self.assertEqual(last.name, "local")
+705 |         self.assertIsInstance(last.backend, LocalModel)
+706 |         self.assertIsNotNone(chain._probe)
+707 |         with mock.patch.object(cli, "find_model_file", return_value=Path("Qwen3-8B.gguf")):
+708 |             self.assertEqual(cli.model_label(replace(Config(), backend="local")), "local:Qwen3-8B")
+709 |             self.assertTrue(cli.model_label(replace(Config(), backend="gemini", gemini_models=("m",),
+710 |                             gemini_strong_models=(), fallback_backend="local")).endswith("> local:Qwen3-8B"))
+711 | 
 ```
 ```python
-700 |     def test_flags(self):
-701 |         parser = cli.build_parser()
-702 |         self.assertEqual(parser.parse_args(["--offline"]).mode, "offline")
-703 |         self.assertEqual(parser.parse_args(["--online"]).mode, "online")
-704 |         self.assertEqual(parser.parse_args(["--mode", "auto"]).mode, "auto")
-705 |         self.assertEqual(parser.parse_args(["-p", "hi"]).prompt, "hi")
-706 |         self.assertTrue(parser.parse_args(["-c"]).resume)
-707 |         with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
-708 |             parser.parse_args(["--version"])
-709 |         self.assertIn("localagent 0.", out.getvalue())
-710 | 
-711 | 
+712 |     def test_flags(self):
+713 |         parser = cli.build_parser()
+714 |         self.assertEqual(parser.parse_args(["--offline"]).mode, "offline")
+715 |         self.assertEqual(parser.parse_args(["--online"]).mode, "online")
+716 |         self.assertEqual(parser.parse_args(["--mode", "auto"]).mode, "auto")
+717 |         self.assertEqual(parser.parse_args(["-p", "hi"]).prompt, "hi")
+718 |         self.assertTrue(parser.parse_args(["-c"]).resume)
+719 |         with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+720 |             parser.parse_args(["--version"])
+721 |         self.assertIn("localagent 0.", out.getvalue())
+722 | 
+723 | 
 ```
 - `local` builds a `LocalModel`; a Gemini chain with a `local` fallback ends with a `LocalModel` and has a probe; labels
   name the local model by its file.
 - `--offline`, `--online`, `--mode`, `-p` and `-c` set what they should; `--version` prints the version.
 
 ```python
-712 | class ChatTests(unittest.TestCase):
+724 | class ChatTests(unittest.TestCase):
 ```
 ```python
-713 |     def chat(self, tmp, script, **kw):
-714 |         cfg = replace(Config(), workspace=Path(tmp), auto_format=False, **kw)
-715 |         tools = ToolBox(cfg, lambda _q: True, {"permissions": {"allow": ["run_tests"], "deny": []}})
-716 |         args = cli.build_parser().parse_args([])
-717 |         with contextlib.redirect_stdout(io.StringIO()):
-718 |             return cli.Chat(cfg, args, FakeBackend(script), tools, Meter())
-719 | 
+725 |     def chat(self, tmp, script, **kw):
+726 |         cfg = replace(Config(), workspace=Path(tmp), auto_format=False, **kw)
+727 |         tools = ToolBox(cfg, lambda _q: True, {"permissions": {"allow": ["run_tests"], "deny": []}})
+728 |         args = cli.build_parser().parse_args([])
+729 |         with contextlib.redirect_stdout(io.StringIO()):
+730 |             return cli.Chat(cfg, args, FakeBackend(script), tools, Meter())
+731 | 
 ```
 ```python
-720 |     def say(self, chat, text) -> str:
-721 |         with contextlib.redirect_stdout(io.StringIO()) as out:
-722 |             self.assertTrue(chat.command(text))
-723 |         return out.getvalue()
-724 | 
+732 |     def say(self, chat, text) -> str:
+733 |         with contextlib.redirect_stdout(io.StringIO()) as out:
+734 |             self.assertTrue(chat.command(text))
+735 |         return out.getvalue()
+736 | 
 ```
 - `chat` builds a `Chat` with a scripted model (and `run_tests` allowed); `say` types one line and returns what was
   printed.
 
 ```python
-725 |     def test_bang_runs_a_command_and_its_output_goes_with_the_next_request(self):
-726 |         with tempfile.TemporaryDirectory() as tmp:
-727 |             chat = self.chat(tmp, [{"role": "assistant", "content": "seen"}])
-728 |             self.assertIn("hello-from-shell", self.say(chat, "!echo hello-from-shell"))
-729 |             self.assertEqual(chat.meter.calls, 0)                   # no model call
-730 |             self.say(chat, "what did it print?")
-731 |             sent = [m["content"] for m in chat.agent.messages if m["role"] == "user"][-1]
-732 |             self.assertIn("hello-from-shell", sent)
-733 |             self.assertIn("My request: what did it print?", sent)
-734 | 
+737 |     def test_bang_runs_a_command_and_its_output_goes_with_the_next_request(self):
+738 |         with tempfile.TemporaryDirectory() as tmp:
+739 |             chat = self.chat(tmp, [{"role": "assistant", "content": "seen"}])
+740 |             self.assertIn("hello-from-shell", self.say(chat, "!echo hello-from-shell"))
+741 |             self.assertEqual(chat.meter.calls, 0)                   # no model call
+742 |             self.say(chat, "what did it print?")
+743 |             sent = [m["content"] for m in chat.agent.messages if m["role"] == "user"][-1]
+744 |             self.assertIn("hello-from-shell", sent)
+745 |             self.assertIn("My request: what did it print?", sent)
+746 | 
 ```
 ```python
-735 |     def test_hash_saves_a_note_and_at_attaches_a_file(self):
-736 |         with tempfile.TemporaryDirectory() as tmp:
-737 |             (Path(tmp) / "AGENT.md").write_text("# Notes for agents\n\n## Notes\n- old\n\n## Other\nx\n",
-738 |                                                 encoding="utf-8")
-739 |             (Path(tmp) / "app.py").write_text("print('APP')\n", encoding="utf-8")
-740 |             chat = self.chat(tmp, [{"role": "assistant", "content": "ok"}])
-741 |             self.say(chat, "# always use type hints")
-742 |             notes = (Path(tmp) / "AGENT.md").read_text(encoding="utf-8")
-743 |             self.assertIn("- old\n- always use type hints\n\n## Other", notes)
-744 |             self.assertIn("always use type hints", chat.agent.messages[0]["content"])   # reloaded
-745 |             self.assertIn("[attached: app.py]", self.say(chat, "explain @app.py, mail me@example.com"))
-746 |             self.assertIn("print('APP')", chat.agent.messages[-2]["content"])
-747 | 
+747 |     def test_hash_saves_a_note_and_at_attaches_a_file(self):
+748 |         with tempfile.TemporaryDirectory() as tmp:
+749 |             (Path(tmp) / "AGENT.md").write_text("# Notes for agents\n\n## Notes\n- old\n\n## Other\nx\n",
+750 |                                                 encoding="utf-8")
+751 |             (Path(tmp) / "app.py").write_text("print('APP')\n", encoding="utf-8")
+752 |             chat = self.chat(tmp, [{"role": "assistant", "content": "ok"}])
+753 |             self.say(chat, "# always use type hints")
+754 |             notes = (Path(tmp) / "AGENT.md").read_text(encoding="utf-8")
+755 |             self.assertIn("- old\n- always use type hints\n\n## Other", notes)
+756 |             self.assertIn("always use type hints", chat.agent.messages[0]["content"])   # reloaded
+757 |             self.assertIn("[attached: app.py]", self.say(chat, "explain @app.py, mail me@example.com"))
+758 |             self.assertIn("print('APP')", chat.agent.messages[-2]["content"])
+759 | 
 ```
 ```python
-748 |     def test_attachments_respect_the_size_limit(self):
-749 |         with tempfile.TemporaryDirectory() as tmp:
-750 |             (Path(tmp) / "big.txt").write_text("b" * 500, encoding="utf-8")
-751 |             text, attached = cli.attach_files("see @big.txt and @missing.py", Path(tmp), 100)
-752 |             self.assertEqual((text, attached), ("see @big.txt and @missing.py", []))
-753 |             text, attached = cli.attach_files("see @big.txt.", Path(tmp), 1000)
-754 |             self.assertEqual(attached, ["big.txt"])
-755 | 
+760 |     def test_attachments_respect_the_size_limit(self):
+761 |         with tempfile.TemporaryDirectory() as tmp:
+762 |             (Path(tmp) / "big.txt").write_text("b" * 500, encoding="utf-8")
+763 |             text, attached = cli.attach_files("see @big.txt and @missing.py", Path(tmp), 100)
+764 |             self.assertEqual((text, attached), ("see @big.txt and @missing.py", []))
+765 |             text, attached = cli.attach_files("see @big.txt.", Path(tmp), 1000)
+766 |             self.assertEqual(attached, ["big.txt"])
+767 | 
 ```
 - `!echo hello-from-shell` prints the output with no model call; the next request carries it, followed by "My
   request: ...".
@@ -3909,41 +3933,41 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 - A file bigger than the limit, and a missing file, are not attached; trailing punctuation after `@big.txt.` is ignored.
 
 ```python
-756 |     def test_model_status_and_switching(self):
-757 |         with tempfile.TemporaryDirectory() as tmp:
-758 |             chat = self.chat(tmp, [])
-759 |             with mock.patch.object(cli, "describe_local", return_value="LOCAL THING"):
-760 |                 status = self.say(chat, "/model")
-761 |             self.assertIn("mode: auto", status)
-762 |             self.assertIn("offline: LOCAL THING", status)
-763 |             offline = replace(chat.config, backend="local", mode="offline", num_ctx=8192)
-764 |             new_backend = FakeBackend([])
-765 |             with mock.patch.object(cli, "choose_mode", return_value=(offline, ["note"])), \
-766 |                     mock.patch.object(cli, "make_backend", return_value=new_backend):
-767 |                 said = self.say(chat, "/offline")
-768 |             self.assertIn("[now offline", said)
-769 |             self.assertIs(chat.agent.backend, new_backend)
-770 |             self.assertEqual(chat.config.mode, "offline")
-771 |             with mock.patch.object(cli, "choose_mode", side_effect=ValueError("no key")):
-772 |                 self.assertIn("cannot switch to online: no key", self.say(chat, "/model online"))
-773 |             self.assertIs(chat.agent.backend, new_backend)          # unchanged after a failure
-774 | 
+768 |     def test_model_status_and_switching(self):
+769 |         with tempfile.TemporaryDirectory() as tmp:
+770 |             chat = self.chat(tmp, [])
+771 |             with mock.patch.object(cli, "describe_local", return_value="LOCAL THING"):
+772 |                 status = self.say(chat, "/model")
+773 |             self.assertIn("mode: auto", status)
+774 |             self.assertIn("offline: LOCAL THING", status)
+775 |             offline = replace(chat.config, backend="local", mode="offline", num_ctx=8192)
+776 |             new_backend = FakeBackend([])
+777 |             with mock.patch.object(cli, "choose_mode", return_value=(offline, ["note"])), \
+778 |                     mock.patch.object(cli, "make_backend", return_value=new_backend):
+779 |                 said = self.say(chat, "/offline")
+780 |             self.assertIn("[now offline", said)
+781 |             self.assertIs(chat.agent.backend, new_backend)
+782 |             self.assertEqual(chat.config.mode, "offline")
+783 |             with mock.patch.object(cli, "choose_mode", side_effect=ValueError("no key")):
+784 |                 self.assertIn("cannot switch to online: no key", self.say(chat, "/model online"))
+785 |             self.assertIs(chat.agent.backend, new_backend)          # unchanged after a failure
+786 | 
 ```
 ```python
-775 |     def test_clear_resume_permissions_and_unknown_commands(self):
-776 |         with tempfile.TemporaryDirectory() as tmp:
-777 |             chat = self.chat(tmp, [{"role": "assistant", "content": "a"}])
-778 |             self.say(chat, "remember the blue door")
-779 |             self.assertIn("conversation cleared", self.say(chat, "/clear"))
-780 |             self.assertEqual(len(chat.agent.messages), 1)
-781 |             listing = self.say(chat, "/resume")
-782 |             self.assertIn("remember the blue door", listing)
-783 |             self.assertIn("(this conversation)", listing)
-784 |             self.assertIn("allow: run_tests", self.say(chat, "/permissions"))
-785 |             self.assertIn("unknown command /nope", self.say(chat, "/nope"))
-786 |             with contextlib.redirect_stdout(io.StringIO()):
-787 |                 self.assertFalse(chat.command("/exit"))
-788 | 
+787 |     def test_clear_resume_permissions_and_unknown_commands(self):
+788 |         with tempfile.TemporaryDirectory() as tmp:
+789 |             chat = self.chat(tmp, [{"role": "assistant", "content": "a"}])
+790 |             self.say(chat, "remember the blue door")
+791 |             self.assertIn("conversation cleared", self.say(chat, "/clear"))
+792 |             self.assertEqual(len(chat.agent.messages), 1)
+793 |             listing = self.say(chat, "/resume")
+794 |             self.assertIn("remember the blue door", listing)
+795 |             self.assertIn("(this conversation)", listing)
+796 |             self.assertIn("allow: run_tests", self.say(chat, "/permissions"))
+797 |             self.assertIn("unknown command /nope", self.say(chat, "/nope"))
+798 |             with contextlib.redirect_stdout(io.StringIO()):
+799 |                 self.assertFalse(chat.command("/exit"))
+800 | 
 ```
 - `/model` shows the mode and the offline model. `/offline` (with the mode choice and backend mocked) switches the agent
   to the new backend and mode. A failing switch (`no key`) is reported and changes nothing.
@@ -3951,53 +3975,53 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
   an unknown command says so; `/exit` quits.
 
 ```python
-789 |     def test_print_mode_answers_once(self):
-790 |         with tempfile.TemporaryDirectory() as tmp:
-791 |             cfg = replace(Config(), workspace=Path(tmp))
-792 |             tools = ToolBox(cfg, cli.refuse)
-793 |             script = [tool_call("run_tests"), {"role": "assistant", "content": "the answer"}]
-794 |             with contextlib.redirect_stdout(io.StringIO()) as out, \
-795 |                     contextlib.redirect_stderr(io.StringIO()) as err:
-796 |                 code = cli.run_once(cfg, FakeBackend(script), tools, Meter(), "question")
-797 |             self.assertEqual((code, out.getvalue().strip()), (0, "the answer"))
-798 |             self.assertIn("refused", err.getvalue())                # nobody to ask: refused
-799 | 
+801 |     def test_print_mode_answers_once(self):
+802 |         with tempfile.TemporaryDirectory() as tmp:
+803 |             cfg = replace(Config(), workspace=Path(tmp))
+804 |             tools = ToolBox(cfg, cli.refuse)
+805 |             script = [tool_call("run_tests"), {"role": "assistant", "content": "the answer"}]
+806 |             with contextlib.redirect_stdout(io.StringIO()) as out, \
+807 |                     contextlib.redirect_stderr(io.StringIO()) as err:
+808 |                 code = cli.run_once(cfg, FakeBackend(script), tools, Meter(), "question")
+809 |             self.assertEqual((code, out.getvalue().strip()), (0, "the answer"))
+810 |             self.assertIn("refused", err.getvalue())                # nobody to ask: refused
+811 | 
 ```
 ```python
-800 |     def test_prompts_without_a_keyboard_mean_no(self):
-801 |         def gone(_prompt):
-802 |             raise EOFError
-803 |         self.assertFalse(cli.Approver(read=gone)("run x"))
-804 |         with contextlib.redirect_stdout(io.StringIO()):
-805 |             self.assertFalse(cli.confirm("go? ", read=gone))
-806 | 
+812 |     def test_prompts_without_a_keyboard_mean_no(self):
+813 |         def gone(_prompt):
+814 |             raise EOFError
+815 |         self.assertFalse(cli.Approver(read=gone)("run x"))
+816 |         with contextlib.redirect_stdout(io.StringIO()):
+817 |             self.assertFalse(cli.confirm("go? ", read=gone))
+818 | 
 ```
 ```python
-807 |     def test_colours_only_where_wanted(self):
-808 |         with contextlib.redirect_stdout(io.StringIO()) as out:
-809 |             cli.make_printer(True)("     +added")
-810 |             cli.make_printer(False)("     -removed")
-811 |         self.assertEqual(out.getvalue(), "\033[32m     +added\033[0m\n     -removed\n")
-812 |         with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
-813 |             self.assertFalse(cli.use_color())
-814 | 
+819 |     def test_colours_only_where_wanted(self):
+820 |         with contextlib.redirect_stdout(io.StringIO()) as out:
+821 |             cli.make_printer(True)("     +added")
+822 |             cli.make_printer(False)("     -removed")
+823 |         self.assertEqual(out.getvalue(), "\033[32m     +added\033[0m\n     -removed\n")
+824 |         with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
+825 |             self.assertFalse(cli.use_color())
+826 | 
 ```
 ```python
-815 |     def test_overview_summarises_crowded_folders(self):
-816 |         with tempfile.TemporaryDirectory() as tmp:
-817 |             root = Path(tmp)
-818 |             for i in range(30):
-819 |                 (root / "bin").mkdir(exist_ok=True)
-820 |                 (root / "bin" / f"lib{i}.dll").write_bytes(b"x")
-821 |             (root / "src").mkdir()
-822 |             for name in ("main.py", "util.py"):
-823 |                 (root / "src" / name).write_text("x", encoding="utf-8")
-824 |             (root / "README.md").write_text("x", encoding="utf-8")
-825 |             tree = project_tree(root, 6).splitlines()
-826 |             self.assertEqual(tree, ["README.md", "bin/ (30 files: 30 .dll)", "src/main.py",
-827 |                                     "src/util.py"])
-828 | 
-829 | 
+827 |     def test_overview_summarises_crowded_folders(self):
+828 |         with tempfile.TemporaryDirectory() as tmp:
+829 |             root = Path(tmp)
+830 |             for i in range(30):
+831 |                 (root / "bin").mkdir(exist_ok=True)
+832 |                 (root / "bin" / f"lib{i}.dll").write_bytes(b"x")
+833 |             (root / "src").mkdir()
+834 |             for name in ("main.py", "util.py"):
+835 |                 (root / "src" / name).write_text("x", encoding="utf-8")
+836 |             (root / "README.md").write_text("x", encoding="utf-8")
+837 |             tree = project_tree(root, 6).splitlines()
+838 |             self.assertEqual(tree, ["README.md", "bin/ (30 files: 30 .dll)", "src/main.py",
+839 |                                     "src/util.py"])
+840 | 
+841 | 
 ```
 - `-p`: the answer alone on standard output, exit code 0, and a `run_tests` the model asked for is refused (nobody to ask).
 - An approval or a confirmation with no input means no.
@@ -4006,35 +4030,35 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 
 ## The commit guard
 ```python
-830 | class CommitGuardTests(unittest.TestCase):
+842 | class CommitGuardTests(unittest.TestCase):
 ```
 ```python
-831 |     def test_problems_in_staged_files(self):
-832 |         key = b"AIza" + b"x" * 35                                   # built here: never in the source
-833 |         self.assertEqual(check_commit.problems("ok.py", 10, lambda: b"print(1)"), [])
-834 |         self.assertIn("Google API key", check_commit.problems("cfg.py", 50, lambda: key)[0])
-835 |         self.assertIn("must never be committed", check_commit.problems(".env", 5, lambda: b"")[0])
-836 |         self.assertEqual(check_commit.problems(".env.example", 5, lambda: b"KEY="), [])
-837 |         big = check_commit.problems("models/m.gguf", 5_000_000_000, lambda: b"")
-838 |         self.assertEqual(len(big), 2)                               # a model file, and too big
-839 |         self.assertIn("too big", big[1])
-840 | 
+843 |     def test_problems_in_staged_files(self):
+844 |         key = b"AIza" + b"x" * 35                                   # built here: never in the source
+845 |         self.assertEqual(check_commit.problems("ok.py", 10, lambda: b"print(1)"), [])
+846 |         self.assertIn("Google API key", check_commit.problems("cfg.py", 50, lambda: key)[0])
+847 |         self.assertIn("must never be committed", check_commit.problems(".env", 5, lambda: b"")[0])
+848 |         self.assertEqual(check_commit.problems(".env.example", 5, lambda: b"KEY="), [])
+849 |         big = check_commit.problems("models/m.gguf", 5_000_000_000, lambda: b"")
+850 |         self.assertEqual(len(big), 2)                               # a model file, and too big
+851 |         self.assertIn("too big", big[1])
+852 | 
 ```
 ```python
-841 |     def test_only_a_private_author_address_passes(self):
-842 |         self.assertIsNone(check_commit.author_problem(
-843 |             "A <1+a@users.noreply.github.com> 1700000000 +0000"))
-844 |         self.assertIn("would be public", check_commit.author_problem("A <a@gmail.com> 1 +0000"))
-845 | 
-846 | 
+853 |     def test_only_a_private_author_address_passes(self):
+854 |         self.assertIsNone(check_commit.author_problem(
+855 |             "A <1+a@users.noreply.github.com> 1700000000 +0000"))
+856 |         self.assertIn("would be public", check_commit.author_problem("A <a@gmail.com> 1 +0000"))
+857 | 
+858 | 
 ```
 - A clean file passes; a fake Google key (built at run time) is found; `.env` is refused but `.env.example` is fine; a
   5 GB model file gets two problems (its kind and its size) without being read.
 - A noreply author passes; a Gmail author gets the explanation.
 
 ```python
-847 | if __name__ == "__main__":
-848 |     unittest.main()
+859 | if __name__ == "__main__":
+860 |     unittest.main()
 ```
 - Lets you run the file directly.
 

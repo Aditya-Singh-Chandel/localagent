@@ -1,4 +1,5 @@
 """Tests for the Claude-Code-like features: any-folder use, more languages, todo, shell, compaction."""
+import importlib.util
 import json
 import os
 import shutil
@@ -63,7 +64,8 @@ class LanguageTests(unittest.TestCase):
         self.assertTrue(self.check("a.json", '{"a": 1}'))
         self.assertFalse(self.check("a.json", '{"a": 1,}'))
         self.assertTrue(self.check("p.toml", 'name = "x"\n'))
-        self.assertFalse(self.check("p.toml", "name = \n"))
+        if importlib.util.find_spec("tomllib"):          # Python 3.11+; on 3.10 TOML is not checked
+            self.assertFalse(self.check("p.toml", "name = \n"))
         self.assertTrue(self.check("notes.md", "anything at all {"))           # unchecked type
 
     @unittest.skipUnless(shutil.which("node"), "Node.js not installed")

@@ -23,3 +23,12 @@ jobs:
       - run: mypy localagent evals tools
       - run: python -m unittest discover -s tests -t .
       - run: python tools/build_docs.py --check
+  sandbox:                     # the Docker sandbox for real: builds the image, runs code inside it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: docker build -t localagent-sandbox:latest -f docker/sandbox.Dockerfile docker
+      - run: python -m unittest tests.test_phase4.RunnerTests -v

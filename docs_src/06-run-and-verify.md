@@ -136,7 +136,7 @@ correctly in 1 call (5.6 s).
 | `localagent` is not recognised | section 2, then a new window, or use the long form in section 3 |
 | `Gemini is unreachable (no internet?)` | nothing: the local model answers; Gemini is tried again every minute |
 | `the local model server stopped while starting` | read the lines below it (from `%USERPROFILE%\.localagent\llama-server.log`); usually too little free memory - close programs |
-| `daily quota used up` | quotas reset at midnight US Pacific (13:30 India time); the lite models, then the local model, carry the work |
+| `daily quota used up` | quotas reset at midnight US Pacific time; the lite models, then the local model, carry the work |
 | `busy (503)` / `retrying` / `waiting ...s for the per-minute limit` | nothing: it waits and retries by itself |
 | `COMMIT BLOCKED: ...` | the message says what and how to fix it (section 8) |
 | leftover `localagent-...` containers in `docker ps` | `docker rm -f <name>` |

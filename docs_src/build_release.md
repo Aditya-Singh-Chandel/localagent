@@ -25,6 +25,18 @@ localagent-0.6.0-windows-x64\
   lib\                  localagent, ruff, mypy, and docker\ (for the sandbox image)
 ```
 
+## Publishing a release (`.github/workflows/release.yml`)
+Raise the version in `localagent/__init__.py`, write its section in `CHANGELOG.md`, merge, then push a tag:
+```
+git tag v0.6.0
+git push origin v0.6.0
+```
+The tag starts the release workflow on a clean Windows machine of GitHub's: it checks out that exact commit, installs
+Python 3.14, runs `python tools/build_release.py --tag v0.6.0` and publishes a GitHub release named after the tag,
+with the release notes and every file in `dist\` attached. The workflow may only write releases
+(`permissions: contents: write`); its token is GitHub's own and expires with the run. The same files can be put on any
+website: `tools/build_site.py` (see `build_site.md`) builds a complete, self-contained download site from them.
+
 ## Module header
 @@ tools/build_release.py header @@
 - `ROOT` is the project folder, put on the import path so the script can use the agent's own `__version__` and its
@@ -69,7 +81,18 @@ localagent-0.6.0-windows-x64\
 - `SHA256SUMS.txt` in the standard format, so anyone can check a download (`certutil -hashfile <file> SHA256` on
   Windows, `sha256sum -c SHA256SUMS.txt` elsewhere).
 
+@@ tools/build_release.py release_notes @@
+- The text of a release page: this version's part of `CHANGELOG.md` (from its `## 0.6.0 — date` heading to the next
+  `## ` heading), plus one line on checking the downloads against `SHA256SUMS.txt`. The heading must start with
+  `## <version> ` — the space after the version keeps `0.6.0` from also matching a `0.6.01`. A missing section stops
+  the build and says what to write, so no release goes out without notes.
+
 @@ tools/build_release.py main @@
 @@ tools/build_release.py footer @@
-- Removes this version's old files from `dist\`, builds the wheel, the bundle and the checksums, and lists them with
-  their sizes. `dist\` and `build\` are in `.gitignore`: release files are published, not committed.
+- `--tag v0.6.0` (what the release workflow passes) first checks that the tag names the version in
+  `localagent/__init__.py`. A tag that does not match stops everything before a single file is built: a release can
+  never carry the files of another version.
+- Then it writes the release notes to `build\RELEASE_NOTES.md`, removes this version's old files from `dist\`, builds
+  the wheel, the bundle and the checksums, and lists them all with their sizes. `dist\` and `build\` are in
+  `.gitignore`: release files are published, not committed.
+- The footer hands the command-line words after the script's name (`sys.argv[1:]`) to `main`.

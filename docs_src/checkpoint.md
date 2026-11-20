@@ -16,8 +16,10 @@ left alone (and named), and every distinct file content is stored once.
 
 ## Module header
 @@ localagent/checkpoint.py header @@
-- `hashlib` names file contents by their SHA-256 hash; `dataclass` builds `Change`; `walk_files` skips caches and
-  dependency folders.
+- `hashlib` names file contents by their SHA-256 hash; `time` tells how recent a change is; `dataclass` builds
+  `Change`; `walk_files` skips caches and dependency folders.
+- `RACY_NS` (2 seconds, in nanoseconds): files changed this shortly before a scan are read again next time (see
+  `_scan`).
 - `MAX_FILE_BYTES` ignores files over 1 MB so a stray data file cannot exhaust memory.
 - `MAX_SNAPSHOT_FILES` (3000) and `MAX_SNAPSHOT_BYTES` (~60 MB) protect against huge folders. Started in your home
   folder or a giant repository, snapshots would otherwise read gigabytes. Above the limits `/undo` switches itself off
@@ -46,6 +48,11 @@ left alone (and named), and every distinct file content is stored once.
   **without being read** — so after the first scan, a snapshot reads only the files that changed. New contents are
   hashed and stored once in `_blobs` (`setdefault`: an identical content already stored is not stored again). Reading
   raw bytes means any file type is restored exactly. A file that disappears during the scan is skipped.
+- **"Racily clean" files.** A file changed less than `RACY_NS` before the scan is remembered with the time stamp `-1`,
+  which never matches, so the next scan reads it again. Without this, a second edit inside the same clock tick that
+  keeps the size the same looks unchanged — Windows updates time stamps coarsely. Found by the first CI run on a
+  Windows machine (`/undo` left a changed file as it was); git has the same problem and the same cure. Only files
+  changed in the last two seconds are re-read, so the speed-up stays.
 
 @@ localagent/checkpoint.py Checkpoints._switch_off @@
 - Turns snapshots off for good, frees their memory and returns the one-time message.

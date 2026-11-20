@@ -1,58 +1,128 @@
-# localagent
+<p align="center"><img src="assets/logo.svg" width="96" alt="localagent logo"></p>
 
-A coding agent in the style of Claude Code. Open a terminal in any project, type `localagent`, and ask for work in
-plain words. It plans (`/plan`, visible checklists), reads and edits files (every edit shown as a diff), runs code,
-tests and commands, reads documentation pages, uses MCP tool servers, and fixes its own mistakes.
+<h1 align="center">localagent</h1>
 
-**Online or offline:** it thinks with Google Gemini (free tier) when you are online and with a model on your own
-computer (llama.cpp, Ollama, LM Studio) when you are not — switching by itself when the internet goes away, or when
-you say so (`/model offline`, `localagent --offline`). Offline, nothing leaves your computer.
-**Safety:** every file it writes is verified before it is kept — Python, JavaScript/TypeScript, Go, Rust, C/C++, PHP,
-Ruby, shell, PowerShell, JSON (with comments where allowed), TOML, YAML — and broken writes are rolled back byte for
-byte; code runs in a locked-down **Docker sandbox**; nothing runs without your approval unless a permission rule allows it.
-**Cost:** free — Gemini's free tier (cheap "lite" models first, strong models only when a task struggles, client-side
-rate limiting, retries) and/or the local model.
+<p align="center">
+<b>A coding agent for your terminal that keeps working offline.</b><br>
+Ask in plain words: it reads your project, edits files, runs the tests, and verifies every change before keeping it —
+with Google Gemini when you are online, and with a model on your own computer when you are not.
+</p>
 
-**Just want to use it on Windows?** Download `localagent-<version>-windows-x64.zip`, unzip it somewhere permanent,
-double-click `install.cmd`, open a new terminal and type `localagent setup` — Python is included, nothing else is
-needed (build the zip with `tools/build_release.py`).
-**New here? Read `docs/04-start-from-zero.md`** — every step from an empty computer, no prior knowledge needed.
-**Already set up? `docs/06-run-and-verify.md`** — how to run it every way, and how to check that everything works.
+<p align="center">
+<a href="https://github.com/Aditya-Singh-Chandel/localagent/actions/workflows/ci.yml"><img src="https://github.com/Aditya-Singh-Chandel/localagent/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license">
+<img src="https://img.shields.io/badge/python-3.10%E2%80%933.14-3776AB.svg" alt="Python 3.10 to 3.14">
+<img src="https://img.shields.io/badge/dependencies-none-2ea44f.svg" alt="No dependencies">
+<img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555.svg" alt="Windows, Linux, macOS">
+</p>
 
-| Task | Command (PowerShell) |
+<p align="center"><img src="assets/demo.svg" width="824" alt="A real localagent session: it runs the failing tests, reads the code, makes a verified one-line fix and the tests pass, in 3 model calls and 6 seconds."></p>
+
+## Highlights
+
+- **Online and offline.** Gemini answers while you are online; the moment the internet goes away, a model on your own
+  computer takes over — by itself, mid-conversation — and Gemini returns when the connection does. `/model offline`
+  keeps everything on your machine.
+- **Verified before it is kept.** Every file it writes is checked by the language's own tools (Python, JavaScript,
+  TypeScript, Go, Rust, C/C++, PHP, Ruby, shell, PowerShell, JSON, TOML, YAML). Broken code is rolled back, byte for
+  byte, and the errors go back to the model.
+- **Safe by default.** Nothing runs without your approval unless one of *your* rules allows it; code can run in a
+  locked-down Docker sandbox; edits keep each file's own line endings; `/undo` never touches your own later edits.
+- **Free to run.** Gemini's free tier (cheap models first, strong ones only when a task struggles) and/or a local
+  model. It is built to finish a task in as few model calls as possible: a question in 1, a small fix in about 3.
+- **Works the way you expect.** `/plan`, a live checklist, a diff of every edit, `/undo`, `/resume`, `-p` for
+  scripts, `!command`, `# notes`, `@file`, permission rules, hooks, MCP tool servers and custom slash commands.
+- **No dependencies.** Pure Python standard library. On Windows a single zip carries everything, Python included.
+
+## Get started
+
+**Windows — nothing to install first**
+1. Download `localagent-<version>-windows-x64.zip` from
+   [Releases](https://github.com/Aditya-Singh-Chandel/localagent/releases/latest).
+2. Unzip it somewhere permanent (for example `C:\Tools\localagent`) and double-click `install.cmd`.
+3. Open a new terminal and run `localagent setup` — it asks for a free Gemini key and offers the offline model that
+   fits your computer.
+4. In any project folder: `localagent`.
+
+**Any system with Python 3.10+**
+```
+pipx install git+https://github.com/Aditya-Singh-Chandel/localagent
+localagent setup
+```
+
+Check everything at any time with `localagent --doctor`.
+
+## Using it
+
+```
+cd my-project
+localagent                                   # start the chat in this folder
+you> Why does the login test fail?           # a question: it looks, then answers
+you> Add a --json flag to the CLI with tests # a task: it edits, verifies and runs the tests
+you> /plan Split app.py into modules         # bigger work: a plan first, then your yes
+you> /undo                                   # take the last change back
+you> /model offline                          # from now on the local model answers
+
+localagent -p "list the TODO comments with file:line"   # one answer, for scripts
+```
+
+| In the chat | Does |
 |---|---|
-| Guided first run: Gemini key, offline model, Docker | `localagent setup` |
-| Local models: list / download / choose | `localagent models`, `localagent models download qwen3-4b`, `localagent models use qwen3-4b` |
-| Install the `localagent` command from this source folder (once) | `powershell -ExecutionPolicy Bypass -File .\install.ps1`, then open a new terminal |
-| Work on a project | `cd C:\my\project` then `localagent` (setup is chosen automatically) |
-| Only the local model / only Gemini | `localagent --offline` / `localagent --online` (or `/model` in the chat) |
-| One answer, for scripts | `localagent -p "what does this project do?"` |
-| Continue yesterday's conversation | `localagent -c` |
-| Check the setup | `localagent --doctor` |
-| Build the sandbox image (once) | `docker build -t localagent-sandbox:latest -f docker/sandbox.Dockerfile docker` |
-| Agent in a container / as a service | see `docs/docker.md` (`docker compose up -d --build`) |
-| How it works (explain it to anyone) | `docs/00-overview.md` |
-| Tests (no model needed) | `.venv\Scripts\python -m unittest discover -s tests -t .` |
-| Measure quality | `.venv\Scripts\python -m evals.run_evals --sandbox docker [--offline] [--trace]` |
-| Rebuild + audit docs | `.venv\Scripts\python tools/build_docs.py` |
-| Turn on the commit guard (once per clone) | `git config core.hooksPath .githooks` |
-| Build the download files (wheel + portable Windows zip) | `.venv\Scripts\python tools/build_release.py` |
+| `/plan <request>` | look first, show a numbered plan, carry it out only if you agree |
+| `/model [online\|offline\|auto]` | see or switch who answers; the conversation stays |
+| `/undo`, `/resume`, `/clear`, `/compact` | take back a change; continue an earlier conversation; start over; summarise |
+| `/init`, `# note` | write `AGENT.md` project notes; add a note to them |
+| `!command`, `@file` | run a command yourself (no model call); attach a file to a request |
+| `/stats`, `/permissions`, `/doctor`, `/help` | usage and quotas; your rules; the setup check; everything else |
 
-In the chat: `/plan <request>`, `/model [online|offline|auto]`, `/init` (write `AGENT.md` notes), `/compact`, `/undo`,
-`/clear`, `/resume`, `/stats`, `/permissions`, `/doctor`, `/help`, `/quit`; `!command` runs a command yourself,
-`# note` saves a note in `AGENT.md`, `@file` attaches a file; Ctrl+C stops a task; end a line with `\` or use `"""`
-blocks for multi-line requests.
-Permission rules, MCP servers, hooks, test command and settings: `.localagent\settings.json` (see `docs/settings.md`,
-`docs/mcp.md`).
+## Online and offline
 
-Everything the agent can do, in one place: `docs/05-user-manual.md`. What could come next: `docs/02-roadmap.md`.
+| Mode | Who answers | When to use it |
+|---|---|---|
+| `auto` (default) | Gemini; the local model when Gemini cannot be reached or its quota is used up | everyday work |
+| `online` | Gemini only | fastest and strongest, needs the internet |
+| `offline` | the local model only | no internet, private code, no quota |
 
-Docs reading order: `04-start-from-zero` (set up) → `00-overview` (how it all works) → `06-run-and-verify` (run it) →
-`05-user-manual` (reference) → the file pages in the order listed in `00-overview` → `03-build-log` → `02-roadmap`.
-`docs/` is generated from `docs_src/` — edit `docs_src/`, never `docs/`.
+`localagent setup` downloads llama.cpp and a model sized for your memory (Qwen3 8B, 4B or 1.7B), checked against the
+publisher's checksum and resumable. The agent starts the model when it is needed and stops it when you leave.
 
-Not included in the repository (see `.gitignore`): the local model (`models/`) and llama.cpp (`bin/`) — `localagent
-setup` downloads both (checksum-verified), or see `docs/01-setup-and-models.md`.
+## How it works
 
-License: MIT (`LICENSE`); third-party parts: `THIRD_PARTY_NOTICES.md`. Changes: `CHANGELOG.md`. Security: `SECURITY.md`.
-Contributing: `CONTRIBUTING.md`.
+```
+you ─► agent loop ─► model (Gemini or local) ─► "call these tools" ─► tools ─► results ─► model ─► … ─► answer
+                                                                       │
+                     every write is verified (and rolled back if broken), every run is approved or ruled
+```
+
+The model never touches your files itself: it can only ask for tools, and the program checks every request. The whole
+system is explained, with one request followed through the code, in [docs/00-overview.md](docs/00-overview.md) — and
+every line of code is documented in its page under [docs/](docs).
+
+## Documentation
+
+| Read | For |
+|---|---|
+| [Start from zero](docs/04-start-from-zero.md) | every step from an empty computer, no prior knowledge needed |
+| [Run and verify](docs/06-run-and-verify.md) | every way to run it, and how to check that it works |
+| [User manual](docs/05-user-manual.md) | every command, flag, setting and tool |
+| [Online and offline](docs/01-setup-and-models.md) | Gemini, the local model, the modes |
+| [How it works](docs/00-overview.md) | the architecture, one request through the code, the safety rules |
+| [Roadmap](docs/02-roadmap.md) and [build log](docs/03-build-log.md) | what is built, what is next, and why every decision was made |
+
+## Development
+
+```
+python -m venv .venv && .venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\python -m unittest discover -s tests -t .     # 216 tests, no model needed
+.venv\Scripts\python tools\build_docs.py                    # rebuild and audit the docs
+.venv\Scripts\python tools\build_release.py                 # the wheel and the portable Windows zip
+.venv\Scripts\python tools\build_site.py                    # the website, ready to upload anywhere
+```
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md).
+Security reports: [SECURITY.md](SECURITY.md). Changes: [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+[MIT](LICENSE). The local model, llama.cpp and the bundled Python come under their own licenses:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

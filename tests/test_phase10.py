@@ -470,6 +470,18 @@ class SessionAndUndoTests(unittest.TestCase):
             self.assertIn("left 1 file(s) alone", message)
             self.assertEqual(points.undo(), "nothing to undo")
 
+    def test_a_same_size_edit_in_the_same_clock_tick_is_still_seen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "keep.txt"
+            path.write_text("v1", encoding="utf-8")
+            stamp = path.stat().st_mtime_ns
+            points = Checkpoints(Path(tmp))
+            points.take()
+            path.write_text("v2", encoding="utf-8")              # same size ...
+            os.utime(path, ns=(stamp, stamp))                    # ... and the same coarse time stamp
+            self.assertIn("restored 1", points.undo())          # seen anyway (it was "racy")
+            self.assertEqual(path.read_text(encoding="utf-8"), "v1")
+
     def test_snapshots_store_each_content_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             for i in range(5):

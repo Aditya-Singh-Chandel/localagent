@@ -6,7 +6,7 @@ The agent has two kinds of brain and switches between them for you:
 |---|---|---|
 | Runs on | Google's servers | your own PC (llama.cpp, or Ollama / LM Studio) |
 | Needs | internet + a free key (`04-start-from-zero.md`, Step 6) | ~6 GB of free memory, two files (below) |
-| Speed (this laptop) | 1-3 s per step | 20-60 s per step |
+| Speed (the reference laptop) | 1-3 s per step | 20-60 s per step |
 | Quality (15 eval tasks) | 15/15 | 12/15 |
 | Limits | daily quota per model | none |
 | Your code goes to | Google | nowhere — it stays on your computer |
@@ -72,7 +72,7 @@ It listens only on `127.0.0.1`, so no other computer can use it. Details: `local
 - **Already running a server?** `serve.ps1`, Ollama or LM Studio — the agent uses it instead of starting one, and does
   not stop it.
 
-## Your machine (measured)
+## The reference laptop (where every number in these docs was measured)
 15.7 GB RAM · Intel i7-1255U · NVIDIA MX550 with 2 GB of graphics memory · Python 3.14.0b1 (a beta build; the code
 also runs on 3.10-3.13, which CI tests).
 Consequence: models run mostly on the processor from normal memory. Budget about 6 GB for the model, so an **8B

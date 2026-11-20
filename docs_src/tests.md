@@ -369,9 +369,11 @@ last test uses real Docker, and it is skipped automatically when Docker is not r
 @@ tests/test_phase4.py RunnerTests.test_docker_sandbox_isolation_end_to_end @@
 - Locally the shell is refused (code 126) and the `run_shell` tool is not even offered to the model.
 - With `sandbox="docker"` the tool is offered and an empty command is rejected — without starting a container.
-- **Real Docker (skipped if Docker is off):** a written file runs in the container and prints `from container`;
-  `whoami && pwd` shows the non-root user `agent` in `/work`; opening a web page fails (no network); `sleep 30` with a
-  2-second limit returns the timeout code 124. The container is removed in `finally`.
+- **Real Docker (skipped unless Docker runs *and* the sandbox image is built — CI's `sandbox` job builds it):** a
+  written file runs in the container and prints `from container`; `id -u && pwd` shows a user id other than 0 (not
+  root) in `/work`; opening a web page fails (no network); `sleep 30` with a 2-second limit returns the timeout code
+  124. The container is removed in `finally`. The user is checked by its number, not by the name `agent`: on Linux the
+  container runs as your own user id (see `runners.md`).
 
 @@ tests/test_phase4.py footer @@
 - Lets you run the file directly.
@@ -405,7 +407,9 @@ No model and no network are needed (scripted fakes again); the JavaScript test r
 @@ tests/test_phase7.py LanguageTests.test_javascript_with_node @@
 @@ tests/test_phase7.py LanguageTests.test_bad_json_write_is_rolled_back_and_workspace_check_sees_it @@
 - `check` writes a file and runs `verify_file` on it.
-- Valid JSON/TOML pass; a trailing comma in JSON and a missing TOML value fail; a Markdown file is never checked.
+- Valid JSON/TOML pass; a trailing comma in JSON and a missing TOML value fail (the TOML failure only on Python
+  3.11+, which has a TOML reader built in — CI's Python 3.10 job showed the test assumed it); a Markdown file is never
+  checked.
 - With Node.js: valid JavaScript passes, `const x = ;` fails.
 - Writing broken JSON is rejected and rolled back (the file does not exist); a broken JSON file made outside the agent is
   reported by the end-of-request workspace check.
@@ -786,10 +790,13 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
   before the reset is gone.
 
 @@ tests/test_phase10.py SessionAndUndoTests.test_undo_skips_quiet_requests_and_keeps_your_own_edits @@
+@@ tests/test_phase10.py SessionAndUndoTests.test_a_same_size_edit_in_the_same_clock_tick_is_still_seen @@
 @@ tests/test_phase10.py SessionAndUndoTests.test_snapshots_store_each_content_once @@
 - A request changes `a.txt` and `b.txt` and creates `c.txt`; a question changes nothing; then *you* edit `b.txt`. `/undo`
   restores `a.txt`, removes `c.txt`, leaves your `b.txt` alone and says so, naming the request; the question was never
   an undo step. A second `/undo` has nothing to do.
+- A same-size edit given the file's old time stamp (`os.utime`, imitating Windows' coarse clock) is still noticed
+  and undone. With `RACY_NS` set to 0 the test fails — it reproduces the bug CI found on Windows.
 - Five files with the same content, snapshotted three times, are stored once.
 
 ## Offline detection
