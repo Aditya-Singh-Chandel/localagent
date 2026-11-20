@@ -10,6 +10,9 @@ For each model in order:
   * a "per day" 429 marks the model exhausted for today;
   * any other error (e.g. HTTP 400: our request is wrong) is raised at once,
     because retrying or switching model would not fix it.
+Hosted models (the ones with a limiter) share one internet connection, so when it is
+gone - the server's name cannot be looked up, or a network error repeats - they are all
+skipped for ``OFFLINE_COOLDOWN`` seconds and the local model answers at once.
 """
 from __future__ import annotations
 
@@ -25,6 +28,10 @@ from .ratelimit import QuotaExhausted, RateLimiter
 RETRYABLE = {429, 500, 502, 503, 504}
 QUOTA_VALUE = re.compile(r'quotaValue"?\s*:\s*"?(\d+)')
 RETRY_DELAY = re.compile(r'retryDelay"?\s*:\s*"?(\d+(?:\.\d+)?)s')
+OFFLINE_COOLDOWN = 60.0         # seconds before unreachable hosted models are tried again
+UNREACHABLE = "unreachable (offline?)"
+OFFLINE_HELP = ("Gemini cannot be reached - you seem to be offline. Work with the local model: "
+                "type /model offline (or start with --offline).")
 
 
 @dataclass
@@ -65,7 +72,9 @@ class FallbackBackend:
     def __init__(self, entries: list[Entry], max_retries: int = 3,
                  sleep: Callable[[float], None] = time.sleep,
                  on_notice: Callable[[str], None] = lambda _m: None,
-                 strong: list[Entry] | None = None) -> None:
+                 strong: list[Entry] | None = None,
+                 probe: Callable[[], bool] | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         if not entries:
             raise ValueError("FallbackBackend needs at least one model")
         self._entries = entries
@@ -75,11 +84,43 @@ class FallbackBackend:
         self._retries = max_retries
         self._sleep = sleep
         self._notice = on_notice
+        self._probe = probe                        # quick "is the internet back?" check
+        self._clock = clock
+        self._retry_at = 0.0                       # when unreachable hosted models are tried again
+        self.offline = False                       # True while the hosted models are unreachable
         self.last_model = ""                        # which model answered most recently
 
     def status(self) -> list[str]:
-        """Daily usage lines for every rate-limited model."""
-        return [e.limiter.status() for e in self._strong + self._entries if e.limiter]
+        """Daily usage lines for every rate-limited model (plus the offline state)."""
+        lines = [e.limiter.status() for e in self._strong + self._entries if e.limiter]
+        if self.offline:
+            lines.append("offline: Gemini is unreachable, so the local model answers")
+        return lines
+
+    @staticmethod
+    def _hosted(entry: Entry) -> bool:
+        """Hosted models are the rate-limited ones; the local model has no limiter."""
+        return entry.limiter is not None
+
+    def _hosted_down(self) -> bool:
+        """True while hosted models must be skipped because the internet seems to be gone."""
+        if not self.offline:
+            return False
+        if self._clock() < self._retry_at:
+            return True
+        if self._probe is not None and not self._probe():    # still no connection: wait more
+            self._retry_at = self._clock() + OFFLINE_COOLDOWN
+            return True
+        return False                                         # worth a real try again
+
+    def _go_offline(self, has_local: bool) -> None:
+        """Skip hosted models for a while; say so the first time."""
+        if not self.offline:
+            self._notice("Gemini is unreachable (no internet?): "
+                         + ("the local model answers for now" if has_local else "no local model is set up")
+                         + f"; trying Gemini again in {OFFLINE_COOLDOWN:.0f}s")
+        self.offline = True
+        self._retry_at = self._clock() + OFFLINE_COOLDOWN
 
     def escalate(self) -> bool:
         """Put the strong reserve models first; True only when this changes anything."""
@@ -103,7 +144,13 @@ class FallbackBackend:
         """Ask each model in turn; return the first answer."""
         problems: list[str] = []
         estimate = estimate_tokens(messages, tools)
-        for entry in self._order():
+        order = self._order()
+        has_local = any(not self._hosted(e) for e in order)
+        hosted_down = self._hosted_down()
+        for entry in order:
+            if self._hosted(entry) and hosted_down:
+                problems.append(f"{entry.name}: {UNREACHABLE}")
+                continue
             if entry.name in self._unavailable:
                 problems.append(f"{entry.name}: not available to this key")
                 continue
@@ -112,8 +159,16 @@ class FallbackBackend:
                 continue
             reply = self._try(entry, messages, tools, on_token, estimate, problems)
             if reply is not None:
+                if self._hosted(entry) and self.offline:
+                    self.offline = False
+                    self._notice(f"Gemini is reachable again: back online ({entry.name})")
                 self.last_model = entry.name
                 return reply
+            if self._hosted(entry) and problems and problems[-1].endswith(UNREACHABLE):
+                self._go_offline(has_local)            # the other hosted models share the line
+                hosted_down = True
+        if hosted_down and not has_local:
+            raise LLMError(OFFLINE_HELP + "\n  " + "\n  ".join(problems))
         raise LLMError("every model failed:\n  " + "\n  ".join(problems))
 
     def _try(self, entry: Entry, messages: list[dict], tools: list[dict],
@@ -128,6 +183,13 @@ class FallbackBackend:
                 problems.append(str(exc))
                 return None
             except LLMError as exc:
+                if exc.final:                                     # e.g. no local model at all
+                    problems.append(f"{entry.name}: {exc}")
+                    return None
+                if exc.status is None and self._hosted(entry) and (
+                        exc.dns or attempt >= 1 or (self._probe is not None and not self._probe())):
+                    problems.append(f"{entry.name}: {UNREACHABLE}")   # no internet: retrying
+                    return None                                       # would only wait in vain
                 if _is_daily_quota(exc):
                     found = QUOTA_VALUE.search(str(exc))
                     limit = int(found.group(1)) if found else None

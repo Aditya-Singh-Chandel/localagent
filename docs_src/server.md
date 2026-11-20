@@ -21,7 +21,8 @@ write and verify files).
   locks; `uuid` makes session ids; `ThreadingHTTPServer` handles each request in its own thread so one slow model call
   does not block other sessions. `os` reads `LOCALAGENT_TOKEN`. `MAX_BODY` caps a request body at 1 MB. `MAX_SESSIONS` (20) and `SESSION_TTL`
   (3600 s) are the default limits; `time` supplies the monotonic clock used for expiry. The shared flags
-  (`add_model_flags`, `model_flags`) come from `cli.py`, the shared rules (`overlay`, `gemini_history`) from `config.py`.
+  (`add_model_flags`, `model_flags`) and the mode rule (`choose_mode`) come from `cli.py`, the shared rules (`overlay`,
+  `gemini_history`) from `config.py`, and `stop_local_servers` from `localserver.py`.
 
 ## `TooManySessions`
 @@ localagent/server.py TooManySessions @@
@@ -84,14 +85,17 @@ write and verify files).
 - Creates the HTTP server without starting it. Port `0` asks the OS for a free port (used by the tests).
 
 @@ localagent/server.py main @@
-- Command-line entry (the shared `--backend/--model/--api-base/--sandbox`, also `--max-sessions`, `--session-ttl`; `--token` defaults to the
-  `LOCALAGENT_TOKEN` environment variable so the token need not appear in a command line): host (default `127.0.0.1`, i.e. this machine only), port, token, session root folder, backend,
-  model, API base and `--auto-approve`. It overlays those on the environment config, prints the address and whether a
-  token is required, and serves until Ctrl+C.
+- Command-line entry (the shared `--mode/--online/--offline/--backend/--model/--api-base/--sandbox`, also
+  `--max-sessions`, `--session-ttl`; `--token` defaults to the `LOCALAGENT_TOKEN` environment variable so the token need
+  not appear in a command line): host (default `127.0.0.1`, i.e. this machine only), port, token, session root folder,
+  backend, model, API base and `--auto-approve`. It overlays those on the environment config and — unless a backend
+  was chosen by hand — applies the same modes as the chat (`choose_mode`; a mode that cannot work is printed as a setup
+  problem). It prints the address, whether a token is required and the mode, and serves until Ctrl+C.
+- All sessions share one rate limiter per Gemini model (`shared_limiter`) and at most one local model server.
 - For Gemini it raises the history budget to 32K tokens with `gemini_history` — the same rule as the chat. Without it, every session used the 8K budget meant for local models and
   long conversations were summarised (an extra model call each time) far earlier than needed.
-- When it stops (Ctrl+C), it releases the port (`server_close`) and closes every live session (`close_all`), so no
-  sandbox container is left running. Found in the final verification: before, each session started with
+- When it stops (Ctrl+C), it releases the port (`server_close`), closes every live session (`close_all`), so no
+  sandbox container is left running, and stops a local model server it started. Found in the final verification: before, each session started with
   `--sandbox docker` left its container behind. (A process killed outright cannot clean up; then remove leftovers with
   `docker rm -f localagent-...`.)
 - Each reply carries `answer`, `events` (the progress lines), `calls` and `tokens` (the session's totals so far).

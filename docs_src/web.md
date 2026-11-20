@@ -10,7 +10,8 @@ you see each URL before it is opened.
 
 ## Module header
 @@ localagent/web.py header @@
-- `re` tidies whitespace; `urllib` downloads; `HTMLParser` (standard library) walks through HTML.
+- `re` tidies whitespace; `urllib` downloads; `HTMLParser` (standard library) walks through HTML; `__version__` goes
+  into the `User-Agent`.
 - `MAX_FETCH_BYTES` caps the download. `BLOCK_TAGS` are tags that start a new line (paragraphs, list items, headings,
   table rows ...). `HIDDEN_TAGS` hold no readable text (`script`, `style`, the `head` section ...).
 
@@ -32,7 +33,8 @@ you see each URL before it is opened.
 
 ## `fetch_text`
 @@ localagent/web.py fetch_text @@
-- Refuses non-web addresses. Sends a polite `User-Agent` (some sites block requests without one).
+- Refuses non-web addresses. Sends a polite `User-Agent` such as `localagent/0.6.0 (docs reader)` (some sites block
+  requests without one).
 - Reads at most 2 MB, notes the content type and the character set the server declared (default UTF-8).
 - HTTP errors (404, 403 ...) and network problems become `ValueError` with a short reason; the toolbox shows it to the
   model as `ERROR: could not fetch ...`.

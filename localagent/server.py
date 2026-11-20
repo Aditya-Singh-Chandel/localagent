@@ -24,9 +24,10 @@ from typing import Callable
 
 from .agent import Agent
 from .backends import make_backend
-from .cli import add_model_flags, model_flags
+from .cli import add_model_flags, choose_mode, model_flags
 from .config import Config, gemini_history, overlay
 from .llm import ChatBackend, LLMError
+from .localserver import stop_local_servers
 from .meter import Meter
 from .sandbox import walk_files
 from .tools import ToolBox
@@ -208,13 +209,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--auto-approve", action="store_true",
                         help="let sessions run code without asking (only on a locked-down host)")
     args = parser.parse_args(argv)
-    config = overlay(Config.from_env(), **model_flags(args), auto_approve=args.auto_approve)
+    try:
+        config = overlay(Config.from_env(), **model_flags(args), auto_approve=args.auto_approve)
+        if args.backend is None and "LOCALAGENT_BACKEND" not in os.environ:
+            config, _ = choose_mode(config, config.mode)      # the same modes as the chat
+    except ValueError as exc:
+        print(f"setup problem: {exc}")
+        return 2
     config = gemini_history(config)                          # the chat's history budget too
     manager = SessionManager(config, Path(args.root), max_sessions=args.max_sessions,
                              ttl=args.session_ttl)
     server = build_server(manager, args.host, args.port, args.token)
     print(f"localagent server on http://{args.host}:{server.server_port} "
-          f"(token {'required' if args.token else 'NOT set'})")
+          f"(token {'required' if args.token else 'NOT set'}; mode {config.mode})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -222,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         server.server_close()
         manager.close_all()                    # no sandbox container outlives the server
+        stop_local_servers()                   # nor a local model it started
     return 0
 
 

@@ -99,8 +99,8 @@ From now on **always** start Python as `.\.venv\Scripts\python` so this private 
 ```
 .\.venv\Scripts\python -m unittest discover -s tests -t .
 ```
-After about 20–30 seconds it should end with `OK`. These are automatic tests that use a *pretend* AI model, so they work
-without any setup. If you see `OK`, the program itself is healthy.
+After about 30–40 seconds it should end with `Ran 201 tests ... OK`. These are automatic tests that use a *pretend* AI
+model, so they work without any setup. If you see `OK`, the program itself is healthy.
 
 ---
 ## Part 4 — Give the agent a brain
@@ -126,17 +126,17 @@ for you and slows down or switches model automatically (see `ratelimit.md`, `res
 **Privacy:** on the free plan Google may use what you send to improve its products. Do not send private or secret code.
 
 ### Step 7 (Option B, optional). A model on your own computer
-This needs ~5 GB of downloads and 16 GB of RAM. It is the backup when Gemini is unavailable.
+This needs ~5 GB of downloads and 16 GB of RAM. It is the backup when Gemini is unavailable — no internet, or the daily
+quota used up — and the only brain in offline mode (nothing then leaves your computer).
 1. Download the model file **Qwen3-8B-Q4_K_M.gguf** from <https://huggingface.co/Qwen/Qwen3-8B-GGUF> (Files tab) into
-   a folder named `models` inside the project.
+   `%USERPROFILE%\.localagent\models\` (create the folder; inside the project, a `models` folder works too).
 2. Download the **llama.cpp** Windows zip for your PC from <https://github.com/ggml-org/llama.cpp/releases>: the file
-   ending `bin-win-cpu-x64.zip` (any PC) or `bin-win-vulkan-x64.zip` (uses your graphics card a little). Unzip it into
-   `bin\llamacpp` (CPU) or `bin\llamacpp-vulkan` (Vulkan) inside the project.
-3. Start the model server in its **own** PowerShell window and leave it open:
-   ```
-   .\serve.ps1
-   ```
-   Wait until it prints that the server is listening. (`.\serve.ps1 -GpuLayers 0` = CPU only.)
+   ending `bin-win-vulkan-x64.zip` (uses your graphics card when it can) or `bin-win-cpu-x64.zip` (any PC). Unzip it into
+   `%USERPROFILE%\.localagent\llama\` (inside the project, `bin\llamacpp-vulkan` or `bin\llamacpp` work too).
+3. That is all: you do **not** start anything yourself. When the local model is needed, the agent starts it, waits
+   until it has loaded (10-60 seconds), and stops it when you leave. Try it with
+   `.\.venv\Scripts\python -m localagent --offline -p "say hello"` (close big programs first: it needs ~6 GB of free
+   memory). Everything about online and offline: `01-setup-and-models.md`.
 
 ---
 ## Part 5 — The safety box (Docker)
@@ -164,9 +164,9 @@ docker build -t localagent-sandbox:latest -f docker/sandbox.Dockerfile docker
 ```
 .\.venv\Scripts\python -m localagent --doctor
 ```
-It checks the setup the agent would choose by itself (first lines say what it chose: Gemini when the key is set, the
-Docker sandbox when it is ready, your local model when `serve.ps1` is running). Every line should start with `ok`,
-`note` or one of those choices. A line starting with `FAIL` tells you exactly what to fix.
+It checks the setup the agent would choose by itself (first lines say what it chose: Gemini when the key is set, with
+your local model as the offline backup when Step 7 is done; the Docker sandbox when it is ready). Every line should
+start with `ok`, `note` or one of those choices. A line starting with `FAIL` tells you exactly what to fix.
 
 ### Step 11. Install the `localagent` command (once) — use it in ANY folder, like `claude`
 From the project folder:
@@ -183,16 +183,17 @@ cd C:\path\to\your\project
 localagent
 ```
 That is all. The agent works on the folder you started it in — exactly like Claude Code — and picks the best setup it
-finds, telling you what it chose (real banner, 4 Nov 2026):
+finds, telling you what it chose (banner of version 0.6, 20 Nov 2026):
 ```
-localagent | gemini:gemini-3.5-flash-lite > gemini-3.1-flash-lite > gemini-3.5-flash > gemini-2.5-flash > openai:qwen3:8b | sandbox=docker | folder=...\demo-project
-  backend: gemini (GEMINI_API_KEY is set)
+localagent 0.6.0 | auto | gemini:gemini-3.5-flash-lite > gemini-3.1-flash-lite > gemini-3.5-flash > gemini-2.5-flash > local:Qwen3-8B-Q4_K_M | sandbox=docker | folder=...\demo-project
+  mode auto: Gemini answers (GEMINI_API_KEY is set)
+  offline backup: Qwen3-8B-Q4_K_M.gguf with llama.cpp (started when needed)
   sandbox: docker (Docker and the sandbox image are ready)
-  fallback: the local model server at http://127.0.0.1:8080/v1
+  history budget: 32768 tokens (Gemini handles long conversations)
 ```
-(The fallback line only appears while `.\serve.ps1` is running. Flags such as `--backend`, `--sandbox` or `--no-auto`
-override the automatic choices. Without the installer: `.\.venv\Scripts\python -m localagent --workspace C:\path\to\project`
-from the agent's folder.)
+(`localagent --offline` uses only the local model, `--online` only Gemini; `/model` switches later. Flags such as
+`--backend`, `--sandbox` or `--no-auto` override the automatic choices. Without the installer:
+`.\.venv\Scripts\python -m localagent --workspace C:\path\to\project` from the agent's folder.)
 
 **First time in a project, type `/init`.** The agent looks around and writes `AGENT.md` — notes on how to run and test
 the project that it reads at the start of every session (like Claude Code's `CLAUDE.md`). Edit it freely. Real run:
@@ -260,19 +261,26 @@ Commands inside the chat:
 | Type | Does |
 |---|---|
 | `/plan <request>` | look first, show a plan, carry it out only if you say yes |
+| `/model`, `/online`, `/offline`, `/auto` | see who answers; switch between Gemini and your local model |
 | `/init` | write or update `AGENT.md` (project notes the agent always reads) |
 | `/compact` | replace the long conversation with a short summary (saves tokens; also happens automatically) |
-| `/undo` | undo the file changes of your last request |
-| `/reset` | forget the conversation (files stay) |
+| `/undo` | undo the file changes of your last request that changed something (your own later edits are kept) |
+| `/clear` | forget the conversation (files stay) |
+| `/resume` | list earlier conversations of this project; `/resume 2` continues one |
 | `/stats` | model calls, tokens, time, and today's Gemini quota use per model |
+| `/permissions`, `/doctor` | the rules in force; the setup check |
+| `!git status` | run a command yourself (no AI call); the AI sees the output with your next request |
+| `# use pytest` | save a note in `AGENT.md` |
+| `@file.py` in a request | attach that file |
 | `/help`, `/quit` | help; exit |
 | **Ctrl+C** | stop the current task (the conversation is kept); at the prompt it exits |
 | line ending in `\` or a `"""` block | type or paste a multi-line request |
 
-Useful flags when starting: `--auto-approve` (never ask — only sensible with the Docker sandbox), `--network` (allow
-internet inside the sandbox, e.g. for `pip install`), `--allow-shell` (let the model run commands such as `git status`
-or `npm test` **on your computer**, asking each time), `--resume` (continue the last conversation), `--type-check`,
-`--doctor` (check the setup), `--no-auto` (no automatic choices).
+Useful flags when starting: `--online` / `--offline` (only Gemini / only your local model), `-p "request"` (answer
+once and exit), `-c` (continue the last conversation), `--auto-approve` (never ask — only sensible with the Docker
+sandbox), `--network` (allow internet inside the sandbox, e.g. for `pip install`), `--allow-shell` (let the model run
+commands such as `git status` or `npm test` **on your computer**, asking each time), `--type-check`, `--doctor` (check
+the setup), `--version`, `--no-auto` (no automatic choices).
 
 ### Part 6b — Permission rules and extra tools (optional)
 Create `.localagent\settings.json` in a project (or `%USERPROFILE%\.localagent\settings.json` for all projects):
@@ -324,11 +332,11 @@ the code blocks from each page in order:
 3. `openai_compat.md` → `localagent/openai_compat.py`
 4. `ratelimit.md` → `localagent/ratelimit.py`
 5. `resilient.md` → `localagent/resilient.py`
-6. `backends.md` → `localagent/backends.py`
-7. `meter.md` → `localagent/meter.py`
-8. `sandbox.md` → `localagent/sandbox.py`
-9. `verify.md` → `localagent/verify.py`
-10. `runners.md` → `localagent/runners.py`
+6. `sandbox.md` → `localagent/sandbox.py`
+7. `localserver.md` → `localagent/localserver.py` (the offline model)
+8. `backends.md` → `localagent/backends.py`
+9. `meter.md` → `localagent/meter.py`
+10. `verify.md` → `localagent/verify.py`; `runners.md` → `localagent/runners.py`
 11. `settings.md` → `localagent/settings.py` (permission rules)
 12. `web.md` → `localagent/web.py` (reading web pages)
 13. `mcp.md` → `localagent/mcp.py` (MCP servers)
@@ -341,11 +349,13 @@ the code blocks from each page in order:
 20. `cli.md` → `localagent/cli.py`
 21. `server.md` → `localagent/server.py`
 22. `package.md` → `localagent/__init__.py`, `localagent/__main__.py`
-23. `evals.md` → `evals/*`; `tests.md` → `tests/*`; `build_docs.md` → `tools/build_docs.py`
+23. `evals.md` → `evals/*`; `tests.md` → `tests/*`; `build_docs.md` → `tools/build_docs.py`;
+    `check_commit.md` → `tools/check_commit.py` (and `.githooks/pre-commit`, shown in the project folder)
 24. `docker.md` → `docker/sandbox.Dockerfile`, `Dockerfile`, `.dockerignore`, `docker-compose.yml`
 25. `install.ps1` is in the project folder (36 lines, with a comment block explaining each step).
-26. Also create `pyproject.toml` (the package description: name, `dev` extras, the `localagent` command) and `serve.ps1` (shown in
-    `01-setup-and-models.md`/the project folder) if you use a local model.
+26. Also create `pyproject.toml` (the package description: name, version read from `localagent/__init__.py`, `dev`
+    extras, the `localagent` command), `.gitignore` and `.gitattributes` (in the project folder, each line commented),
+    and `serve.ps1` (shown in `01-setup-and-models.md`/the project folder) if you want to start the local model by hand.
 
 Then run Step 5 (tests). If they pass, your rebuild is identical in behaviour.
 
@@ -359,14 +369,19 @@ Then run Step 5 (tests). If they pass, your rebuild is identical in behaviour.
 | `FAIL Gemini rejected the key (HTTP 400/401/403)` | key copied wrong or deleted | create a new key, repeat Step 6 |
 | `[gemini-... busy (503); retrying in 2s]` | Google is overloaded | nothing — the agent retries / switches model by itself |
 | `[gemini-... busy (429); retrying in 18s]` | per-minute limit | nothing — it waits as long as Google asks |
-| `every model failed: ... daily quota used up` | every model's daily quota is used (strong models: ~20/day) | wait until midnight US Pacific time, or add the local backup (`--fallback openai`) |
+| `every model failed: ... daily quota used up` | every model's daily quota is used (strong models: ~20/day) | wait until midnight US Pacific time, or set up the local model (Step 7): auto mode then uses it |
+| `setup problem: No model is available yet` | no Gemini key and no local model | Step 6 or Step 7 |
+| `setup problem: LOCALAGENT_... must be ...` | a typo in that environment variable | fix it with `setx`, or delete it in "Edit environment variables for your account" |
+| `[Gemini is unreachable (no internet?): the local model answers for now ...]` | no internet | nothing — it switches back by itself; `/model offline` to stay offline |
+| `the local model server stopped while starting` + log lines | usually too little free memory | close big programs (browsers), try again; the log is `%USERPROFILE%\.localagent\llama-server.log` |
+| `No local model is available` | Step 7 not done (or files in other folders) | Step 7, or set `LOCALAGENT_MODEL_FILE` / `LOCALAGENT_LLAMA_SERVER` |
 | `FAIL Docker is not running` | Docker Desktop closed | open Docker Desktop, wait until it is running |
 | `sandbox image ... missing` | Step 9 not done | run the `docker build` command from Step 9 |
 | `REJECTED (1/3) ...` in the output | the model wrote broken code | normal: it reads the errors and fixes them |
 | `STOP: attempts exhausted` | the model failed 3 times on one file | rephrase the request more precisely, or split it |
 | `Stopped after 20 model calls` | task too big for one request | ask for smaller steps |
 | `exit code 124 ... timed out` | the program ran longer than 30 s | ask for a faster approach, or raise `command_timeout` in `config.py` |
-| `no OpenAI-compatible server at http://127.0.0.1:8080/v1` | local model server not started | Step 7.3 in a separate window |
+| `no OpenAI-compatible server at http://127.0.0.1:8080/v1` | you chose `--backend openai` but no server runs | leave out `--backend` (the agent starts the model itself), or run `.\serve.ps1` in a separate window |
 | `localagent` is not recognised | installer not run, or old window | Step 11, then open a **new** PowerShell |
 | `[...: not available (HTTP 404); skipping it]` | Google retired that model | nothing — the chain moves on; remove it from `LOCALAGENT_GEMINI_MODELS` if you set that |
 | Very slow answers, `busy (network)` lines | Google is overloaded right now | nothing — it retries; add the local fallback for bad days |

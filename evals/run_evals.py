@@ -6,13 +6,14 @@ Each task gets a fresh temporary workspace, so tasks cannot affect each other.
 from __future__ import annotations
 
 import argparse
+import os
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from localagent.agent import Agent
 from localagent.backends import make_backend
-from localagent.cli import add_model_flags, model_flags, model_label
+from localagent.cli import add_model_flags, choose_mode, model_flags, model_label
 from localagent.config import Config, gemini_history, overlay
 from localagent.llm import ChatBackend, LLMError
 from localagent.meter import Meter
@@ -67,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trace", action="store_true", help="print every tool call")
     args = parser.parse_args(argv)
     config = overlay(Config.from_env(), **model_flags(args), type_check=args.type_check)
+    if args.backend is None and "LOCALAGENT_BACKEND" not in os.environ:
+        config, _ = choose_mode(config, config.mode)    # --online / --offline like the chat
     config = gemini_history(config)                     # measure what the chat really uses
     backend = make_backend(config)
     tasks = [t for t in TASKS if not args.only or t.name in args.only]

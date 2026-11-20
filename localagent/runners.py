@@ -3,7 +3,7 @@
 Both runners offer the same method, ``run(kind, args)``, so the tools do not care
 which one is active:
   * kind "python"  -> run a Python file          (args: [file, extra args...])
-  * kind "tests"   -> run unittest discovery      (args: [])
+  * kind "tests"   -> run the project's tests     (args: [], or [your test command])
   * kind "shell"   -> run a shell command line    (args: [command])  -- Docker, or --allow-shell
 
 The Docker runner starts ONE long-lived container per agent the first time it is
@@ -15,7 +15,9 @@ normal user, and only sees the workspace folder (mounted at /work).
 from __future__ import annotations
 
 import atexit
+import json
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -26,6 +28,11 @@ from .config import Config
 from .sandbox import run_command, shell_argv
 
 CONTAINER_WORKDIR = "/work"
+VENV_FOLDERS = (".venv", "venv", "env")
+NO_TEST_SCRIPT = "no test specified"            # npm's placeholder "test" script
+# Inside the container: pytest when it is installed (it also runs unittest tests), else unittest.
+PYTHON_TESTS_SH = ('if python -c "import pytest" 2>/dev/null; then python -m pytest -q --tb=short; '
+                   'else python -m unittest discover {start}; fi')
 
 
 class Runner(Protocol):
@@ -39,29 +46,97 @@ class Runner(Protocol):
     def stop(self) -> None: ...
 
 
+def project_python(root: Path) -> str:
+    """The Python of the project: a virtual environment in the project folder (``.venv``,
+    ``venv``, ``env``), else an activated one, else the agent's own. The project's packages
+    are installed there, so its code and tests can import them."""
+    inside = "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    active = os.environ.get("VIRTUAL_ENV")
+    candidates = [root / f / inside for f in VENV_FOLDERS] + ([Path(active) / inside] if active else [])
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
+
+
+def _unittest_start(root: Path) -> str:
+    """Where unittest should look: a ``tests`` folder that is not a package can only be found
+    by starting there (Python 3.11+ no longer enters folders without __init__.py)."""
+    tests = root / "tests"
+    plain = tests.is_dir() and not (tests / "__init__.py").exists() and not any(root.glob("test*.py"))
+    return "-s tests" if plain else ""
+
+
+PYTHON_TEST_GLOBS = ("test*.py", "*_test.py", "tests/test*.py", "tests/*_test.py",
+                     "tests/*/test*.py", "test/test*.py")   # a fixed depth: never node_modules
+
+
+def test_kind(root: Path) -> str:
+    """Which test tool fits the project: "python", "npm", "go" or "cargo"."""
+    python_tests = any(next(root.glob(pattern), None) for pattern in PYTHON_TEST_GLOBS)
+    if not python_tests:
+        package = root / "package.json"
+        if package.is_file():
+            try:
+                script = json.loads(package.read_text(encoding="utf-8")).get("scripts", {}).get("test", "")
+            except (ValueError, OSError, AttributeError):
+                script = ""
+            if script and NO_TEST_SCRIPT not in script:
+                return "npm"
+        if (root / "go.mod").is_file():
+            return "go"
+        if (root / "Cargo.toml").is_file():
+            return "cargo"
+    return "python"
+
+
 class LocalRunner:
-    """Runs commands directly on this computer with the agent's own Python."""
+    """Runs commands directly on this computer with the project's Python."""
 
     def __init__(self, config: Config, root: Path) -> None:
         self._cfg = config
         self._root = root
+        self._pytest: bool | None = None          # is pytest installed? (asked once)
         # A shell on the real computer is powerful, so it is opt-in (--allow-shell) and
         # every command still needs the user's approval in the toolbox.
         self.supports_shell = config.allow_host_shell
         self.shell_label = ("PowerShell on this Windows computer" if os.name == "nt"
                             else "sh on this computer")
 
+    def _has_pytest(self, python: str) -> bool:
+        """True when the project's Python can run pytest."""
+        if self._pytest is None:
+            code, _ = run_command([python, "-c", "import pytest"], self._root, 30, 200)
+            self._pytest = code == 0
+        return self._pytest
+
+    def _tests_argv(self) -> list[str]:
+        """The project's test command (see ``test_kind``)."""
+        python = project_python(self._root)
+        kind = test_kind(self._root)
+        if kind == "npm":
+            return [shutil.which("npm") or "npm", "test"]
+        if kind == "go":
+            return ["go", "test", "./..."]
+        if kind == "cargo":
+            return ["cargo", "test"]
+        if self._has_pytest(python):
+            return [python, "-m", "pytest", "-q", "--tb=short"]
+        return [python, "-m", "unittest", "discover", *_unittest_start(self._root).split()]
+
     def run(self, kind: str, args: list[str]) -> tuple[int, str]:
         """Run on the host inside the workspace folder, with the timeout and output cap."""
+        timeout = self._cfg.command_timeout
         if kind == "python":
-            argv = [sys.executable, *args]
+            argv = [project_python(self._root), *args]
         elif kind == "tests":
-            argv = [sys.executable, "-m", "unittest", "discover"]
+            argv = shell_argv(args[0]) if args else self._tests_argv()   # your command, or found
+            timeout = max(self._cfg.test_timeout, timeout)
         elif not self.supports_shell:
             return 126, "The shell tool needs --allow-shell or the Docker sandbox (--sandbox docker)."
         else:
             argv = shell_argv(args[0])
-        return run_command(argv, self._root, self._cfg.command_timeout, self._cfg.max_output_chars)
+        return run_command(argv, self._root, timeout, self._cfg.max_output_chars)
 
     def stop(self) -> None:
         """Nothing to clean up for local runs."""
@@ -114,24 +189,35 @@ class DockerRunner:
         except (OSError, subprocess.TimeoutExpired):
             pass                                   # best effort; `docker ps` shows leftovers
 
+    def _tests_command(self) -> list[str]:
+        """The project's test command inside the container (see ``test_kind``)."""
+        kind = test_kind(self._root)
+        if kind == "npm":
+            return ["npm", "test"]
+        if kind == "go":
+            return ["go", "test", "./..."]
+        if kind == "cargo":
+            return ["cargo", "test"]
+        return ["sh", "-c", PYTHON_TESTS_SH.format(start=_unittest_start(self._root))]
+
     def run(self, kind: str, args: list[str]) -> tuple[int, str]:
         """Run inside the container; a timeout also kills the processes inside it."""
         try:
             self.start()
         except RuntimeError as exc:
             return 125, str(exc)
+        seconds = self._cfg.command_timeout
         if kind == "python":
             inner = ["python", *args]
         elif kind == "tests":
-            inner = ["python", "-m", "unittest", "discover"]
+            inner = ["sh", "-c", args[0]] if args else self._tests_command()
+            seconds = max(self._cfg.test_timeout, seconds)
         else:
             inner = ["sh", "-c", args[0]]
-        argv = ["docker", "exec", self.name, "timeout", "-s", "KILL",
-                str(self._cfg.command_timeout), *inner]
-        code, out = run_command(argv, self._root, self._cfg.command_timeout + 15,
-                                self._cfg.max_output_chars)
+        argv = ["docker", "exec", self.name, "timeout", "-s", "KILL", str(seconds), *inner]
+        code, out = run_command(argv, self._root, seconds + 15, self._cfg.max_output_chars)
         if code == 137:                           # killed by `timeout -s KILL`
-            return 124, f"Command timed out after {self._cfg.command_timeout}s and was killed.\n{out}"
+            return 124, f"Command timed out after {seconds}s and was killed.\n{out}"
         return code, out
 
 

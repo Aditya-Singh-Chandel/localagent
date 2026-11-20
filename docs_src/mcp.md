@@ -25,7 +25,7 @@ freeze the agent — every request has a timeout.
 @@ localagent/mcp.py header @@
 - `json` encodes messages; `os` passes environment variables to the server; `shutil.which` finds the program (on
   Windows `npx` is really `npx.cmd`, which `which` resolves); `subprocess` starts it; `threading` runs the reader and
-  provides the waiting mechanism.
+  provides the waiting mechanism; `__version__` is the version we announce to the server.
 - `PROTOCOL_VERSION` is the MCP revision we announce. `SCHEMA_KEYS` is the set of JSON-schema words every model API
   accepts in tool definitions.
 

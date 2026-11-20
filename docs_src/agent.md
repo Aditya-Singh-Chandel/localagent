@@ -17,9 +17,15 @@ several independent tool calls per turn, and every call in a turn is executed be
 
 ## Module header
 @@ localagent/agent.py header @@
-- Imports `json` (parse/print tool arguments), `replace` (copy the config for a helper), `Callable`, and the components wired together: config, system-prompt
-  builder, backend interface and token-sink type, meter, `truncate`, session log, toolbox.
-- `REMOVED` is the placeholder that replaces old tool output when space runs short.
+- Imports `json` (parse/print tool arguments), `replace` (copy the config for a helper or a model switch), `Callable`,
+  and the components wired together: config, system-prompt builder, backend interface and token-sink type, the history
+  helpers `fit_history` and `message_size` (`llm.py`), meter, `truncate`, session log, toolbox.
+- `REMOVED` (the placeholder that replaces old tool output when space runs short) now lives in `llm.py` with the rest
+  of the history fitting; `__all__` re-exports it so older imports keep working.
+- `FILLER_WORDS` are the polite words skipped before looking for an action verb (see `_wants_change`).
+- `EMPTY_REPLY` is the reminder sent after an empty answer; `EMPTY_TWICE` the message when the model answers with
+  nothing twice. `BAD_ARGUMENTS` is the result of a tool call whose arguments are broken JSON. `CUT_SUMMARY` finds the
+  start of a `finish` summary that was cut off.
 - `WRITE_TOOLS` names the tools that change files; `MAX_REPEATS` (3) and `REPEAT_WARNING` belong to the repeat guard
   (see `Agent._run_one`).
 - `ACTION_WORDS` lists verbs that start a request to *change* something (fix, add, create...). `NUDGE` is the reminder
@@ -51,14 +57,23 @@ several independent tool calls per turn, and every call in a turn is executed be
 
 ## `_wants_change`
 @@ localagent/agent.py _wants_change @@
-- Lower-cases the request, takes its first word, strips punctuation and checks it against `ACTION_WORDS`. "Fix the
-  bug" -> True; "Why is this slow?" -> False. A deliberately simple rule: it costs nothing and only decides whether the
-  one-time reminder may be sent, so a wrong guess just costs one extra model call or skips a reminder.
+- Lower-cases the request and skips polite words (`FILLER_WORDS`: "please", "can you", "go ahead and", "I want you
+  to" ...); the first other word, stripped of punctuation, must be an `ACTION_WORDS` verb. "Fix the bug" and "Please fix
+  the bug" -> True; "Why is this slow?" and "Can you explain this?" -> False. Before 0.6 only the very first word
+  counted, so the most natural way to ask — "please fix ..." — never got the reminder. A deliberately simple rule: it
+  costs nothing and only decides whether the one-time reminder may be sent, so a wrong guess just costs one extra model
+  call or skips a reminder.
 
-## `_parse_args`
+## `_parse_args` and `_broken_args`
 @@ localagent/agent.py _parse_args @@
 - Models are inconsistent: tool arguments may be a dict (returned as is) or a JSON string (parsed). A parse failure, a
-  non-dict result, or any other type becomes `{}`; the tool then reports "bad arguments" and the model can retry.
+  non-dict result, or any other type becomes `{}`.
+
+@@ localagent/agent.py _broken_args @@
+- True when the arguments are text that is not valid JSON. That nearly always means the model's answer was **cut off**
+  (it hit its output limit in the middle of a long `write_file`). Before 0.6 such a call reached the tool as `{}` and
+  the model was told "bad arguments: KeyError('path')" — so it hunted for a mistake in its arguments instead of
+  writing less at once.
 
 ## `Agent`
 @@ localagent/agent.py Agent @@
@@ -73,7 +88,18 @@ several independent tool calls per turn, and every call in a turn is executed be
 @@ localagent/agent.py Agent._system_message @@
 @@ localagent/agent.py Agent.refresh_system @@
 - `_system_message` builds a fresh system prompt (re-reading `AGENT.md` and the file list). `refresh_system` swaps it
-  in place — used after `/init` writes `AGENT.md`, so the new notes apply at once.
+  in place — used after `/init` writes `AGENT.md` and after a `# note`, so the new notes apply at once.
+
+## Switching models mid-conversation
+@@ localagent/agent.py Agent.backend @@
+- The client that answers now. The CLI reads its `last_model` to show who answered each request.
+
+@@ localagent/agent.py Agent.set_backend @@
+- Used by `/model online|offline|auto`: from now on another model answers, and the **conversation stays**. The history
+  is stored in one neutral shape that every backend converts on the way out (Gemini's thought signatures are kept for
+  Gemini and never sent elsewhere — see `openai_compat.md`), so nothing needs converting here.
+- The new config brings the new history budget (and mode and backend names). Going offline usually shrinks the budget
+  from 32K to 8K tokens; nothing is cut at once — the next request compacts or trims to fit.
 
 @@ localagent/agent.py Agent._add @@
 - The single place messages enter the history. It appends in memory and, if a log exists, writes the same message to
@@ -91,20 +117,27 @@ several independent tool calls per turn, and every call in a turn is executed be
   only need to come after their request). Returns how many it fixed.
 
 @@ localagent/agent.py Agent.reset @@
-- Starts over with a fresh system prompt. Files on disk are untouched.
+- Starts over with a fresh system prompt (`/clear`, `/reset`). Files on disk are untouched. The session log gets a
+  `reset` event, so `--resume` does not bring the cleared conversation back (it did before 0.6).
 
 ## Compaction — summaries instead of forgetting
 @@ localagent/agent.py Agent._size @@
 @@ localagent/agent.py Agent._budget @@
-- `_size`: total characters in the history (about 4 per token). `_budget`: 70 % of the context window in characters.
+- `_size`: total characters in the history — text **and tool-call arguments** (`message_size`; about 4 characters per
+  token). Before 0.6 the arguments were not counted, so the file contents of every `write_file` were invisible to the
+  budget. `_budget`: 70 % of the context window in characters.
 
 @@ localagent/agent.py Agent.compact @@
 - Like Claude Code's compaction: one model call turns the whole conversation into a summary (goals, decisions,
   files, what was verified, what is open), and the history becomes *system prompt + summary + "Understood"*. Later
   requests then send a few hundred tokens instead of the whole past, which saves tokens on every following call.
-- Needs more than 3 messages. The tool list is still sent (some servers reject tool calls in the history otherwise),
-  but the prompt says not to call tools; only the text is used. An empty summary leaves the history unchanged.
-- The new messages are also written to the session log, so `--resume` continues from the summary.
+- Needs more than 3 messages. The history sent with the request is first fitted to the budget (`fit_history`): the
+  request that asks for the summary must itself fit the model's window, or the model refuses it — which is exactly
+  when compaction is needed most, for example right after switching to the 8K local model.
+- The tool list is still sent (some servers reject tool calls in the history otherwise), but the prompt says not to
+  call tools; only the text is used. An empty summary leaves the history unchanged.
+- The session log gets a `compact` event followed by the new messages, so `--resume` continues from the summary
+  instead of restoring the whole long past *and* the summary (which overflowed the next request before 0.6).
 - Used by `/compact` and automatically by `run` (below).
 
 ## `Agent.run` — one user request
@@ -130,7 +163,13 @@ several independent tool calls per turn, and every call in a turn is executed be
   start helpers; `helpers=False` switches it off), plus `finish`. Plan mode may use `todo` and `delegate`. Then it loops at most `max_turns` times.
 - `_trim_history()` makes room if needed; `self._backend.chat(...)` calls the model with the full history and the tool
   specs; `self._meter.record(reply)` accounts for tokens and time.
-- `calls` is the list of requested tools (`or []` handles `None`). `kept` is the message we store: role and text only.
+- `calls` is the list of requested tools (`or []` handles `None`).
+- **An empty answer** (no text, no tool calls) is not an answer. Gemini sometimes returns one when its tool call went
+  wrong on its side. Before 0.6 it was shown to you as a blank reply. Now the agent stores a placeholder
+  `(empty reply)` — Gemini rejects conversations containing an empty turn — adds `EMPTY_REPLY`, and asks once more
+  (`empty_retried`); a second empty answer ends the request with `EMPTY_TWICE`, which suggests rephrasing or another
+  model.
+- `kept` is the message we store: role and text only.
 - If there are calls, each gets a unique id (`call.setdefault("id", ...)`) because OpenAI-style servers need ids to
   match results to requests; then they are attached to `kept`. `_add(kept)` stores it (dropping `thinking` etc.).
 - No calls → normally this is the final answer. **Exception (the nudge):** if the request looked like an instruction to
@@ -181,12 +220,15 @@ several independent tool calls per turn, and every call in a turn is executed be
 ## `Agent._finish_summary`
 @@ localagent/agent.py Agent._finish_summary @@
 - Returns the `summary` argument of a `finish` call in this turn (default "Done."), or `None` when there is none.
+- When the arguments were cut off, the summary is rescued as far as it got (`CUT_SUMMARY` finds its start; escaped
+  line breaks and quotes are restored) and marked `[answer cut off]` — better than losing a long answer completely.
 
 ## `Agent._run_one` and `Agent._execute` — running a turn's tool calls
 @@ localagent/agent.py Agent._run_one @@
-- Reads the call's function name and arguments (normalised by `_parse_args`). `finish` is not executed; it just
-  returns `OK: finished` (the decision is made in `run`); `delegate` starts a helper. A tool this request may not use
-  is refused with
+- Reads the call's function name. `finish` is not executed; it just returns `OK: finished` (the decision is made in
+  `run`). Broken (cut-off) arguments return `BAD_ARGUMENTS`, which says what happened and suggests writing a big file
+  in smaller parts. Otherwise the arguments are normalised by `_parse_args`; `delegate` starts a helper. A tool this
+  request may not use is refused with
   `PLAN_ONLY_ERROR` (plan mode) or `NOT_ALLOWED` — a second lock behind the reduced tool list, in case a model calls a
   tool it was not offered.
 - **Repeat guard:** for write tools only (`WRITE_TOOLS`) it counts identical `(name, arguments)` pairs within the request.
@@ -213,8 +255,8 @@ several independent tool calls per turn, and every call in a turn is executed be
 
 ## `Agent._trim_history`
 @@ localagent/agent.py Agent._trim_history @@
-- `budget` and `size` come from `_budget` and `_size`.
-- Walks everything except the newest 4 messages; once under budget it stops. Only `tool` messages not already blanked
-  are replaced by `REMOVED`, after subtracting the saved size. User and assistant messages are kept so the
-  conversation stays coherent. Trade-off: this rewrites history (invalidating the server's cache once), but only when
-  the context is nearly full — when something must go anyway.
+- Runs before every model call. When the history is larger than the budget it is replaced by `fit_history`'s shortened
+  copy (see `llm.md`): old tool outputs blanked first, then old call arguments shortened, and only as a last resort the
+  oldest exchanges dropped. The newest 4 messages and the system prompt are never touched. Trade-off: this rewrites
+  history (invalidating the server's cache once), but only when the context is nearly full — when something must go
+  anyway. Compaction (between requests, at 60 %) normally comes first, so dropping is rare.

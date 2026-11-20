@@ -14,11 +14,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from . import __version__
 from .backends import model_limits
 from .config import Config
+from .localserver import can_start, describe_local, find_llama_server, find_model_file, running_local
 from .ratelimit import RateLimiter
 from .runners import docker_available
 from .sandbox import run_command
+
+SETUP_DOC = "docs/01-setup-and-models.md"
 
 
 def _get_json(url: str, headers: dict[str, str] | None = None) -> dict:
@@ -87,6 +91,26 @@ def _check_openai(config: Config, lines: list[str]) -> bool:
     return True
 
 
+def _check_local(config: Config, lines: list[str]) -> bool:
+    """The local model: a server that answers, or llama.cpp plus a model file it can start."""
+    if running_local(config):
+        lines.append(f"ok    local model: {describe_local(config)}")
+        return True
+    program, model = find_llama_server(config), find_model_file(config)
+    if program is not None and model is not None and can_start(config):
+        lines.append(f"ok    local model: {model.name} ({model.stat().st_size // 1_000_000} MB), "
+                     f"started with {program} when needed")
+        return True
+    if program is None:
+        lines.append(f"FAIL  llama.cpp's llama-server was not found (see {SETUP_DOC})")
+    if model is None:
+        lines.append(f"FAIL  no .gguf model file was found (see {SETUP_DOC})")
+    if program is not None and model is not None:
+        lines.append(f"FAIL  nothing answers at {config.api_base}, and a server can only be "
+                     "started for an address on this computer")
+    return False
+
+
 def _check_gemini(config: Config, lines: list[str]) -> bool:
     if not config.gemini_api_key:
         lines.append("FAIL  GEMINI_API_KEY is not set (see docs/04-start-from-zero.md, step 6)")
@@ -110,22 +134,27 @@ def _check_gemini(config: Config, lines: list[str]) -> bool:
         rpm, rpd = model_limits(config, model)
         usage = RateLimiter(model, rpm, config.tpm, rpd, config.usage_file).status()
         lines.append(f"      {usage}")
-    if config.fallback_backend in ("openai", "ollama"):    # an optional backup: never a FAIL
+    backups = {"openai": _check_openai, "ollama": _check_ollama, "local": _check_local}
+    if config.fallback_backend in backups:              # an optional backup: never a FAIL
         found: list[str] = []
-        check = _check_openai if config.fallback_backend == "openai" else _check_ollama
-        if check(config, found):
+        if backups[config.fallback_backend](config, found):
             lines += found
         else:
-            lines.append("note  the backup model is not reachable (optional - Gemini works without it):")
+            lines.append("note  the offline backup is not available (optional - Gemini works "
+                         "without it):")
             lines += ["      " + line[6:] for line in found]
+    elif config.mode == "auto":
+        lines.append(f"note  no offline backup: without internet nothing answers (see {SETUP_DOC})")
     return healthy
 
 
 def run_doctor(config: Config) -> tuple[bool, list[str]]:
     """Return (everything essential works, human-readable report lines)."""
-    lines = [f"python {sys.version.split()[0]}"]
+    lines = [f"localagent {__version__}, python {sys.version.split()[0]}",
+             f"mode  {config.mode} (backend {config.backend})"]
     _check_tools(lines)
     sandbox_ok = _check_sandbox(config, lines)
-    checks = {"ollama": _check_ollama, "openai": _check_openai, "gemini": _check_gemini}
+    checks = {"ollama": _check_ollama, "openai": _check_openai, "gemini": _check_gemini,
+              "local": _check_local}
     backend_ok = checks[config.backend](config, lines) if config.backend in checks else True
     return sandbox_ok and backend_ok, lines

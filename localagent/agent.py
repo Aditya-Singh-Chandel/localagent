@@ -15,16 +15,23 @@ from typing import Callable
 
 from .config import Config
 from .context import build_system_prompt
-from .llm import ChatBackend, TokenSink
+from .llm import REMOVED, ChatBackend, TokenSink, fit_history, message_size
 from .meter import Meter
 from .sandbox import truncate
 from .session import SessionLog
 from .tools import ToolBox
 
-REMOVED = "[old tool output removed to save context]"
+__all__ = ["REMOVED", "Agent", "failed"]                 # REMOVED re-exported (tests use it)
 ACTION_WORDS = frozenset({"fix", "add", "create", "write", "implement", "change", "update",
                           "refactor", "remove", "rename", "make", "build", "modify", "delete",
                           "edit", "insert", "replace"})
+FILLER_WORDS = frozenset({"please", "pls", "kindly", "can", "could", "would", "will", "you", "u",
+                          "now", "also", "then", "and", "just", "ok", "okay", "so", "i", "we",
+                          "want", "need", "to", "lets", "let's", "go", "ahead", "quickly"})
+EMPTY_REPLY = ("Your last reply was empty. Answer the request, or call the tools you need.")
+BAD_ARGUMENTS = ("ERROR: the arguments of this call were not valid JSON (the reply may have been "
+                 "cut off). Send the call again; for a big file, write it in smaller parts with "
+                 "edit_file.")
 WRITE_TOOLS = frozenset({"write_file", "edit_file", "multi_edit"})
 MAX_REPEATS = 3
 REPEAT_WARNING = ("ERROR: you already made this exact call. Repeating it cannot help. Use read_file to "
@@ -63,8 +70,11 @@ HELPER_PREFIX = ("You are a helper agent. Investigate with read-only tools only,
                  "a concise report (at most 200 words): the relevant files, functions and line "
                  "numbers, and how things work. Task: ")
 INTERRUPTED = "INTERRUPTED: the user stopped the task before this ran."
+EMPTY_TWICE = ("The model sent an empty answer twice. Try rephrasing the request, or another "
+               "model (/model).")
 FAILURE_PREFIXES = ("ERROR", "REJECTED", "NOT RUN", "DENIED")
 EXIT_CODE = re.compile(r"exit code (-?\d+)")
+CUT_SUMMARY = re.compile(r'"summary"\s*:\s*"(.*)', re.DOTALL)
 
 
 def failed(result: str) -> bool:
@@ -77,9 +87,13 @@ def failed(result: str) -> bool:
 
 
 def _wants_change(text: str) -> bool:
-    """True when the request starts like an instruction to change code (fix, add, create...)."""
-    words = text.lower().split()
-    return bool(words) and words[0].strip(".,:;!?") in ACTION_WORDS
+    """True when the request starts like an instruction to change code (fix, add, create...),
+    also after polite words: "please fix", "can you add", "go ahead and create"."""
+    for word in text.lower().split():
+        word = word.strip(".,:;!?")
+        if word not in FILLER_WORDS:
+            return word in ACTION_WORDS
+    return False
 
 
 def _parse_args(raw: object) -> dict:
@@ -93,6 +107,17 @@ def _parse_args(raw: object) -> dict:
         except json.JSONDecodeError:
             return {}
     return {}
+
+
+def _broken_args(raw: object) -> bool:
+    """True when the arguments are text that is not valid JSON (usually a cut-off reply)."""
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    try:
+        json.loads(raw)
+    except json.JSONDecodeError:
+        return True
+    return False
 
 
 class Agent:
@@ -121,6 +146,21 @@ class Agent:
     def refresh_system(self) -> None:
         """Rebuild the system prompt in place, e.g. after AGENT.md was written by /init."""
         self.messages[0] = self._system_message()
+
+    @property
+    def backend(self) -> ChatBackend:
+        """The model client answering now (its ``last_model`` says which model answered)."""
+        return self._backend
+
+    def set_backend(self, backend: ChatBackend, config: Config) -> None:
+        """Answer with another model from now on (/model online or offline), conversation kept.
+
+        The new config brings the new model's history budget: going offline usually shrinks
+        it from 32K to 8K tokens, and the next request compacts or trims to fit.
+        """
+        self._backend = backend
+        self._cfg = replace(self._cfg, num_ctx=config.num_ctx, backend=config.backend,
+                            mode=config.mode, fallback_backend=config.fallback_backend)
 
     def _add(self, message: dict) -> None:
         """Append to the history (append-only keeps the server's prompt cache valid) and log it."""
@@ -152,10 +192,12 @@ class Agent:
     def reset(self) -> None:
         """Forget the conversation (keeps files on disk) and start from a fresh system prompt."""
         self.messages = [self._system_message()]
+        if self._log:
+            self._log.mark("reset")                    # --resume starts after this point
 
     def _size(self) -> int:
-        """Characters in the history (about 4 per token)."""
-        return sum(len(str(m.get("content", ""))) for m in self.messages)
+        """Characters in the history, tool-call arguments included (about 4 per token)."""
+        return sum(message_size(m) for m in self.messages)
 
     def _budget(self) -> int:
         """History size, in characters, that fits comfortably in the context window."""
@@ -166,7 +208,8 @@ class Agent:
         if len(self.messages) <= 3:
             return "nothing to compact"
         before = self._size()
-        request = self.messages + [{"role": "user", "content": COMPACT_PROMPT}]
+        prompt = {"role": "user", "content": COMPACT_PROMPT}
+        request = fit_history(self.messages, self._budget()) + [prompt]   # must fit to be sent
         reply = self._backend.chat(request, self._tools.specs() + [FINISH_SPEC], None)
         self._meter.record(reply)
         summary = (reply.message.get("content") or "").strip()
@@ -176,6 +219,7 @@ class Agent:
                          {"role": "user", "content": "Summary of our earlier conversation:\n" + summary},
                          {"role": "assistant", "content": "Understood. I will continue from this summary."}]
         if self._log:
+            self._log.mark("compact")                  # --resume continues from the summary
             for message in self.messages[1:]:
                 self._log.append(message)
         return f"compacted the conversation: {before} -> {self._size()} characters"
@@ -197,6 +241,7 @@ class Agent:
         self._add({"role": "user", "content": (PLAN_PREFIX + user_text) if plan_only else user_text})
         writes_at_start = self._tools.writes
         nudges = troubles = 0
+        empty_retried = False
         self._seen, self._repeats, self._plan_only, self._allowed = {}, 0, plan_only, allowed
         self._on_event = on_event
         # must this request change files? Not for plans, nor when no writing tool is offered
@@ -212,6 +257,13 @@ class Agent:
             reply = self._backend.chat(self.messages, specs, on_token)
             self._meter.record(reply)
             calls = reply.message.get("tool_calls") or []
+            if not calls and not (reply.message.get("content") or "").strip():
+                if empty_retried:                     # an empty answer is a failure, not a reply
+                    return EMPTY_TWICE
+                empty_retried = True                  # placeholder: some APIs reject empty turns
+                self._add({"role": "assistant", "content": "(empty reply)"})
+                self._add({"role": "user", "content": EMPTY_REPLY})
+                continue
             kept = {"role": "assistant", "content": reply.message.get("content") or ""}
             if calls:
                 for call in calls:                    # every call needs a unique id
@@ -280,20 +332,28 @@ class Agent:
 
     @staticmethod
     def _finish_summary(calls: list[dict]) -> str | None:
-        """The summary text if this turn contains a finish call, else None."""
+        """The summary text if this turn contains a finish call, else None. A summary cut off
+        mid-way (broken JSON) is rescued as far as it got, rather than lost."""
         for call in calls:
             function = call.get("function", {})
             if function.get("name") == "finish":
-                return str(_parse_args(function.get("arguments")).get("summary", "Done."))
+                raw = function.get("arguments")
+                cut = CUT_SUMMARY.search(raw) if _broken_args(raw) else None
+                if cut:
+                    text = cut.group(1).replace("\\n", "\n").replace('\\"', '"').rstrip('"} \n')
+                    return text + " [answer cut off]"
+                return str(_parse_args(raw).get("summary", "Done."))
         return None
 
     def _run_one(self, call: dict) -> str:
         """Run one requested tool and return its (truncated) result text."""
         function = call.get("function", {})
         name = function.get("name", "")
-        args = _parse_args(function.get("arguments"))
         if name == "finish":
             return "OK: finished"                     # handled by run(); nothing to execute
+        if _broken_args(function.get("arguments")):
+            return BAD_ARGUMENTS                      # say why, instead of "missing 'path'"
+        args = _parse_args(function.get("arguments"))
         if not self._may_use(name):
             return PLAN_ONLY_ERROR if self._plan_only else NOT_ALLOWED
         if name == "delegate":
@@ -348,12 +408,7 @@ class Agent:
             on_event(f"     ... {len(diff) - limit} more diff lines")
 
     def _trim_history(self) -> None:
-        """Blank the oldest tool outputs when the prompt nears the context limit."""
-        budget = self._budget()
-        size = self._size()
-        for message in self.messages[:-4]:               # never touch the newest turns
-            if size <= budget:
-                return
-            if message["role"] == "tool" and message["content"] != REMOVED:
-                size -= len(message["content"]) - len(REMOVED)
-                message["content"] = REMOVED
+        """When the history no longer fits the context window, shorten it (llm.fit_history:
+        old tool outputs first, then old call arguments, then the oldest exchanges)."""
+        if self._size() > self._budget():
+            self.messages = fit_history(self.messages, self._budget())

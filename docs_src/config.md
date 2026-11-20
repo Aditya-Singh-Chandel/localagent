@@ -21,21 +21,30 @@ can build their own `Config`.
 - Ollama's own docs let people write `127.0.0.1:11434` without a scheme. If the text already starts with `http://`
   or `https://` we only remove a trailing `/` (so `host + "/api/chat"` never gives `//`); otherwise we prepend `http://`.
 
-## Paid-tier presets
+## Paid-tier presets and the modes
 @@ localagent/config.py after__normalize_host @@
 - `PAID_RPM`, `PAID_RPD`, `PAID_TPM`: per-model limits used when `LOCALAGENT_GEMINI_TIER=paid` (billing enabled on your
   Google project). They sit well under Google's Tier 1 limits; the agent still adopts lower numbers if Google reports
   them.
+- `MODES`: the three ways to choose who answers — `auto`, `online`, `offline` (see `mode` below and `cli.md`).
 
 ## `_split`
 @@ localagent/config.py _split @@
 - Turns a comma-separated environment value such as `"a, b,c"` into a tuple `("a", "b", "c")`, ignoring blanks.
 
+## `_int`
+@@ localagent/config.py _int @@
+- Reads a whole-number environment variable. An empty or missing one gives the default; a typo such as
+  `LOCALAGENT_NUM_CTX=8k` raises a `ValueError` that names the variable, shows an example and repeats the bad value.
+  The CLI prints it as one `setup problem:` line. Before 0.6 the same typo crashed the program with a Python
+  traceback before anything was shown.
+
 ## `Config` — the settings
 @@ localagent/config.py Config @@
 - `@dataclass(frozen=True)` builds `__init__` from the fields and makes instances **immutable**, so no component can
   silently change a setting mid-run.
-- `backend`: which model-server client to use (`ollama` or `openai`; see `backends.md`).
+- `backend`: which model-server client to use (`ollama`, `openai`, `gemini` or `local`; see `backends.md`). You
+  normally do not set it: the **mode** chooses it (see below). Setting it by hand (`--backend`) skips the mode.
 - `model`: the model tag/name the server understands. `host`: where Ollama listens.
 - `api_base` / `api_key`: address and bearer token for an OpenAI-compatible server. The default
   `http://127.0.0.1:8080/v1` is where `serve.ps1` starts llama.cpp (LM Studio uses `http://localhost:1234/v1`).
@@ -47,12 +56,19 @@ can build their own `Config`.
   `SKIP_DIRS`). Until the final verification it was relative to the folder the agent was *started from*: started
   from the agent's own folder with `--workspace`, every project's logs were mixed in one place and `--resume` could
   continue a different project's conversation.
-- `num_ctx`: context window requested from Ollama (bigger = more RAM, slower). `temperature`: randomness; now **0.0** (greedy), the most
-  repeatable choice for an agent, changed after the real model gave different outcomes for the same task.
+- `num_ctx`: the **history budget** in tokens (and the context window requested from Ollama when Ollama is the main
+  model). 8K by default; the modes set it to Gemini's 32K or to the local model's `local_ctx`. `temperature`:
+  randomness; now **0.0** (greedy), the most repeatable choice for an agent, changed after the real model gave
+  different outcomes for the same task.
 - `max_turns`: hard cap on model calls per user request. `max_fix_attempts`: rejected writes allowed per file before
-  the tool says STOP. `command_timeout`: seconds before a run is killed. `max_output_chars`: any tool result longer
+  the tool says STOP. `command_timeout`: seconds before a run is killed. `test_timeout`: the same for `run_tests`
+  (2 minutes: a first `cargo test` or `go test` compiles for a while). `max_output_chars`: any tool result longer
   than this is shortened (saves tokens).
-- `memory_chars` / `tree_entries`: caps on how much of `AGENT.md` and the file tree enter the system prompt.
+- `memory_chars` / `tree_entries`: caps on how much of `AGENT.md` and the file overview enter the system prompt. The
+  overview was raised from 40 to 50 lines in 0.6 (about 60 more tokens per call) because the new summarised overview
+  then lists a mid-sized project's main code folder instead of making the model ask for it.
+- `request_timeout`: seconds to wait for a model's answer — 15 minutes, because a local model on a CPU may need minutes
+  before its first word.
 - `type_check`: also run mypy while verifying. `auto_approve`: never ask before running code.
 - `auto_format`: run `ruff format` on every verified Python write. `max_nudges`: how many "you changed nothing" reminders
   the agent may send per request (see `agent.md`). `reasoning_effort`: sent to OpenAI-style servers when set.
@@ -71,7 +87,16 @@ can build their own `Config`.
   server tried last; empty = none).
 - `gemini_tier`: `free` (lite models first, strong models in reserve) or `paid` (strong models first, much higher
   limits). `stream`: show answers while they are written. `helpers` / `helper_turns`: the `delegate` tool and how many
-  model calls one helper may use.
+  model calls one helper may use. `gemini_timeout`: a Gemini request is given up after 2 minutes (a hung connection
+  should not wait 15). `fallback_backend` may also be `local`: the local model of `localserver.py`, started when needed.
+- **Online / offline settings:** `mode` — `auto` (default: Gemini when a key is set, the local model when Gemini
+  cannot be reached or there is no key), `online` (Gemini only) or `offline` (the local model only); env
+  `LOCALAGENT_MODE`, flags `--mode`, `--online`, `--offline`, or `/model` in the chat. `local_ctx`: the local model's
+  context window (8K; the server is started with it). `llama_server` and `model_file`: where llama.cpp's server program
+  and the `.gguf` model are (empty = look in the usual places, see `localserver.md`). `gpu_layers`: how many of the
+  model's layers go to the graphics card; `-1` lets llama.cpp fit as many as the card's memory holds (it measures this
+  itself), any other number is used as given (this laptop's 2 GB card: about 9). `local_threads`: CPU threads for the
+  local model (0 = llama.cpp decides).
 - **Sandbox settings:** `sandbox` (`local` or `docker`), `sandbox_image`, `sandbox_network` (internet inside the
   container; off by default), `sandbox_memory`, `sandbox_cpus` (see `runners.md`).
 
@@ -80,11 +105,16 @@ can build their own `Config`.
 - `@classmethod` means it is called on the class (`Config.from_env()`) and receives the class as `cls`.
 - `base = cls()` is a Config with all defaults. `replace(base, ...)` returns a copy with the listed fields overridden.
 - Each `os.environ.get("NAME", default)` reads an environment variable, falling back to the default. Values are text,
-  so `workspace` is wrapped in `Path(...)` and `num_ctx` in `int(...)`. `api_base` has any trailing `/` removed.
+  so `workspace` is wrapped in `Path(...)` and whole numbers are read with `_int`. `api_base` has any trailing `/`
+  removed.
 - `tier`/`paid` are read first because they change the default limits. `LOCALAGENT_RPM`, `LOCALAGENT_RPD` and
   `LOCALAGENT_TPM` override the limits directly; otherwise the paid presets or the free defaults apply.
+- `mode` is read in lower case and checked against `MODES`; anything else is explained as a `ValueError`.
 - Also read: `GEMINI_API_KEY` (spaces stripped), `LOCALAGENT_GEMINI_MODELS` (comma list; empty keeps the default
-  chain), `LOCALAGENT_GEMINI_LIMITS` (comma list of `model=rpm/rpd`), `LOCALAGENT_REASONING`, `LOCALAGENT_FALLBACK`, `LOCALAGENT_SANDBOX`. The Docker image sets several of these.
+  chain), `LOCALAGENT_GEMINI_LIMITS` (comma list of `model=rpm/rpd`), `LOCALAGENT_REASONING`, `LOCALAGENT_FALLBACK`,
+  `LOCALAGENT_SANDBOX`, and for the local model `LOCALAGENT_LOCAL_CTX`, `LOCALAGENT_LLAMA_SERVER`,
+  `LOCALAGENT_MODEL_FILE`, `LOCALAGENT_GPU_LAYERS` and `LOCALAGENT_THREADS`. The Docker image sets several of these;
+  a settings file can set any of them with `"env"` (see `settings.md`).
 
 ## Shared rules used by every entry point (chat, server, evals)
 @@ localagent/config.py after_Config @@

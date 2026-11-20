@@ -242,15 +242,17 @@ class GeminiWireTests(unittest.TestCase):
         call = got.message["tool_calls"][0]
         self.assertEqual(call["extra_content"]["google"]["thought_signature"], "SIG")
         self.assertEqual((got.prompt_tokens, got.completion_tokens), (60, 90))   # 70 hidden + 20
-        sent = to_openai([{"role": "assistant", "content": "", "tool_calls": [call]}])
+        history = [{"role": "assistant", "content": "", "tool_calls": [call]}]
+        sent = to_openai(history, gemini=True)
         self.assertEqual(sent[0]["tool_calls"][0]["extra_content"], call["extra_content"])
+        self.assertNotIn("extra_content", to_openai(history)[0]["tool_calls"][0])   # local: never
 
     def test_missing_signatures_get_placeholder_only_for_gemini(self):
         history = [{"role": "assistant", "content": "", "tool_calls": [
             {"id": "c1", "function": {"name": "read_file", "arguments": {}}}]}]
         plain = to_openai(history)[0]["tool_calls"][0]
         self.assertNotIn("extra_content", plain)                  # local servers: unchanged
-        filled = to_openai(history, fill_signatures=True)[0]["tool_calls"][0]
+        filled = to_openai(history, gemini=True)[0]["tool_calls"][0]
         self.assertEqual(filled["extra_content"]["google"]["thought_signature"],
                          "skip_thought_signature_validator")
 
@@ -283,7 +285,7 @@ class GeminiWireTests(unittest.TestCase):
             healthy, lines = run_doctor(config)
         self.assertTrue(healthy)                             # Gemini works: the backup is optional
         self.assertFalse(any(line.startswith("FAIL") for line in lines))
-        self.assertTrue(any(line.startswith("note  the backup model") for line in lines))
+        self.assertTrue(any(line.startswith("note  the offline backup") for line in lines))
 
 
 class RunnerTests(unittest.TestCase):
