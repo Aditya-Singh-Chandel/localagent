@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en" data-root="{{root}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<meta name="description" content="{{description}}">
+<meta name="theme-color" content="#050914">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="localagent">
+<meta property="og:title" content="{{title}}">
+<meta property="og:description" content="{{description}}">
+<meta property="og:image" content="{{og_image}}">
+<meta name="twitter:card" content="summary_large_image">
+{{canonical}}
+{{head_extra}}
+<link rel="icon" href="{{root}}assets/logo.svg" type="image/svg+xml">
+<link rel="icon" href="{{root}}assets/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="{{root}}assets/apple-touch-icon.png">
+<link rel="manifest" href="{{root}}site.webmanifest">
+<link rel="preload" href="{{root}}fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{{root}}css/style.css">
+<script src="{{root}}js/theme.js"></script>
+<script src="{{root}}js/site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="container header-row">
+    <a class="brand" href="{{root}}index.html"><img src="{{root}}assets/logo.svg" alt="" width="30" height="30"><span>localagent</span></a>
+    <nav class="main-nav" aria-label="Main">
+      <a href="{{root}}index.html#features" data-page="features">Features</a>
+      <a href="{{root}}docs/getting-started.html" data-page="docs">Docs</a>
+      <a href="{{root}}setup.html" data-page="setup">Setup builder</a>
+      <a href="{{root}}changelog.html" data-page="changelog">Changelog</a>
+    </nav>
+    <div class="header-tools">
+      <button class="search-button" type="button" data-search-open aria-label="Search the documentation">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <span>Search docs</span><kbd>Ctrl K</kbd>
+      </button>
+      <button class="icon-button" id="theme-toggle" type="button" aria-label="Switch the colour theme">
+        <svg class="theme-icon-dark" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+        <svg class="theme-icon-light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+      <a class="btn btn-primary btn-small" href="{{root}}download.html" data-page="download">Download</a>
+      <button class="icon-button menu-button" id="menu-button" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open the menu">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="mobile-nav" id="mobile-nav" aria-label="Menu">
+    <a href="{{root}}index.html#features">Features</a>
+    <a href="{{root}}download.html">Download</a>
+    <a href="{{root}}setup.html">Setup builder</a>
+    <a href="{{root}}docs/getting-started.html">Get started</a>
+    <a href="{{root}}docs/index.html">All documentation</a>
+    <a href="{{root}}changelog.html">Changelog</a>
+  </nav>
+</header>
+
+<main id="main">
+{{body}}
+</main>
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="{{root}}index.html"><img src="{{root}}assets/logo.svg" alt="" width="28" height="28"><span>localagent</span></a>
+        <p>A coding agent for your terminal that keeps working offline. Free and open source.</p>
+      </div>
+      <div>
+        <h2>Product</h2>
+        <ul>
+          <li><a href="{{root}}index.html#features">Features</a></li>
+          <li><a href="{{root}}download.html">Download</a></li>
+          <li><a href="{{root}}setup.html">Setup builder</a></li>
+          <li><a href="{{root}}changelog.html">Changelog</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2>Learn</h2>
+        <ul>
+          <li><a href="{{root}}docs/getting-started.html">Get started</a></li>
+          <li><a href="{{root}}docs/choosing-a-model.html">Choose a model</a></li>
+          <li><a href="{{root}}docs/05-user-manual.html">User manual</a></li>
+          <li><a href="{{root}}docs/troubleshooting.html">Troubleshooting</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2>Developers</h2>
+        <ul>
+          <li><a href="{{root}}docs/00-overview.html">How it works</a></li>
+          <li><a href="{{root}}docs/index.html#code-reference">Code reference</a></li>
+          <li><a href="{{root}}docs/06-run-and-verify.html">Run and verify</a></li>
+          <li><a href="{{root}}docs/02-roadmap.html">Roadmap</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2>Legal</h2>
+        <ul>
+          <li><a href="{{root}}license.html">License</a></li>
+          <li><a href="{{root}}license.html#third-party-software">Third-party software</a></li>
+          <li><a href="{{root}}privacy.html">Privacy</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>localagent {{version}} · MIT license</span>
+      <span>This site sets no cookies and loads nothing from other sites.</span>
+    </div>
+  </div>
+</footer>
+
+<dialog class="search-dialog" id="search-dialog" aria-label="Search the documentation">
+  <div class="search-box">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    <label class="visually-hidden" for="search-input">Search the documentation</label>
+    <input id="search-input" type="search" placeholder="Search the documentation" autocomplete="off" spellcheck="false">
+    <kbd>Esc</kbd>
+  </div>
+  <ul class="search-results"></ul>
+  <div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> choose</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></div>
+</dialog>
+</body>
+</html>

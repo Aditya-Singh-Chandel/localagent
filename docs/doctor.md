@@ -144,7 +144,7 @@ ok    server reachable at http://127.0.0.1:8080/v1
  90 |         _get_json(config.api_base + "/models")
  91 |     except (urllib.error.URLError, OSError, ValueError) as exc:
  92 |         lines.append(f"FAIL  no OpenAI-compatible server at {config.api_base}: {exc}")
- 93 |         lines.append("      start it first (for llama.cpp: .\\serve.ps1)")
+ 93 |         lines.append("      start it first (for llama.cpp: .\\scripts\\serve.ps1)")
  94 |         return False
  95 |     lines.append(f"ok    server reachable at {config.api_base}")
  96 |     return True
@@ -291,7 +291,7 @@ ok    server reachable at http://127.0.0.1:8080/v1
   are shown. Not available → one `note` line ("the offline backup is not available (optional - the online model works
   without it)") with the details indented below it (`line[6:]` cuts the 6-character `FAIL  ` prefix), and the result
   stays healthy. Found in the final verification of 0.5: the agent's Docker image always configures the local backup,
-  so its doctor printed `FAIL` whenever `serve.ps1` was not running — although the agent works without it. In `auto`
+  so its doctor printed `FAIL` whenever `scripts\serve.ps1` was not running — although the agent works without it. In `auto`
   mode without any backup, a `note` says that nothing will answer without internet.
 
 ## `run_doctor`

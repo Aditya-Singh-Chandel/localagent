@@ -1,0 +1,108 @@
+<section class="page-hero">
+  <div class="container">
+    <p class="eyebrow">Download</p>
+    <h1>Get localagent {{version}}</h1>
+    <p>Free and open source. Pick your system — every file is listed with its size and its checksum, so you can check
+      exactly what you got.</p>
+    <div class="meta-row"><span>Released {{release_date}}</span><span>MIT license</span><span><a href="changelog.html">What's new</a></span></div>
+  </div>
+</section>
+
+<section class="section tight">
+  <div class="container">
+    <div class="platforms">
+      <article class="platform" data-platform="windows">
+        <div class="platform-head">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.5l7.5-1v7H3zM12 4.3L21 3v8.5h-9zM3 12.5h7.5v7L3 18.5zM12 12.5h9V21l-9-1.2z"/></svg>
+          <h2>Windows</h2><span class="badge mine-badge">For this computer</span>
+        </div>
+        <p>One zip with everything inside, Python included. Nothing else to install.</p>
+        <div class="file-line"><span>{{zip_name}}</span><span>{{zip_size}}</span></div>
+        <a class="btn btn-primary btn-block" href="{{downloads}}{{zip_name}}" download data-download>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Download for Windows</a>
+        <p class="download-note" hidden>Your download has started. The three steps below take about two minutes.</p>
+        <ol>
+          <li>Unzip it somewhere permanent, for example <code>C:\Tools\localagent</code>.</li>
+          <li>Double-click <code>install.cmd</code>. It adds localagent to your PATH and starts the guided setup.</li>
+          <li>Open a new terminal in a project folder and type <code>localagent</code>.</li>
+        </ol>
+      </article>
+      <article class="platform" data-platform="unix">
+        <div class="platform-head">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          <h2>macOS and Linux</h2><span class="badge mine-badge">For this computer</span>
+        </div>
+        <p>A small package for any computer with Python 3.10 or newer, installed with pipx.</p>
+        <div class="file-line"><span>{{wheel_name}}</span><span>{{wheel_size}}</span></div>
+        <a class="btn btn-primary btn-block" href="{{downloads}}{{wheel_name}}" download data-download>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Download the package</a>
+        <p class="download-note" hidden>Your download has started. Install it with the commands below.</p>
+        <ol>
+          <li>Install pipx once: <code>python3 -m pip install --user pipx</code>, then <code>python3 -m pipx ensurepath</code>.</li>
+          <li>Install localagent: <code>pipx install ~/Downloads/{{wheel_name}}</code></li>
+          <li>Run the guided setup: <code>localagent setup</code> — then <code>localagent</code> in any project folder.</li>
+        </ol>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section tight" id="verify">
+  <div class="container">
+    <div class="section-head reveal">
+      <p class="eyebrow">Check your download</p>
+      <h2>Make sure the file is exactly ours</h2>
+      <p>Each file's SHA-256 checksum is its fingerprint. If yours matches the one below, the file arrived complete and
+        unchanged.</p>
+    </div>
+    <div class="table-wrap reveal">
+      <table class="checksums">
+        <thead><tr><th>File</th><th>Size</th><th>SHA-256</th></tr></thead>
+        <tbody>
+          <tr><td>{{zip_name}}</td><td>{{zip_size}}</td><td>{{zip_sha}}</td></tr>
+          <tr><td>{{wheel_name}}</td><td>{{wheel_size}}</td><td>{{wheel_sha}}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="verify-grid spaced reveal">
+      <div>
+        <h3>On Windows (PowerShell)</h3>
+        <pre><code>Get-FileHash .\{{zip_name}} -Algorithm SHA256</code></pre>
+      </div>
+      <div>
+        <h3>On macOS and Linux</h3>
+        <pre><code>shasum -a 256 ~/Downloads/{{wheel_name}}</code></pre>
+      </div>
+    </div>
+    <p class="reveal">For scripts: <a href="{{downloads}}SHA256SUMS.txt" download>download all checksums as one file</a>, then check them with <code>sha256sum -c SHA256SUMS.txt</code>.</p>
+  </div>
+</section>
+
+<section class="section alt" id="requirements">
+  <div class="container">
+    <div class="section-head reveal">
+      <p class="eyebrow">Requirements</p>
+      <h2>What your computer needs</h2>
+    </div>
+    <ul class="requirements reveal">
+      <li><strong>System</strong><span>Windows 10 or 11 (64-bit) with the zip; macOS or Linux with Python 3.10+.</span></li>
+      <li><strong>Online models</strong><span>An internet connection and a key — Gemini's is free. Nothing else.</span></li>
+      <li><strong>Local model</strong><span>About 6 GB of free memory and 5 GB of disk for the 8B model; 8 GB computers get the 4B one.</span></li>
+      <li><strong>Optional</strong><span>Docker Desktop, to run the agent's code in a sealed box. A graphics card makes local models faster.</span></li>
+    </ul>
+  </div>
+</section>
+
+<section class="section" id="release-notes">
+  <div class="container narrow">
+    <div class="section-head reveal">
+      <p class="eyebrow">Release notes</p>
+      <h2>What's in {{version}}</h2>
+    </div>
+    <div class="notes prose reveal">
+{{release_notes}}
+    </div>
+    <p class="spaced">Earlier versions: <a href="changelog.html">the full changelog</a>. Uninstall at any time: double-click
+      <code>uninstall.cmd</code> (Windows) or run <code>pipx uninstall localagent</code>.</p>
+  </div>
+</section>
