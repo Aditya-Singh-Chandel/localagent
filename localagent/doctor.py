@@ -90,7 +90,7 @@ def _check_openai(config: Config, lines: list[str]) -> bool:
         _get_json(config.api_base + "/models")
     except (urllib.error.URLError, OSError, ValueError) as exc:
         lines.append(f"FAIL  no OpenAI-compatible server at {config.api_base}: {exc}")
-        lines.append("      start it first (for llama.cpp: .\\serve.ps1)")
+        lines.append("      start it first (for llama.cpp: .\\scripts\\serve.ps1)")
         return False
     lines.append(f"ok    server reachable at {config.api_base}")
     return True

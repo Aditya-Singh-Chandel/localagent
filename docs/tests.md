@@ -2632,7 +2632,31 @@ Node, Go, Rust, gcc/g++ and PowerShell, so they all ran); everything else uses f
 112 |             self.assertIn("Working on it.", out.getvalue())
 113 |             self.assertIn("All done: 3 files.", out.getvalue())
 114 | 
-115 | 
+```
+```python
+115 |     def test_a_streamed_answer_is_not_printed_twice(self):
+116 |         from localagent.llm import Reply
+117 |         turns = iter([("Let me look.", [{"function": {"name": "outline", "arguments": {"path": "."}}}]),
+118 |                       ("The answer is 42.", [])])
+119 | 
+120 |         class TwoTurns:                                  # how local models often answer
+121 |             def chat(self, messages, tools, on_token=None):
+122 |                 text, calls = next(turns)
+123 |                 on_token(text)
+124 |                 message = {"role": "assistant", "content": text}
+125 |                 if calls:
+126 |                     message["tool_calls"] = calls
+127 |                 return Reply(message, 1, 1, 0.0)
+128 | 
+129 |         with tempfile.TemporaryDirectory() as tmp:
+130 |             cfg = replace(Config(), workspace=Path(tmp))
+131 |             box = ToolBox(cfg, lambda _q: True)
+132 |             out = io.StringIO()
+133 |             with contextlib.redirect_stdout(out):
+134 |                 handle_request(Agent(cfg, TwoTurns(), box, Meter()), box, Meter(), "Why?")
+135 |         self.assertEqual(out.getvalue().count("The answer is 42."), 1)
+136 | 
+137 | 
 ```
 - `lines` turns event texts into `data: ...` lines ending with `[DONE]`, as a server sends them.
 - Two text pieces become "Hello" and reach the display in order; a comment line is ignored; a tool call split over two
@@ -2640,72 +2664,74 @@ Node, Go, Rust, gcc/g++ and PowerShell, so they all ran); everything else uses f
   signature; the token counts from the last chunk are returned.
 - An error object inside the stream raises `LLMError`.
 - When the model streams "Working on it." but finishes with the summary "All done: 3 files.", both appear on screen.
+- A model that streams "Let me look.", uses a tool, then streams its plain answer "The answer is 42." (how local
+  models often answer) shows that answer exactly once.
 
 ## Helper agents
 ```python
-116 | class HelperTests(unittest.TestCase):
+138 | class HelperTests(unittest.TestCase):
 ```
 ```python
-117 |     def test_delegate_runs_a_read_only_helper_and_returns_its_report(self):
-118 |         with tempfile.TemporaryDirectory() as tmp:
-119 |             (Path(tmp) / "a.py").write_text("def invoice_total():\n    return 1\n", encoding="utf-8")
-120 |             script = [tool_call("delegate", task="find invoice code"),             # main agent
-121 |                       tool_call("write_file", path="x.py", content="x = 1\n"),     # helper tries
-122 |                       tool_call("search", pattern="invoice"),                       # helper reads
-123 |                       tool_call("finish", summary="invoice_total is in a.py line 1"),
-124 |                       tool_call("finish", summary="Found it")]                     # main agent
-125 |             backend = RecordingBackend(script)
-126 |             cfg = replace(Config(), workspace=Path(tmp))
-127 |             meter = Meter()
-128 |             agent = Agent(cfg, backend, ToolBox(cfg, lambda _q: True), meter)
-129 |             events: list[str] = []
-130 |             self.assertEqual(agent.run("Where is the invoice code?", on_event=events.append), "Found it")
-131 |             self.assertIn("delegate", backend.offered[0])                 # main agent may delegate
-132 |             self.assertNotIn("delegate", backend.offered[1])              # a helper may not
-133 |             self.assertNotIn("write_file", backend.offered[1])            # helpers only read
-134 |             self.assertFalse((Path(tmp) / "x.py").exists())
-135 |             report = [m["content"] for m in agent.messages if m["role"] == "tool"][0]
-136 |             self.assertIn("HELPER REPORT:", report)
-137 |             self.assertIn("invoice_total is in a.py", report)
-138 |             self.assertEqual(meter.calls, 5)                              # helper calls are counted
-139 |             self.assertTrue(any(e.startswith("   | ") for e in events))
-140 |             self.assertEqual(DELEGATE_SPEC["function"]["name"], "delegate")
-141 | 
+139 |     def test_delegate_runs_a_read_only_helper_and_returns_its_report(self):
+140 |         with tempfile.TemporaryDirectory() as tmp:
+141 |             (Path(tmp) / "a.py").write_text("def invoice_total():\n    return 1\n", encoding="utf-8")
+142 |             script = [tool_call("delegate", task="find invoice code"),             # main agent
+143 |                       tool_call("write_file", path="x.py", content="x = 1\n"),     # helper tries
+144 |                       tool_call("search", pattern="invoice"),                       # helper reads
+145 |                       tool_call("finish", summary="invoice_total is in a.py line 1"),
+146 |                       tool_call("finish", summary="Found it")]                     # main agent
+147 |             backend = RecordingBackend(script)
+148 |             cfg = replace(Config(), workspace=Path(tmp))
+149 |             meter = Meter()
+150 |             agent = Agent(cfg, backend, ToolBox(cfg, lambda _q: True), meter)
+151 |             events: list[str] = []
+152 |             self.assertEqual(agent.run("Where is the invoice code?", on_event=events.append), "Found it")
+153 |             self.assertIn("delegate", backend.offered[0])                 # main agent may delegate
+154 |             self.assertNotIn("delegate", backend.offered[1])              # a helper may not
+155 |             self.assertNotIn("write_file", backend.offered[1])            # helpers only read
+156 |             self.assertFalse((Path(tmp) / "x.py").exists())
+157 |             report = [m["content"] for m in agent.messages if m["role"] == "tool"][0]
+158 |             self.assertIn("HELPER REPORT:", report)
+159 |             self.assertIn("invoice_total is in a.py", report)
+160 |             self.assertEqual(meter.calls, 5)                              # helper calls are counted
+161 |             self.assertTrue(any(e.startswith("   | ") for e in events))
+162 |             self.assertEqual(DELEGATE_SPEC["function"]["name"], "delegate")
+163 | 
 ```
 ```python
-142 |     def test_helper_leaves_the_main_routing_alone(self):
-143 |         class Routing(RecordingBackend):
-144 |             def __init__(self, messages):
-145 |                 super().__init__(messages)
-146 |                 self.resets = self.escalations = 0
-147 | 
-148 |             def reset_route(self):
-149 |                 self.resets += 1
-150 | 
-151 |             def escalate(self):
-152 |                 self.escalations += 1
-153 |                 return True
-154 | 
-155 |         with tempfile.TemporaryDirectory() as tmp:
-156 |             bad = tool_call("read_file", path="missing.txt")              # fails: no such file
-157 |             backend = Routing([tool_call("delegate", task="look"), bad, bad,
-158 |                                tool_call("finish", summary="nothing found"),
-159 |                                tool_call("finish", summary="done")])
-160 |             cfg = replace(Config(), workspace=Path(tmp))
-161 |             Agent(cfg, backend, ToolBox(cfg, lambda _q: True), Meter()).run("Where is X?")
-162 |             self.assertEqual(backend.resets, 1)                           # only the main agent
-163 |             self.assertEqual(backend.escalations, 0)                      # helper trouble ignored
-164 | 
-```
-```python
-165 |     def test_helpers_can_be_switched_off(self):
-166 |         with tempfile.TemporaryDirectory() as tmp:
-167 |             backend = RecordingBackend([{"role": "assistant", "content": "ok"}])
-168 |             cfg = replace(Config(), workspace=Path(tmp), helpers=False)
-169 |             Agent(cfg, backend, ToolBox(cfg, lambda _q: True), Meter()).run("hi")
-170 |             self.assertNotIn("delegate", backend.offered[0])
-171 | 
+164 |     def test_helper_leaves_the_main_routing_alone(self):
+165 |         class Routing(RecordingBackend):
+166 |             def __init__(self, messages):
+167 |                 super().__init__(messages)
+168 |                 self.resets = self.escalations = 0
+169 | 
+170 |             def reset_route(self):
+171 |                 self.resets += 1
 172 | 
+173 |             def escalate(self):
+174 |                 self.escalations += 1
+175 |                 return True
+176 | 
+177 |         with tempfile.TemporaryDirectory() as tmp:
+178 |             bad = tool_call("read_file", path="missing.txt")              # fails: no such file
+179 |             backend = Routing([tool_call("delegate", task="look"), bad, bad,
+180 |                                tool_call("finish", summary="nothing found"),
+181 |                                tool_call("finish", summary="done")])
+182 |             cfg = replace(Config(), workspace=Path(tmp))
+183 |             Agent(cfg, backend, ToolBox(cfg, lambda _q: True), Meter()).run("Where is X?")
+184 |             self.assertEqual(backend.resets, 1)                           # only the main agent
+185 |             self.assertEqual(backend.escalations, 0)                      # helper trouble ignored
+186 | 
+```
+```python
+187 |     def test_helpers_can_be_switched_off(self):
+188 |         with tempfile.TemporaryDirectory() as tmp:
+189 |             backend = RecordingBackend([{"role": "assistant", "content": "ok"}])
+190 |             cfg = replace(Config(), workspace=Path(tmp), helpers=False)
+191 |             Agent(cfg, backend, ToolBox(cfg, lambda _q: True), Meter()).run("hi")
+192 |             self.assertNotIn("delegate", backend.offered[0])
+193 | 
+194 | 
 ```
 - The main agent calls `delegate`; the helper is offered neither `delegate` nor `write_file`, its write attempt is
   refused, it searches and finishes; the main agent receives `HELPER REPORT: ...` and finishes. All 5 model calls are
@@ -2716,39 +2742,39 @@ Node, Go, Rust, gcc/g++ and PowerShell, so they all ran); everything else uses f
 
 ## Commands and tiers
 ```python
-173 | class CommandAndTierTests(unittest.TestCase):
+195 | class CommandAndTierTests(unittest.TestCase):
 ```
 ```python
-174 |     def test_custom_commands_load_and_expand(self):
-175 |         with tempfile.TemporaryDirectory() as tmp:
-176 |             user = Path(tmp) / "user"
-177 |             user.mkdir()
-178 |             (user / "review.md").write_text("Review $ARGUMENTS for bugs.", encoding="utf-8")
-179 |             (user / "Bad Name!.md").write_text("ignored", encoding="utf-8")
-180 |             project = Path(tmp) / ".localagent" / "commands"
-181 |             project.mkdir(parents=True)
-182 |             (project / "review.md").write_text("Project review of $ARGUMENTS.", encoding="utf-8")
-183 |             (project / "docs.md").write_text("Write docs.", encoding="utf-8")
-184 |             commands = load_commands(Path(tmp), user)
-185 |             self.assertEqual(sorted(commands), ["docs", "review"])           # project wins
-186 |             self.assertEqual(expand_command(commands["review"], "app.py"), "Project review of app.py.")
-187 |             self.assertEqual(expand_command(commands["docs"], "for api.py"), "Write docs.\n\nfor api.py")
-188 |             self.assertEqual(expand_command(commands["docs"], ""), "Write docs.")
-189 | 
+196 |     def test_custom_commands_load_and_expand(self):
+197 |         with tempfile.TemporaryDirectory() as tmp:
+198 |             user = Path(tmp) / "user"
+199 |             user.mkdir()
+200 |             (user / "review.md").write_text("Review $ARGUMENTS for bugs.", encoding="utf-8")
+201 |             (user / "Bad Name!.md").write_text("ignored", encoding="utf-8")
+202 |             project = Path(tmp) / ".localagent" / "commands"
+203 |             project.mkdir(parents=True)
+204 |             (project / "review.md").write_text("Project review of $ARGUMENTS.", encoding="utf-8")
+205 |             (project / "docs.md").write_text("Write docs.", encoding="utf-8")
+206 |             commands = load_commands(Path(tmp), user)
+207 |             self.assertEqual(sorted(commands), ["docs", "review"])           # project wins
+208 |             self.assertEqual(expand_command(commands["review"], "app.py"), "Project review of app.py.")
+209 |             self.assertEqual(expand_command(commands["docs"], "for api.py"), "Write docs.\n\nfor api.py")
+210 |             self.assertEqual(expand_command(commands["docs"], ""), "Write docs.")
+211 | 
 ```
 ```python
-190 |     def test_paid_tier_puts_strong_models_first_with_higher_limits(self):
-191 |         with mock.patch.dict(os.environ, {"LOCALAGENT_GEMINI_TIER": "paid", "GEMINI_API_KEY": "k"}):
-192 |             cfg = Config.from_env()
-193 |         self.assertEqual((cfg.gemini_tier, cfg.rpm, cfg.rpd), ("paid", 1000, 10_000))
-194 |         backend = make_gemini(cfg)
-195 |         order = [e.name for e in backend._order()]
-196 |         self.assertEqual(order[: len(cfg.gemini_strong_models)], list(cfg.gemini_strong_models))
-197 |         self.assertFalse(backend.escalate())                                 # no reserve on paid
-198 |         with mock.patch.dict(os.environ, {"LOCALAGENT_RPM": "7"}):
-199 |             self.assertEqual(Config.from_env().rpm, 7)
-200 | 
-201 | 
+212 |     def test_paid_tier_puts_strong_models_first_with_higher_limits(self):
+213 |         with mock.patch.dict(os.environ, {"LOCALAGENT_GEMINI_TIER": "paid", "GEMINI_API_KEY": "k"}):
+214 |             cfg = Config.from_env()
+215 |         self.assertEqual((cfg.gemini_tier, cfg.rpm, cfg.rpd), ("paid", 1000, 10_000))
+216 |         backend = make_gemini(cfg)
+217 |         order = [e.name for e in backend._order()]
+218 |         self.assertEqual(order[: len(cfg.gemini_strong_models)], list(cfg.gemini_strong_models))
+219 |         self.assertFalse(backend.escalate())                                 # no reserve on paid
+220 |         with mock.patch.dict(os.environ, {"LOCALAGENT_RPM": "7"}):
+221 |             self.assertEqual(Config.from_env().rpm, 7)
+222 | 
+223 | 
 ```
 - A user and a project `review.md`: the project one wins; a file with an invalid name is ignored; `$ARGUMENTS` is
   replaced, or the words are appended when the file has no placeholder.
@@ -2757,35 +2783,35 @@ Node, Go, Rust, gcc/g++ and PowerShell, so they all ran); everything else uses f
 
 ## Big folders
 ```python
-202 | class HookTests(unittest.TestCase):
+224 | class HookTests(unittest.TestCase):
 ```
 ```python
-203 |     def test_after_edit_failure_reaches_the_model_and_after_request_runs(self):
-204 |         with tempfile.TemporaryDirectory() as tmp:
-205 |             hooks = {"after_edit": 'echo "checked {file}"; exit 3', "after_request": 'echo "all tests ok"'}
-206 |             box = ToolBox(replace(Config(), workspace=Path(tmp)), lambda _q: True, {"hooks": hooks})
-207 |             result = box.call("write_file", {"path": "n.txt", "content": "hi"})
-208 |             self.assertTrue(result.startswith("OK: wrote n.txt"))
-209 |             self.assertIn("HOOK after_edit failed (exit code 3)", result)
-210 |             self.assertIn("checked n.txt", result)
-211 |             code, output = box.run_hook("after_request")
-212 |             self.assertEqual((code, output.strip()), (0, "all tests ok"))
-213 |             self.assertIsNone(ToolBox(replace(Config(), workspace=Path(tmp))).run_hook("after_edit"))
-214 | 
+225 |     def test_after_edit_failure_reaches_the_model_and_after_request_runs(self):
+226 |         with tempfile.TemporaryDirectory() as tmp:
+227 |             hooks = {"after_edit": 'echo "checked {file}"; exit 3', "after_request": 'echo "all tests ok"'}
+228 |             box = ToolBox(replace(Config(), workspace=Path(tmp)), lambda _q: True, {"hooks": hooks})
+229 |             result = box.call("write_file", {"path": "n.txt", "content": "hi"})
+230 |             self.assertTrue(result.startswith("OK: wrote n.txt"))
+231 |             self.assertIn("HOOK after_edit failed (exit code 3)", result)
+232 |             self.assertIn("checked n.txt", result)
+233 |             code, output = box.run_hook("after_request")
+234 |             self.assertEqual((code, output.strip()), (0, "all tests ok"))
+235 |             self.assertIsNone(ToolBox(replace(Config(), workspace=Path(tmp))).run_hook("after_edit"))
+236 | 
 ```
 ```python
-215 |     def test_hooks_merge_from_settings_files(self):
-216 |         with tempfile.TemporaryDirectory() as tmp:
-217 |             user = Path(tmp) / "user.json"
-218 |             user.write_text('{"hooks": {"after_edit": "a", "after_request": "b"}}', encoding="utf-8")
-219 |             project = Path(tmp) / ".localagent" / "settings.json"
-220 |             project.parent.mkdir()
-221 |             project.write_text('{"hooks": {"after_edit": "c"}}', encoding="utf-8")
-222 |             from localagent.settings import load_settings
-223 |             self.assertEqual(load_settings(Path(tmp), user)["hooks"],
-224 |                              {"after_edit": "c", "after_request": "b"})
-225 | 
-226 | 
+237 |     def test_hooks_merge_from_settings_files(self):
+238 |         with tempfile.TemporaryDirectory() as tmp:
+239 |             user = Path(tmp) / "user.json"
+240 |             user.write_text('{"hooks": {"after_edit": "a", "after_request": "b"}}', encoding="utf-8")
+241 |             project = Path(tmp) / ".localagent" / "settings.json"
+242 |             project.parent.mkdir()
+243 |             project.write_text('{"hooks": {"after_edit": "c"}}', encoding="utf-8")
+244 |             from localagent.settings import load_settings
+245 |             self.assertEqual(load_settings(Path(tmp), user)["hooks"],
+246 |                              {"after_edit": "c", "after_request": "b"})
+247 | 
+248 | 
 ```
 - A failing `after_edit` hook (it prints the file name and exits 3) leaves the write in place but appends
   `HOOK after_edit failed (exit code 3)` and its output to the result; `after_request` runs and returns its output;
@@ -2793,49 +2819,49 @@ Node, Go, Rust, gcc/g++ and PowerShell, so they all ran); everything else uses f
 - Hooks merge from the user and project settings files, the project winning per hook.
 
 ```python
-227 | class BigFolderTests(unittest.TestCase):
+249 | class BigFolderTests(unittest.TestCase):
 ```
 ```python
-228 |     def test_snapshots_switch_off_once_for_huge_folders(self):
-229 |         with tempfile.TemporaryDirectory() as tmp:
-230 |             for i in range(5):
-231 |                 (Path(tmp) / f"f{i}.txt").write_text("x", encoding="utf-8")
-232 |             snaps = Checkpoints(Path(tmp), max_files=3)
-233 |             first = snaps.take()
-234 |             self.assertIn("/undo is off", first or "")
-235 |             self.assertIsNone(snaps.take())                                  # said only once
-236 |             self.assertTrue(snaps.undo().startswith("undo is off"))
-237 |             self.assertIsNone(Checkpoints(Path(tmp)).take())                 # normal size: fine
-238 | 
+250 |     def test_snapshots_switch_off_once_for_huge_folders(self):
+251 |         with tempfile.TemporaryDirectory() as tmp:
+252 |             for i in range(5):
+253 |                 (Path(tmp) / f"f{i}.txt").write_text("x", encoding="utf-8")
+254 |             snaps = Checkpoints(Path(tmp), max_files=3)
+255 |             first = snaps.take()
+256 |             self.assertIn("/undo is off", first or "")
+257 |             self.assertIsNone(snaps.take())                                  # said only once
+258 |             self.assertTrue(snaps.undo().startswith("undo is off"))
+259 |             self.assertIsNone(Checkpoints(Path(tmp)).take())                 # normal size: fine
+260 | 
 ```
 ```python
-239 |     def test_workspace_check_can_look_only_at_recent_changes(self):
-240 |         with tempfile.TemporaryDirectory() as tmp:
-241 |             old = Path(tmp) / "old.json"
-242 |             old.write_text("{broken", encoding="utf-8")
-243 |             past = time.time() - 3600
-244 |             os.utime(old, (past, past))                                      # broken long ago
-245 |             box = ToolBox(replace(Config(), workspace=Path(tmp)), lambda _q: True)
-246 |             self.assertEqual(len(box.check_workspace()), 1)
-247 |             self.assertEqual(box.check_workspace(since=time.time() - 60), [])
-248 |             (Path(tmp) / "new.json").write_text("{also broken", encoding="utf-8")
-249 |             self.assertEqual(len(box.check_workspace(since=box.started)), 1)
-250 |             self.assertIn("NOT RUN", box.call("run_tests", {}))             # broken this session
-251 |             (Path(tmp) / "new.json").unlink()
-252 |             self.assertIn("exit code", box.call("run_tests", {}))           # old file does not block
-253 | 
+261 |     def test_workspace_check_can_look_only_at_recent_changes(self):
+262 |         with tempfile.TemporaryDirectory() as tmp:
+263 |             old = Path(tmp) / "old.json"
+264 |             old.write_text("{broken", encoding="utf-8")
+265 |             past = time.time() - 3600
+266 |             os.utime(old, (past, past))                                      # broken long ago
+267 |             box = ToolBox(replace(Config(), workspace=Path(tmp)), lambda _q: True)
+268 |             self.assertEqual(len(box.check_workspace()), 1)
+269 |             self.assertEqual(box.check_workspace(since=time.time() - 60), [])
+270 |             (Path(tmp) / "new.json").write_text("{also broken", encoding="utf-8")
+271 |             self.assertEqual(len(box.check_workspace(since=box.started)), 1)
+272 |             self.assertIn("NOT RUN", box.call("run_tests", {}))             # broken this session
+273 |             (Path(tmp) / "new.json").unlink()
+274 |             self.assertIn("exit code", box.call("run_tests", {}))           # old file does not block
+275 | 
 ```
 ```python
-254 |     def test_search_stops_on_enormous_folders(self):
-255 |         self.assertGreaterEqual(MAX_SEARCH_FILES, 1000)
-256 |         with tempfile.TemporaryDirectory() as tmp:
-257 |             for i in range(3):
-258 |                 (Path(tmp) / f"m{i}.py").write_text("x = 1\n", encoding="utf-8")
-259 |             box = ToolBox(replace(Config(), workspace=Path(tmp)), lambda _q: True)
-260 |             with mock.patch("localagent.tools.MAX_SEARCH_FILES", 2):
-261 |                 self.assertIn("stopped after looking at 2 files", box.call("search", {"pattern": "zzz"}))
-262 | 
-263 | 
+276 |     def test_search_stops_on_enormous_folders(self):
+277 |         self.assertGreaterEqual(MAX_SEARCH_FILES, 1000)
+278 |         with tempfile.TemporaryDirectory() as tmp:
+279 |             for i in range(3):
+280 |                 (Path(tmp) / f"m{i}.py").write_text("x = 1\n", encoding="utf-8")
+281 |             box = ToolBox(replace(Config(), workspace=Path(tmp)), lambda _q: True)
+282 |             with mock.patch("localagent.tools.MAX_SEARCH_FILES", 2):
+283 |                 self.assertIn("stopped after looking at 2 files", box.call("search", {"pattern": "zzz"}))
+284 | 
+285 | 
 ```
 - With a 3-file limit, a 5-file folder switches `/undo` off with one message (the next snapshot is silent and `undo`
   explains why); a normal folder snapshots fine.
@@ -2844,8 +2870,8 @@ Node, Go, Rust, gcc/g++ and PowerShell, so they all ran); everything else uses f
 - With the file limit lowered to 2 (a mock), a search stops with the "narrow the search" note.
 
 ```python
-264 | if __name__ == "__main__":
-265 |     unittest.main()
+286 | if __name__ == "__main__":
+287 |     unittest.main()
 ```
 - Lets you run the file directly.
 
@@ -5010,106 +5036,109 @@ configuration, the modes with another service, the doctor's check, the first-sta
 
 **Role:** proves `tools/build_site.py`: the Markdown it renders, the problems its checks find, and a whole site built
 from the real `docs\` and `website\`, checked, and served over HTTP. The download files are small stand-ins, so the
-tests need no release build and no network. 13 tests, about 5 seconds.
+tests need no release build and no network. 17 tests, about 7 seconds.
 
 ## Helpers
 ```python
   1 | """Tests for the website builder (tools/build_site.py): the Markdown it renders, the checks it
   2 | runs, and a whole site built from the real docs, checked, and served over HTTP like a visitor
   3 | would see it. Nothing is uploaded anywhere; the download files are small stand-ins."""
-  4 | import importlib.util
-  5 | import tempfile
-  6 | import threading
-  7 | import unittest
-  8 | import urllib.error
-  9 | import urllib.request
- 10 | from functools import partial
- 11 | from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
- 12 | from pathlib import Path
- 13 | from unittest import mock
- 14 | 
- 15 | ROOT = Path(__file__).resolve().parent.parent
- 16 | _SPEC = importlib.util.spec_from_file_location("build_site", ROOT / "tools" / "build_site.py")
- 17 | assert _SPEC is not None and _SPEC.loader is not None
- 18 | site = importlib.util.module_from_spec(_SPEC)
- 19 | _SPEC.loader.exec_module(site)
- 20 | VERSION = site.__version__
- 21 | 
- 22 | 
+  4 | import hashlib
+  5 | import importlib.util
+  6 | import json
+  7 | import re
+  8 | import tempfile
+  9 | import threading
+ 10 | import unittest
+ 11 | import urllib.error
+ 12 | import urllib.request
+ 13 | from functools import partial
+ 14 | from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+ 15 | from pathlib import Path
+ 16 | from unittest import mock
+ 17 | 
+ 18 | ROOT = Path(__file__).resolve().parent.parent
+ 19 | _SPEC = importlib.util.spec_from_file_location("build_site", ROOT / "tools" / "build_site.py")
+ 20 | assert _SPEC is not None and _SPEC.loader is not None
+ 21 | site = importlib.util.module_from_spec(_SPEC)
+ 22 | _SPEC.loader.exec_module(site)
+ 23 | VERSION = site.__version__
+ 24 | 
+ 25 | 
 ```
 - Loads `tools/build_site.py` by its path (the `tools` folder is not a package) as `site`. `VERSION` is the agent's
   version, which the download file names contain.
 
 ```python
- 23 | def link(target):
- 24 |     """The link rule of a tiny site with two pages, cli and tools."""
- 25 |     if target.startswith(("http", "#")):
- 26 |         return target
- 27 |     name = target.rsplit("/", 1)[-1]
- 28 |     return name[:-3] + ".html" if name in ("cli.md", "tools.md") else None
- 29 | 
- 30 | 
+ 26 | def link(target):
+ 27 |     """The link rule of a tiny site with two pages, cli and tools."""
+ 28 |     if target.startswith(("http", "#")):
+ 29 |         return target
+ 30 |     name = target.rsplit("/", 1)[-1]
+ 31 |     return name[:-3] + ".html" if name in ("cli.md", "tools.md") else None
+ 32 | 
+ 33 | 
 ```
 - The link rule of a tiny site with two pages, `cli` and `tools`: outside addresses and `#sections` stay, those two
   pages become `.html`, anything else is not on the site.
 
 ```python
- 31 | class Quiet(SimpleHTTPRequestHandler):
- 32 |     """The standard file server without a log line per request."""
- 33 | 
+ 34 | class Quiet(SimpleHTTPRequestHandler):
+ 35 |     """The standard file server without a log line per request."""
+ 36 | 
 ```
 ```python
- 34 |     def log_message(self, *_args):
- 35 |         pass
- 36 | 
- 37 | 
+ 37 |     def log_message(self, *_args):
+ 38 |         pass
+ 39 | 
+ 40 | 
 ```
 - The standard file server without a log line for every request.
 
 ```python
- 38 | def fake_dist(folder: Path) -> Path:
- 39 |     """Small stand-ins for the three release files."""
- 40 |     folder.mkdir(parents=True, exist_ok=True)
- 41 |     (folder / f"localagent-{VERSION}-windows-x64.zip").write_bytes(b"PK zip " * 300)
- 42 |     (folder / f"localagent-{VERSION}-py3-none-any.whl").write_bytes(b"PK wheel")
- 43 |     (folder / "SHA256SUMS.txt").write_text("abc  file\n", encoding="utf-8")
- 44 |     return folder
- 45 | 
- 46 | 
+ 41 | def fake_dist(folder: Path) -> Path:
+ 42 |     """Small stand-ins for the three release files."""
+ 43 |     folder.mkdir(parents=True, exist_ok=True)
+ 44 |     (folder / f"localagent-{VERSION}-windows-x64.zip").write_bytes(b"PK zip " * 300)
+ 45 |     (folder / f"localagent-{VERSION}-py3-none-any.whl").write_bytes(b"PK wheel")
+ 46 |     (folder / "SHA256SUMS.txt").write_text("abc  file\n", encoding="utf-8")
+ 47 |     return folder
+ 48 | 
+ 49 | 
 ```
 - Writes small stand-ins for the zip, the wheel and `SHA256SUMS.txt`.
 
 ## Inline Markdown
 ```python
- 47 | class InlineTests(unittest.TestCase):
+ 50 | class InlineTests(unittest.TestCase):
 ```
 ```python
- 48 |     def test_code_links_and_emphasis(self):
- 49 |         out = site.inline("See `cli.md`, **bold** and *it* [the `tools` page](tools.md)", link)
- 50 |         self.assertEqual(out, 'See <a href="cli.html"><code>cli.md</code></a>, <strong>bold</strong> and '
- 51 |                               '<em>it</em> <a href="tools.html">the <code>tools</code> page</a>')
- 52 | 
+ 51 |     def test_code_links_and_emphasis(self):
+ 52 |         out = site.inline("See `cli.md`, **bold** and *it* [the `tools` page](tools.md)", link)
+ 53 |         self.assertEqual(out, 'See <a href="cli.html"><code>cli.md</code></a>, <strong>bold</strong> and '
+ 54 |                               '<em>it</em> <a href="tools.html">the <code>tools</code> page</a>')
+ 55 | 
 ```
 ```python
- 53 |     def test_nothing_becomes_a_tag_or_a_placeholder(self):
- 54 |         out = site.inline("<script>x</script> & {{name}} `a<b`", link)
- 55 |         self.assertEqual(out, "&lt;script&gt;x&lt;/script&gt; &amp; &#123;&#123;name}} <code>a&lt;b</code>")
- 56 | 
-```
-```python
- 57 |     def test_words_with_marks_stay_as_they_are(self):
- 58 |         self.assertEqual(site.inline("snake_case_name 17*3 a \\| b", link), "snake_case_name 17*3 a | b")
+ 56 |     def test_nothing_becomes_a_tag_or_a_placeholder(self):
+ 57 |         out = site.inline("<script>x</script> & {{name}} `a<b`", link)
+ 58 |         self.assertEqual(out, "&lt;script&gt;x&lt;/script&gt; &amp; &#123;&#123;name}} <code>a&lt;b</code>")
  59 | 
 ```
 ```python
- 60 |     def test_addresses(self):
- 61 |         out = site.inline("Go to https://example.org/a?b=1&c=2. Or <https://x.org>, (https://y.org/z)", link)
- 62 |         self.assertEqual(out, 'Go to <a href="https://example.org/a?b=1&amp;c=2">https://example.org/a?b=1&amp;c=2'
- 63 |                               '</a>. Or <a href="https://x.org">https://x.org</a>, (<a href="https://y.org/z">'
- 64 |                               "https://y.org/z</a>)")
- 65 |         self.assertEqual(site.inline("[the license](../LICENSE)", link), "the license")   # not on the site
- 66 | 
- 67 | 
+ 60 |     def test_words_with_marks_stay_as_they_are(self):
+ 61 |         self.assertEqual(site.inline("snake_case_name 17*3 a \\| b", link), "snake_case_name 17*3 a | b")
+ 62 | 
+```
+```python
+ 63 |     def test_addresses(self):
+ 64 |         out = site.inline("Go to https://example.org/a?b=1&c=2. Or <https://x.org>, (https://y.org/z)", link)
+ 65 |         self.assertEqual(out, 'Go to <a href="https://example.org/a?b=1&amp;c=2">https://example.org/a?b=1&amp;c=2'
+ 66 |                               '</a>. Or <a href="https://x.org">https://x.org</a>, (<a href="https://y.org/z">'
+ 67 |                               "https://y.org/z</a>)")
+ 68 |         self.assertEqual(site.inline("[the license](../LICENSE)", link), "the license")   # not on the site
+ 69 | 
+ 70 | 
 ```
 - `` `cli.md` `` becomes a link to `cli.html`; bold, italics, and a link whose label holds code all come out right.
 - `<script>` is shown, never run; `&` is escaped; `{{name}}` becomes `&#123;&#123;name}}`, so it can never be taken for
@@ -5120,41 +5149,41 @@ tests need no release build and no network. 13 tests, about 5 seconds.
 
 ## Blocks
 ```python
- 68 | class BlockTests(unittest.TestCase):
+ 71 | class BlockTests(unittest.TestCase):
 ```
 ```python
- 69 |     def render(self, text):
- 70 |         renderer = site.Renderer(link)
- 71 |         return renderer.render(text), renderer.headings
- 72 | 
+ 72 |     def render(self, text):
+ 73 |         renderer = site.Renderer(link)
+ 74 |         return renderer.render(text), renderer.headings
+ 75 | 
 ```
 ```python
- 73 |     def test_headings_get_unique_ids(self):
- 74 |         out, headings = self.render("# Title\n## `read_secret`\n## Same\n## Same")
- 75 |         self.assertIn('<h1 id="title">Title</h1>', out)
- 76 |         self.assertIn('<h2 id="read_secret"><code>read_secret</code><a class="anchor" href="#read_secret"', out)
- 77 |         self.assertEqual([ident for _, ident, _ in headings], ["title", "read_secret", "same", "same-2"])
- 78 | 
+ 76 |     def test_headings_get_unique_ids(self):
+ 77 |         out, headings = self.render("# Title\n## `read_secret`\n## Same\n## Same")
+ 78 |         self.assertIn('<h1 id="title">Title</h1>', out)
+ 79 |         self.assertIn('<h2 id="read_secret"><code>read_secret</code><a class="anchor" href="#read_secret"', out)
+ 80 |         self.assertEqual([ident for _, ident, _ in headings], ["title", "read_secret", "same", "same-2"])
+ 81 | 
 ```
 ```python
- 79 |     def test_paragraphs_lists_and_quotes(self):
- 80 |         out, _ = self.render("Text\n2026. still text\n\n3. three\n   more\n4. four\n   - nested\n\n> quoted")
- 81 |         self.assertIn("<p>Text\n2026. still text</p>", out)
- 82 |         self.assertIn('<ol start="3"><li>three\nmore</li><li>four\n<ul><li>nested</li></ul></li></ol>', out)
- 83 |         self.assertIn("<blockquote><p>quoted</p></blockquote>", out)
- 84 |         loose, _ = self.render("- one\n\n- two")
- 85 |         self.assertEqual(loose, "<ul><li><p>one</p></li><li><p>two</p></li></ul>")
- 86 | 
+ 82 |     def test_paragraphs_lists_and_quotes(self):
+ 83 |         out, _ = self.render("Text\n2026. still text\n\n3. three\n   more\n4. four\n   - nested\n\n> quoted")
+ 84 |         self.assertIn("<p>Text\n2026. still text</p>", out)
+ 85 |         self.assertIn('<ol start="3"><li>three\nmore</li><li>four\n<ul><li>nested</li></ul></li></ol>', out)
+ 86 |         self.assertIn("<blockquote><p>quoted</p></blockquote>", out)
+ 87 |         loose, _ = self.render("- one\n\n- two")
+ 88 |         self.assertEqual(loose, "<ul><li><p>one</p></li><li><p>two</p></li></ul>")
+ 89 | 
 ```
 ```python
- 87 |     def test_tables_and_code(self):
- 88 |         out, _ = self.render("| A | B | C |\n|---|:-:|--:|\n| `x\\|y` | 2 |\n\n```python\nif a < b:\n```\n---")
- 89 |         self.assertIn('<th>A</th><th class="al-c">B</th><th class="al-r">C</th>', out)
- 90 |         self.assertIn('<td><code>x|y</code></td><td class="al-c">2</td><td class="al-r"></td>', out)
- 91 |         self.assertIn('<pre><code class="language-python">if a &lt; b:</code></pre>', out)
- 92 |         self.assertTrue(out.endswith("<hr>"))
- 93 | 
- 94 | 
+ 90 |     def test_tables_and_code(self):
+ 91 |         out, _ = self.render("| A | B | C |\n|---|:-:|--:|\n| `x\\|y` | 2 |\n\n```python\nif a < b:\n```\n---")
+ 92 |         self.assertIn('<th>A</th><th class="al-c">B</th><th class="al-r">C</th>', out)
+ 93 |         self.assertIn('<td><code>x|y</code></td><td class="al-c">2</td><td class="al-r"></td>', out)
+ 94 |         self.assertIn('<pre><code class="language-python">if a &lt; b:</code></pre>', out)
+ 95 |         self.assertTrue(out.endswith("<hr>"))
+ 96 | 
+ 97 | 
 ```
 - Headings get ids (code keeps its underscore: `read_secret`), a second "Same" gets `same-2`, and only headings from
   level 2 on get a `#` link.
@@ -5165,124 +5194,218 @@ tests need no release build and no network. 13 tests, about 5 seconds.
 
 ## Pages and templates
 ```python
- 95 | class PageTests(unittest.TestCase):
+ 98 | class PageTests(unittest.TestCase):
 ```
 ```python
- 96 |     def test_titles_descriptions_order_and_templates(self):
- 97 |         self.assertEqual(site.page_title("# `localagent/fetch.py` — downloads you can trust\n"),
- 98 |                          ("fetch.py", "downloads you can trust"))
- 99 |         self.assertEqual(site.page_title("# `tests/` — proving it works")[0], "tests")
-100 |         self.assertEqual(site.page_title("# Roadmap — what comes next")[0], "Roadmap")
-101 |         long = "# T\n\n" + "word " * 60
-102 |         self.assertTrue(site.describe(long).endswith("...") and len(site.describe(long)) <= 155)
-103 |         groups = dict(site.doc_order(["cli", "00-overview", "brand-new"]))
-104 |         self.assertEqual(groups, {"Guides": ["00-overview"], "Commands and settings": ["cli"], "More": ["brand-new"]})
-105 |         self.assertEqual(site.fill("<b>{{a}}</b>", {"a": "{{b}}"}), "<b>{{b}}</b>")    # values are not re-read
-106 |         with self.assertRaises(SystemExit):
-107 |             site.fill("{{a}} {{nmae}}", {"a": "1"})
-108 |         self.assertEqual((site.size_text(101_403), site.size_text(22_788_740)), ("101 KB", "22.8 MB"))
-109 | 
-110 | 
+ 99 |     def test_titles_descriptions_order_and_templates(self):
+100 |         self.assertEqual(site.page_title("# `localagent/fetch.py` — downloads you can trust\n"),
+101 |                          ("fetch.py", "downloads you can trust"))
+102 |         self.assertEqual(site.page_title("# `tests/` — proving it works")[0], "tests")
+103 |         self.assertEqual(site.page_title("# Roadmap — what comes next")[0], "Roadmap")
+104 |         long = "# T\n\n" + "word " * 60
+105 |         self.assertTrue(site.describe(long).endswith("...") and len(site.describe(long)) <= 155)
+106 |         groups = dict(site.doc_order(["cli", "00-overview", "getting-started", "brand-new"]))
+107 |         self.assertEqual(groups, {"Get started": ["getting-started"], "How it is built": ["00-overview"],
+108 |                                   "Commands and settings": ["cli"], "More": ["brand-new"]})
+109 |         self.assertEqual(site.fill("<b>{{a}}</b>", {"a": "{{b}}"}), "<b>{{b}}</b>")    # values are not re-read
+110 |         with self.assertRaises(SystemExit):
+111 |             site.fill("{{a}} {{nmae}}", {"a": "1"})
+112 |         self.assertEqual((site.size_text(101_403), site.size_text(22_788_740)), ("101 KB", "22.8 MB"))
+113 | 
+114 | 
 ```
 - Titles come from the first heading (a file name, a folder name, a guide's name); a long description is cut at a word
-  with "..."; an unknown page lands in "More"; a value that contains `{{b}}` is put in as it is, and a template asking
-  for an unknown value stops the build; sizes read "101 KB" and "22.8 MB".
+  with "..."; the menu puts a guide under "Get started", the overview under "How it is built", a code page under its
+  area and an unknown page under "More"; a value that contains `{{b}}` is put in as it is, and a template asking for an
+  unknown value stops the build; sizes read "101 KB" and "22.8 MB".
+
+## The data in the pages
+```python
+115 | class DataTests(unittest.TestCase):
+```
+```python
+116 |     def test_data_inside_a_page_cannot_break_it(self):
+117 |         text = site.json_script({"a": "</script><b>", "b": "{{x}}"})
+118 |         self.assertNotIn("</", text)
+119 |         self.assertNotIn("{{", text)
+120 |         self.assertEqual(json.loads(text), {"a": "</script><b>", "b": "{{x}}"})   # still the same data
+121 |         lines = site.session_lines([["user", "fix <it>"], ["tool", "-> run ", "{}"], ["ok", "done"]])
+122 |         self.assertEqual(lines, '<div><span class="prompt">you&gt; </span><span class="user">fix &lt;it&gt;</span>'
+123 |                                 '</div><div><span class="tool">-&gt; run </span><span class="args">&#123;}</span>'
+124 |                                 '</div><div class="ok">done</div>')
+125 | 
+```
+```python
+126 |     def test_release_facts_come_from_the_files(self):
+127 |         changelog = f"# Changelog\n\n## {VERSION} — 21 November 2026\n\n### Added\n- a thing\n\n## 0.0.1 — 1 May\n- old\n"
+128 |         self.assertEqual(site.release_date(changelog), "21 November 2026")
+129 |         self.assertEqual(site.release_section(changelog), "### Added\n- a thing")
+130 |         self.assertEqual(site.release_date("# nothing"), "not yet released")
+131 |         with tempfile.TemporaryDirectory() as tmp:
+132 |             path = Path(tmp) / "f.zip"
+133 |             path.write_bytes(b"abc")
+134 |             self.assertEqual(site.file_info(path), {"name": "f.zip", "size": "0 KB", "sha":
+135 |                              "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"})
+136 | 
+```
+- Data holding `</script>` and `{{x}}` comes out with neither, yet reads back as the same data. A recorded session's
+  lines come out escaped (`fix <it>` cannot become a tag) with the player's classes.
+- The release date and notes are read from a changelog (and "not yet released" without one); a file's size and SHA-256
+  are computed from the file (the known checksum of "abc").
+
+```python
+137 |     def test_the_setup_builder_follows_the_program(self):
+138 |         self.assertEqual((site.server_id("LM Studio"), site.server_id("llama.cpp")), ("lmstudio", "llamacpp"))
+139 |         self.assertEqual([site.memory_label(14, 7), site.memory_label(7, 7), site.memory_label(0, 7)],
+140 |                          ["16 GB or more", "8 GB or more", "Less than 8 GB"])
+141 |         body = site.setup_body({"zip_name": "z.zip", "zip_size": "1 MB", "wheel_name": "w.whl", "version": VERSION})
+142 |         data = json.loads(re.search(r'id="setup-data">(.*?)</script>', body, re.S).group(1))
+143 |         self.assertEqual([item["id"] for item in data["online"]][:2], ["gemini", "openai"])
+144 |         self.assertEqual(data["skip_number"], len(data["online"]) + 1)          # the setup's "skip" line
+145 |         self.assertIn("ollama", [item["id"] for item in data["local"]])
+146 |         self.assertIn('id="online-gemini" value="gemini" checked', body)
+147 |         link = site.make_link({"cli": ""}, "docs/")
+148 |         self.assertEqual([link("cli.md#x"), link("../download.html"), link("README.md"), link("https://a.b")],
+149 |                          ["docs/cli.html#x", "../download.html", None, "https://a.b"])
+150 | 
+```
+```python
+151 |     def test_search_entries_follow_the_headings(self):
+152 |         body = ('<h1 id="t">T</h1><p>Intro.</p><h2 id="one">One<a class="anchor" href="#one">#</a></h2>'
+153 |                 "<p>Words about one.</p><pre><code>hidden code</code></pre><h3 id=\"two\">Two</h3><p>More.</p>")
+154 |         entries = site.search_entries(body, "Page", "docs/p.html", "About the page.", True)
+155 |         self.assertEqual(entries, [{"p": "Page", "h": "", "u": "docs/p.html", "x": "About the page.", "g": 1},
+156 |                                    {"p": "Page", "h": "One", "u": "docs/p.html#one", "x": "Words about one.", "g": 1},
+157 |                                    {"p": "Page", "h": "Two", "u": "docs/p.html#two", "x": "More.", "g": 1}])
+158 | 
+159 | 
+```
+- Server names become `lmstudio` and `llamacpp`; memory thresholds read "16 GB or more", "8 GB or more", "Less than 8
+  GB". The setup builder's data starts with Gemini and OpenAI, its "skip" number is one past the last service (as in
+  the real setup menu), Ollama is offered, and Gemini is chosen at first. The link rule keeps the site's own pages,
+  turns documentation pages into their `.html`, and drops a file that is not on the site.
+- A small rendered page gives three search entries — the page, then "One" and "Two" with their addresses and texts —
+  without the code block and without the heading's `#` link.
 
 ## The whole site
 ```python
-111 | class SiteTests(unittest.TestCase):
+160 | class SiteTests(unittest.TestCase):
 ```
 ```python
-112 |     def test_the_real_site_is_built_checked_and_served(self):
-113 |         with tempfile.TemporaryDirectory() as tmp:
-114 |             dist, out = fake_dist(Path(tmp) / "dist"), Path(tmp) / "site"
-115 |             pages = site.build(out, dist, site_url="https://example.test")
-116 |             self.assertEqual(site.check_site(out, site.private_words()), [])   # never shows the owner
-117 |             self.assertIn("providers", pages)
-118 |             self.assertIn("https://example.test/docs/cli.html", (out / "sitemap.xml").read_text(encoding="utf-8"))
-119 |             self.assertIn("Sitemap: https://example.test/sitemap.xml", (out / "robots.txt").read_text(encoding="utf-8"))
-120 |             server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Quiet, directory=str(out)))
-121 |             threading.Thread(target=server.serve_forever, daemon=True).start()
-122 |             base = f"http://127.0.0.1:{server.server_address[1]}/"
-123 |             try:
-124 |                 home = urllib.request.urlopen(base, timeout=10).read().decode("utf-8")
-125 |                 doc = urllib.request.urlopen(base + "docs/wizard.html", timeout=10).read().decode("utf-8")
-126 |                 zipped = urllib.request.urlopen(base + f"downloads/localagent-{VERSION}-windows-x64.zip",
-127 |                                                 timeout=10).read()
-128 |                 with self.assertRaises(urllib.error.HTTPError) as missing:
-129 |                     urllib.request.urlopen(base + "docs/nothing.html", timeout=10)
-130 |                 missing.exception.close()
-131 |             finally:
-132 |                 server.shutdown()
-133 |                 server.server_close()
-134 |         self.assertIn(f"localagent-{VERSION}-windows-x64.zip", home)
-135 |         self.assertIn('<link rel="canonical" href="https://example.test/">', home)
-136 |         self.assertIn('aria-current="page">wizard.py</a>', doc)
-137 |         self.assertEqual(zipped, b"PK zip " * 300)
-138 | 
+161 |     def build(self, out, dist, **addresses):
+162 |         with mock.patch.object(site, "test_count", return_value=42):     # counted for real when the site is built
+163 |             return site.build(out, dist, **addresses)
+164 | 
 ```
-- Builds the real site with an address, then runs the full check with the **real** owner name read from git — so CI
-  proves on every push that no page shows it. The sitemap lists the pages and `robots.txt` names it. A local web server
-  then serves the folder: the home page names the zip and has its canonical link, a docs page marks itself in the menu,
-  the zip arrives byte for byte, and a missing page is a 404.
+- Builds with the test count replaced by 42: counting the real tests inside a test run is slow, and the real count is
+  shown when the site is built for real.
 
 ```python
-139 |     def test_downloads_can_live_elsewhere(self):
-140 |         with tempfile.TemporaryDirectory() as tmp:
-141 |             dist, out = fake_dist(Path(tmp) / "dist"), Path(tmp) / "site"
-142 |             site.build(out, dist, downloads_url="https://files.example.test/v1")
-143 |             home = (out / "index.html").read_text(encoding="utf-8")
-144 |             self.assertFalse((out / "downloads").exists())
-145 |             self.assertIn(f'href="https://files.example.test/v1/localagent-{VERSION}-windows-x64.zip"', home)
-146 |             self.assertEqual(site.check_site(out, []), [])
-147 | 
+165 |     def test_the_real_site_is_built_checked_and_served(self):
+166 |         with tempfile.TemporaryDirectory() as tmp:
+167 |             dist, out = fake_dist(Path(tmp) / "dist"), Path(tmp) / "site"
+168 |             pages = self.build(out, dist, site_url="https://example.test")
+169 |             self.assertEqual(site.check_site(out, site.private_words()), [])   # never shows the owner
+170 |             for name in ("index.html", "download.html", "setup.html", "changelog.html", "privacy.html", "license.html",
+171 |                          "404.html", "docs/index.html", "docs/getting-started.html", "docs/providers.html"):
+172 |                 self.assertIn(name, pages)
+173 |             self.assertIn("https://example.test/docs/cli.html", (out / "sitemap.xml").read_text(encoding="utf-8"))
+174 |             self.assertIn("Sitemap: https://example.test/sitemap.xml", (out / "robots.txt").read_text(encoding="utf-8"))
+175 |             index = json.loads((out / "search-index.json").read_text(encoding="utf-8"))
+176 |             self.assertTrue(any(entry["u"] == "docs/getting-started.html" for entry in index))
+177 |             server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Quiet, directory=str(out)))
+178 |             threading.Thread(target=server.serve_forever, daemon=True).start()
+179 |             base = f"http://127.0.0.1:{server.server_address[1]}/"
+180 |             try:
+181 |                 home = urllib.request.urlopen(base, timeout=10).read().decode("utf-8")
+182 |                 download = urllib.request.urlopen(base + "download.html", timeout=10).read().decode("utf-8")
+183 |                 doc = urllib.request.urlopen(base + "docs/wizard.html", timeout=10).read().decode("utf-8")
+184 |                 zipped = urllib.request.urlopen(base + f"downloads/localagent-{VERSION}-windows-x64.zip",
+185 |                                                 timeout=10).read()
+186 |                 with self.assertRaises(urllib.error.HTTPError) as missing:
+187 |                     urllib.request.urlopen(base + "docs/nothing.html", timeout=10)
+188 |                 missing.exception.close()
+189 |             finally:
+190 |                 server.shutdown()
+191 |                 server.server_close()
+192 |         self.assertIn('<link rel="canonical" href="https://example.test/">', home)
+193 |         self.assertIn("<strong>42</strong>", home)                            # the number of tests
+194 |         self.assertIn('id="sessions-data"', home)
+195 |         self.assertIn(f'href="downloads/localagent-{VERSION}-windows-x64.zip" download', download)
+196 |         self.assertIn(hashlib.sha256(b"PK zip " * 300).hexdigest(), download)  # its checksum is shown
+197 |         self.assertIn('aria-current="page">wizard.py</a>', doc)
+198 |         self.assertEqual(zipped, b"PK zip " * 300)
+199 | 
+```
+- Builds the real site with an address and runs the full check with the **real** owner name read from git — so CI
+  proves on every push that no page shows it. Every kind of page is written; the sitemap lists them and `robots.txt`
+  names it; the search index has the guide. A local web server then serves the folder: the home page has its canonical
+  link, the number of tests and the sessions; the download page links the zip with `download` and shows its checksum
+  (computed from the stand-in file); a docs page marks itself in the menu; the zip arrives byte for byte; a missing
+  page is a 404.
+
+```python
+200 |     def test_downloads_can_live_elsewhere(self):
+201 |         with tempfile.TemporaryDirectory() as tmp:
+202 |             dist, out = fake_dist(Path(tmp) / "dist"), Path(tmp) / "site"
+203 |             self.build(out, dist, downloads_url="https://files.example.test/v1")
+204 |             download = (out / "download.html").read_text(encoding="utf-8")
+205 |             self.assertFalse((out / "downloads").exists())
+206 |             self.assertIn(f'href="https://files.example.test/v1/localagent-{VERSION}-windows-x64.zip"', download)
+207 |             self.assertEqual(site.check_site(out, []), [])
+208 | 
 ```
 ```python
-148 |     def test_problems_are_found(self):
-149 |         with tempfile.TemporaryDirectory() as tmp:
-150 |             out = Path(tmp)
-151 |             (out / "index.html").write_text('<div><a href="gone.html">x</a><a href="#nowhere">y</a> {{x}}</p>',
-152 |                                             encoding="utf-8")
-153 |             (out / "notes.txt").write_text("made by Jane Doe", encoding="utf-8")
-154 |             problems = "\n".join(site.check_site(out, ["Jane-Doe", "Jane Doe"]))
-155 |         for expected in ("was not filled in", "</p> closes <div>", "never closed: div",
-156 |                          "missing file: gone.html", "missing section: #nowhere", "notes.txt: shows 'Jane Doe'"):
-157 |             self.assertIn(expected, problems)
-158 | 
+209 |     def test_problems_are_found(self):
+210 |         with tempfile.TemporaryDirectory() as tmp:
+211 |             out = Path(tmp)
+212 |             (out / "index.html").write_text('<div><a href="gone.html">x</a><a href="#nowhere">y</a> {{x}}</p>'
+213 |                                             '<p style="color:red" onclick="go()">z</p><script>alert(1)</script>'
+214 |                                             '<script type="application/json">{}</script>', encoding="utf-8")
+215 |             (out / "notes.txt").write_text("made by Jane Doe", encoding="utf-8")
+216 |             (out / "data.json").write_text("{broken", encoding="utf-8")
+217 |             problems = "\n".join(site.check_site(out, ["Jane-Doe", "Jane Doe"]))
+218 |         for expected in ("was not filled in", "</p> closes <div>", "never closed: div", "missing file: gone.html",
+219 |                          "missing section: #nowhere", "notes.txt: shows 'Jane Doe'", "blocks inline styles",
+220 |                          "blocks inline event handlers", "an inline <script>", "data.json: not valid JSON"):
+221 |             self.assertIn(expected, problems)
+222 |         self.assertEqual(problems.count("inline <script>"), 1)                # JSON data is allowed
+223 | 
 ```
 ```python
-159 |     def test_a_folder_that_is_not_a_site_is_never_replaced(self):
-160 |         with tempfile.TemporaryDirectory() as tmp:
-161 |             dist, out = fake_dist(Path(tmp) / "dist"), Path(tmp) / "mine"
-162 |             out.mkdir()
-163 |             (out / "thesis.docx").write_bytes(b"precious")
-164 |             with self.assertRaises(SystemExit):
-165 |                 site.build(out, dist)
-166 |             self.assertEqual((out / "thesis.docx").read_bytes(), b"precious")
-167 |             with self.assertRaises(SystemExit):                          # no release files yet
-168 |                 site.build(Path(tmp) / "new", Path(tmp) / "empty")
-169 | 
+224 |     def test_a_folder_that_is_not_a_site_is_never_replaced(self):
+225 |         with tempfile.TemporaryDirectory() as tmp:
+226 |             dist, out = fake_dist(Path(tmp) / "dist"), Path(tmp) / "mine"
+227 |             out.mkdir()
+228 |             (out / "thesis.docx").write_bytes(b"precious")
+229 |             with self.assertRaises(SystemExit):
+230 |                 self.build(out, dist)
+231 |             self.assertEqual((out / "thesis.docx").read_bytes(), b"precious")
+232 |             with self.assertRaises(SystemExit):                          # no release files yet
+233 |                 self.build(Path(tmp) / "new", Path(tmp) / "empty")
+234 | 
 ```
 ```python
-170 |     def test_the_owner_is_read_from_the_remote(self):
-171 |         for address in ("https://github.com/Some-Owner/repo.git", "git@github.com:Some-Owner/repo.git"):
-172 |             answer = mock.Mock(stdout=address + "\n")
-173 |             with mock.patch.object(site.subprocess, "run", return_value=answer):
-174 |                 self.assertEqual(site.private_words(), ["Some Owner", "Some-Owner"])
-175 |         with mock.patch.object(site.subprocess, "run", return_value=mock.Mock(stdout="https://example.org/x\n")):
-176 |             self.assertEqual(site.private_words(), [])
-177 | 
-178 | 
+235 |     def test_the_owner_is_read_from_the_remote(self):
+236 |         for address in ("https://github.com/Some-Owner/repo.git", "git@github.com:Some-Owner/repo.git"):
+237 |             answer = mock.Mock(stdout=address + "\n")
+238 |             with mock.patch.object(site.subprocess, "run", return_value=answer):
+239 |                 self.assertEqual(site.private_words(), ["Some Owner", "Some-Owner"])
+240 |         with mock.patch.object(site.subprocess, "run", return_value=mock.Mock(stdout="https://example.org/x\n")):
+241 |             self.assertEqual(site.private_words(), [])
+242 | 
+243 | 
 ```
-- With `--downloads-url` no download is copied, the links point there, and the site still checks clean.
+- With `--downloads-url` no download is copied, the download page links there, and the site still checks clean.
 - A broken page is caught on every count: an unfilled placeholder, a wrong closing tag, a tag never closed, a missing
-  file, a missing section, and a private name in a text file.
+  file, a missing section, an inline style, an inline event handler, an inline script (but not a JSON data block),
+  broken JSON, and a private name in a text file.
 - A folder holding someone's own file is never deleted by a build into it; without release files the build stops.
 - The owner comes from both forms of a GitHub address (`https://` and `git@`), with and without dashes; any other
   address gives nothing to look for.
 
 ```python
-179 | if __name__ == "__main__":
-180 |     unittest.main()
+244 | if __name__ == "__main__":
+245 |     unittest.main()
 ```
 - Lets you run the file directly.

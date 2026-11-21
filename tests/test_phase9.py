@@ -112,6 +112,28 @@ class StreamTests(unittest.TestCase):
             self.assertIn("Working on it.", out.getvalue())
             self.assertIn("All done: 3 files.", out.getvalue())
 
+    def test_a_streamed_answer_is_not_printed_twice(self):
+        from localagent.llm import Reply
+        turns = iter([("Let me look.", [{"function": {"name": "outline", "arguments": {"path": "."}}}]),
+                      ("The answer is 42.", [])])
+
+        class TwoTurns:                                  # how local models often answer
+            def chat(self, messages, tools, on_token=None):
+                text, calls = next(turns)
+                on_token(text)
+                message = {"role": "assistant", "content": text}
+                if calls:
+                    message["tool_calls"] = calls
+                return Reply(message, 1, 1, 0.0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = replace(Config(), workspace=Path(tmp))
+            box = ToolBox(cfg, lambda _q: True)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                handle_request(Agent(cfg, TwoTurns(), box, Meter()), box, Meter(), "Why?")
+        self.assertEqual(out.getvalue().count("The answer is 42."), 1)
+
 
 class HelperTests(unittest.TestCase):
     def test_delegate_runs_a_read_only_helper_and_returns_its_report(self):

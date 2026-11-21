@@ -21,7 +21,7 @@ LocalModel.chat ─► ensure_ready ─► a server answers at api_base (llama.c
 | model | `LOCALAGENT_MODEL_FILE` | first `*.gguf` in `%USERPROFILE%\.localagent\models\` | first `*.gguf` in this checkout's `models\` | — |
 
 The `%USERPROFILE%\.localagent` places are what an installed copy uses; the checkout folders are what this project
-already had (`serve.ps1` uses them), so nothing had to move.
+already had (`scripts\serve.ps1` uses them), so nothing had to move.
 
 ## Module header
 @@ localagent/localserver.py header @@
@@ -100,7 +100,7 @@ already had (`serve.ps1` uses them), so nothing had to move.
   for one call); `--alias`.
 - `-ngl` (layers on the GPU) is passed **only** when you set `LOCALAGENT_GPU_LAYERS`. Otherwise llama.cpp's own `--fit`
   (on by default since build 12099, the one in `bin\`) measures the graphics card's free memory and puts as many layers
-  there as fit. `serve.ps1`'s hand-tuned `-ngl 9` was right for this laptop's 2 GB card but would waste a bigger card
+  there as fit. `scripts\serve.ps1`'s hand-tuned `-ngl 9` was right for this laptop's 2 GB card but would waste a bigger card
   and crash a smaller one; a downloadable product cannot know the card in advance.
 - Verified against the real `llama-server.exe`: it accepts every argument above (started with a missing model file,
   it failed with "failed to load model", not with an argument error).

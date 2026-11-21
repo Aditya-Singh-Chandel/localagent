@@ -1,5 +1,5 @@
 # Installs the `localagent` command so it works in ANY folder, like `claude`.
-#   Run once from this project folder:   .\install.ps1
+#   Run once from this project folder:   .\scripts\install.ps1
 #   Then open a NEW terminal, cd into any project, and type:   localagent
 # What it does (and nothing else):
 #   1. creates .venv here if missing and installs this project into it (editable: code changes apply at once)
@@ -7,7 +7,7 @@
 #   3. adds %USERPROFILE%\.localagent\bin to YOUR user PATH (only if it is not there yet)
 # Uninstall: delete %USERPROFILE%\.localagent\bin and remove it from PATH in "Edit environment variables".
 $ErrorActionPreference = "Stop"
-$project = $PSScriptRoot
+$project = Split-Path -Parent $PSScriptRoot    # the project folder, above scripts\
 $python = Join-Path $project ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
     Write-Host "creating virtual environment..."

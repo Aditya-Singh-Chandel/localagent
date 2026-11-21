@@ -3,6 +3,22 @@
 All notable changes to localagent. The full story of every decision, with measurements, is in
 `docs/03-build-log.md`.
 
+## 0.6.1 — 21 November 2026
+
+### Fixed
+- A local model's answer was printed twice in the chat when the model said something before using a tool. Found
+  while recording the website's offline demo; the 0.6.0 download has this bug.
+
+### Changed
+- **The website, rebuilt as a product site** (`tools/build_site.py`): a home page with a player that replays real
+  recorded sessions, a download page with every checksum, a setup builder that turns your choices into exact steps,
+  user guides (Get started, Choose a model, Troubleshooting) and all documentation with search, light and dark themes,
+  and phone layouts. Self-hosted fonts, nothing loaded from other sites, a strict security policy, and nothing on the
+  site navigates or downloads by itself. The build checks every page, link and section — and that no page names the
+  repository's owner.
+- The repository root is tidier: the developer scripts moved to `scripts\`, the community files to `.github\`.
+- CI and releases use `actions/checkout` v7 and `actions/setup-python` v7.
+
 ## 0.6.0 — 21 November 2026
 
 ### Added
