@@ -14,7 +14,7 @@ jobs:
             python: "3.14"       # 3.14 is also the Python inside the Windows release bundle
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
@@ -26,7 +26,7 @@ jobs:
   sandbox:                     # the Docker sandbox for real: builds the image, runs code inside it
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
