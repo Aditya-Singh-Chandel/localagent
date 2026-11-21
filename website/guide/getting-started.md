@@ -16,7 +16,7 @@ then in a terminal:
 ```
 python3 -m pip install --user pipx
 python3 -m pipx ensurepath
-pipx install ~/Downloads/localagent-0.6.0-py3-none-any.whl
+pipx install ~/Downloads/localagent-*-py3-none-any.whl
 localagent setup
 ```
 

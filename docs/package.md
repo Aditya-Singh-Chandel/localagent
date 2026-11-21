@@ -4,7 +4,7 @@
 ```python
 1 | """localagent: a verifying coding agent for Gemini or a local model (llama.cpp, Ollama)."""
 2 | 
-3 | __version__ = "0.6.0"
+3 | __version__ = "0.6.1"
 ```
 - Its presence makes the folder a Python *package* so `from localagent.agent import Agent` works. Line 1 is a
   docstring; nothing else runs on import.
