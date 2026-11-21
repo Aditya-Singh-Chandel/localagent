@@ -174,7 +174,7 @@ start with `ok`, `note` or one of those choices. A line starting with `FAIL` tel
 ### Step 11. Install the `localagent` command (once) — use it in ANY folder, like `claude`
 From the project folder:
 ```
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 It installs the agent into its `.venv`, writes a tiny launcher `%USERPROFILE%\.localagent\bin\localagent.cmd`, and adds
 that folder to **your user PATH** (nothing else is changed; uninstall = delete that folder and remove it from PATH).
@@ -355,10 +355,10 @@ the code blocks from each page in order:
 23. `evals.md` → `evals/*`; `tests.md` → `tests/*`; `build_docs.md` → `tools/build_docs.py`;
     `check_commit.md` → `tools/check_commit.py` (and `.githooks/pre-commit`, shown in the project folder)
 24. `docker.md` → `docker/sandbox.Dockerfile`, `Dockerfile`, `.dockerignore`, `docker-compose.yml`
-25. `install.ps1` is in the project folder (36 lines, with a comment block explaining each step).
+25. `scripts\install.ps1` is in the project folder (36 lines, with a comment block explaining each step).
 26. Also create `pyproject.toml` (the package description: name, version read from `localagent/__init__.py`, `dev`
     extras, the `localagent` command), `.gitignore` and `.gitattributes` (in the project folder, each line commented),
-    and `serve.ps1` (shown in `01-setup-and-models.md`/the project folder) if you want to start the local model by hand.
+    and `scripts\serve.ps1` (shown in `01-setup-and-models.md`/the project folder) if you want to start the local model by hand.
 
 Then run Step 5 (tests). If they pass, your rebuild is identical in behaviour.
 
@@ -384,7 +384,7 @@ Then run Step 5 (tests). If they pass, your rebuild is identical in behaviour.
 | `STOP: attempts exhausted` | the model failed 3 times on one file | rephrase the request more precisely, or split it |
 | `Stopped after 20 model calls` | task too big for one request | ask for smaller steps |
 | `exit code 124 ... timed out` | the program ran longer than 30 s | ask for a faster approach, or raise `command_timeout` in `config.py` |
-| `no OpenAI-compatible server at http://127.0.0.1:8080/v1` | you chose `--backend openai` but no server runs | leave out `--backend` (the agent starts the model itself), or run `.\serve.ps1` in a separate window |
+| `no OpenAI-compatible server at http://127.0.0.1:8080/v1` | you chose `--backend openai` but no server runs | leave out `--backend` (the agent starts the model itself), or run `.\scripts\serve.ps1` in a separate window |
 | `localagent` is not recognised | installer not run, or old window | Step 11, then open a **new** PowerShell |
 | `[...: not available (HTTP 404); skipping it]` | Google retired that model | nothing — the chain moves on; remove it from `LOCALAGENT_GEMINI_MODELS` if you set that |
 | Very slow answers, `busy (network)` lines | Google is overloaded right now | nothing — it retries; add the local fallback for bad days |

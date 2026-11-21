@@ -13,9 +13,11 @@ All notable changes to localagent. The full story of every decision, with measur
   `LOCALAGENT_LOCAL_SERVER`. An optional request field a service refuses is left out by itself.
 - **Plug and play:** the first `localagent` with nothing set up offers the setup at once; the Windows installer runs
   it right after adding the folder to PATH.
-- **A website** for any static host: `tools/build_site.py` builds the landing page, every documentation page, the
-  downloads and checksums into one folder, and checks every link and tag — and that no page names the repository's
-  owner.
+- **A product website** for any static host (`tools/build_site.py`): a home page with a player that replays real
+  recorded sessions, a download page with every checksum, a setup builder that turns your choices into exact steps,
+  user guides (Get started, Choose a model, Troubleshooting) and all documentation with search, light and dark themes,
+  phone layouts. Self-hosted fonts, nothing loaded from other sites, a strict security policy, and a build that checks
+  every page, link and section — and that no page names the repository's owner.
 - **Releases from a tag:** pushing `v0.6.0` builds the downloads on a clean Windows machine and publishes them with
   the notes from this file.
 - **Online and offline.** Modes `auto` (default: Gemini, and the local model the moment Gemini cannot be reached),
@@ -38,6 +40,7 @@ All notable changes to localagent. The full story of every decision, with measur
 ### Changed
 - The Windows download leaves out mypy, which only `--type-check` uses: 22.8 MB instead of 35.7 MB.
 - On Linux and macOS the user settings file (it can hold keys) is readable by its owner only.
+- The repository root is tidier: the developer scripts moved to `scripts\`, the community files to `.github\`.
 
 ### Fixed
 Every item was reproduced before it was fixed and has a test.
@@ -56,7 +59,7 @@ Every item was reproduced before it was fixed and has a test.
 - **Found by CI and live tests:** `/undo` could miss a same-size edit made within one clock tick (Windows); a folder's
   short 8.3 name broke file listing; the Docker sandbox could not read a workspace on Linux (it now runs as your user
   id); answers piped into `localagent setup` from Windows PowerShell were refused (byte-order mark), and a scripted
-  setup waited forever for a key.
+  setup waited forever for a key; a local model's answer was printed twice when it spoke before using a tool.
 
 ## 0.5.0 — 5 November 2026
 The first complete version: the agent loop with verify-before-write, Gemini with rate limits and fallbacks, the local

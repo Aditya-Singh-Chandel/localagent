@@ -16,7 +16,7 @@ offline model, Docker — a minute plus downloads).
 
 **From this source folder:**
 ```
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 Then **open a new PowerShell window**. (Skipped it? Use the long form in section 3.) `localagent --version` should
 print `localagent 0.6.0`.
@@ -66,7 +66,7 @@ docker build -t localagent:latest .
 docker run -it --rm -e GEMINI_API_KEY -v "${PWD}:/app/workspace" -v "$HOME\.localagent:/home/agent/.localagent" localagent:latest
 ```
 Run the second line from inside your project folder. Its doctor says `note the offline backup is not available` unless
-a model server runs on your computer (`serve.ps1`); that is fine.
+a model server runs on your computer (`scripts\serve.ps1`); that is fine.
 
 ## 6. Run it as an HTTP service (for other programs)
 Start (keep this window open; Ctrl+C stops it and cleans up its containers):

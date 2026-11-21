@@ -87,7 +87,7 @@ shows calls, tokens, time and **which model answered**.
 | `--version` | print the version |
 | `--backend gemini\|local\|openai\|ollama` | which model service, by hand (the mode is then ignored) |
 | `--model NAME` | model name for `openai`/`ollama` (e.g. `qwen3-8b`) |
-| `--api-base URL` | address of an OpenAI-style server (default `http://127.0.0.1:8080/v1`, where `serve.ps1` listens) |
+| `--api-base URL` | address of an OpenAI-style server (default `http://127.0.0.1:8080/v1`, where `scripts\serve.ps1` listens) |
 | `--fallback local\|openai\|ollama` | with `--backend gemini`: a local model to use when every Gemini model fails |
 | `--sandbox local\|docker` | where code runs: this computer, or a locked-down container |
 | `--network` | allow internet inside the Docker sandbox (e.g. `pip install`) |
@@ -250,7 +250,7 @@ tokens; a plain question takes 1 call. Each call carries a fixed
 | `<project>\.localagent\commands\*.md` | project custom commands |
 | `%USERPROFILE%\.localagent\usage.json` | daily quota counts per model |
 | `%USERPROFILE%\.localagent\settings.json`, `commands\` | your rules / commands for every project |
-| `%USERPROFILE%\.localagent\bin\localagent.cmd` | the launcher written by `install.ps1` |
+| `%USERPROFILE%\.localagent\bin\localagent.cmd` | the launcher written by `scripts\install.ps1` |
 | `%USERPROFILE%\.localagent\llama\`, `models\` | where an installed copy keeps llama.cpp and the local model (`01-setup-and-models.md`) |
 | `%USERPROFILE%\.localagent\llama-server.log` | what the local model server printed (read it when it will not start) |
 | `*.part` next to a model or in `llama\downloads\` | an unfinished download; the same command continues it (delete to start over) |

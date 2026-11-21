@@ -99,7 +99,7 @@ It listens only on `127.0.0.1`, so no other computer can use it. Details: `local
   number, `setx LOCALAGENT_GPU_LAYERS 9` (`0` = processor only).
 - **Context:** the local model gets an 8K window (`LOCALAGENT_LOCAL_CTX`). A long conversation that grew with Gemini is
   shortened automatically before it is sent to the local model.
-- **Already running a server?** `serve.ps1`, Ollama or LM Studio — the agent uses it instead of starting one, and does
+- **Already running a server?** `scripts\serve.ps1`, Ollama or LM Studio — the agent uses it instead of starting one, and does
   not stop it.
 
 ## The reference laptop (where every number in these docs was measured)
@@ -112,9 +112,9 @@ only ~4 GB free the model loads very slowly and Windows may stop it.
 Why llama.cpp and not Ollama: Ollama's downloads ran at ~40 KB/s here, Hugging Face at 16-28 MB/s. The agent supports
 both, and uses Ollama when it finds it running.
 
-## `serve.ps1` — starting the server by hand (optional)
-Still useful to keep one model loaded across several `localagent` runs: `.\serve.ps1` in its own window (CPU only:
-`.\serve.ps1 -GpuLayers 0`). What it sets, and why:
+## `scripts\serve.ps1` — starting the server by hand (optional)
+Still useful to keep one model loaded across several `localagent` runs: `.\scripts\serve.ps1` in its own window (CPU only:
+`.\scripts\serve.ps1 -GpuLayers 0`). What it sets, and why:
 - `--jinja`: use the model's own chat template, which is what makes tool calls work.
 - `--reasoning-budget 0`: skip Qwen3's long "thinking" text, which is slow on a laptop.
 - `-GpuLayers 9`: measured on the MX550 — more layers were faster up to 11, but 13+ ran out of its 2 GB; 9 leaves room.

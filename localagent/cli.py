@@ -350,10 +350,11 @@ def handle_request(agent: Agent, toolbox: ToolBox, meter: Meter, text: str,
         agent.repair()
         print("\n[stopped - the conversation is kept; type your next request]")
         return ""
-    shown = "".join(streamed).strip()
+    shown = " ".join("".join(streamed).split())   # spacing does not matter when comparing
     if streamed:
         print()                                    # end the streamed line
-    if answer.strip() and answer.strip() != shown:
+    final = " ".join(answer.split())
+    if final and not shown.endswith(final):
         print(answer)                              # e.g. a finish summary that was not streamed
     if not plan_only:
         problems = toolbox.check_workspace(since=started)      # only what changed just now

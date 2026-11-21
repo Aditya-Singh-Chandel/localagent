@@ -173,8 +173,11 @@ at once instead of printing an error (`guided_first_run`).
 - A model-service problem (`LLMError`) is printed and the chat continues. **Ctrl+C** (`KeyboardInterrupt`) stops the
   task: `agent.repair()` gives any half-finished tool calls an "interrupted" result so the conversation stays valid,
   and you can type the next request.
-- After the run: if text was streamed, the line is ended; the answer is printed too unless it is exactly what was
-  already streamed — so a `finish` summary always appears, even when the model streamed other text first.
+- After the run: if text was streamed, the line is ended; the answer is printed too unless the streamed text already
+  *ends with* it (spacing ignored) — so a `finish` summary always appears, even when the model streamed other text
+  first, and a plain answer streamed after the model's own remarks is not shown twice. The first version compared the
+  answer with *all* streamed text: a local model that said "I'll check the code..." before answering had its answer
+  printed a second time (found while recording the website's offline demo).
 - After a normal run (not a plan) the files **changed during this request** are verified once more (`since=started`):
   fast even in big projects, and never blaming you for files broken before. Then the `after_request` hook runs if you
   set one (for example your test suite) and its exit code and output are shown.

@@ -25,7 +25,7 @@ fake model, and the self-auditing docs system (`tools/build_docs.py`).
 ### Phase 3 ✅ Reliability and speed on a real model (built in this session)
 | Feature | File | Result |
 |---|---|---|
-| Real model running (llama.cpp + Qwen3-8B), thinking off, Vulkan GPU offload | `serve.ps1` | +45 % tokens/s at 11 GPU layers |
+| Real model running (llama.cpp + Qwen3-8B), thinking off, Vulkan GPU offload | `scripts\serve.ps1` | +45 % tokens/s at 11 GPU layers |
 | `--trace` and measured evals | `evals/run_evals.py` | exposed the real failures (see `03-build-log.md`) |
 | Prompt rules 8-10 (act, don't describe; bug-fix recipe; verify what was asked) | `context.py` | fix_bug and add_method started passing |
 | Temperature 0 | `config.py` | repeatable runs |
@@ -63,7 +63,7 @@ a session cap (HTTP 429) and idle expiry.
 ### Phase 7 ✅ Claude-Code-like daily use
 | Feature | Where |
 |---|---|
-| `localagent` command usable in any folder (`install.ps1`); current folder is the workspace | `install.ps1`, `config.py` |
+| `localagent` command usable in any folder (`scripts\install.ps1`); current folder is the workspace | `scripts\install.ps1`, `config.py` |
 | Fast folder walking that never enters `node_modules`, `.venv`, `.localagent` ... | `sandbox.py` (`walk_files`) |
 | One quota file per user (`~/.localagent/usage.json`), shared by all projects and containers | `config.py` |
 | Verification for JSON, TOML and JavaScript (`node --check`) besides Python | `verify.py` |
@@ -231,7 +231,7 @@ Collected from a review of the whole project. ⭐ = high value for its cost. Ord
 | Faster CPU settings (flash attention, q8 KV cache, smaller `num_ctx`) | memory and time | ✅ documented in setup |
 | Parallel read-only tool execution | wall-clock time | ✅ `agent.py` |
 | `multi_edit`, `outline` | model calls, tokens | ✅ `tools.py` |
-| GPU layer offload | seconds per token | ✅ `serve.ps1` |
+| GPU layer offload | seconds per token | ✅ `scripts\serve.ps1` |
 | Temperature 0 + nudge | wasted retries | ✅ `config.py`, `agent.py` |
 | Model-written summaries / subagents | context size | 📋 Phase 4 |
 | Client-side rate limiting + retries + model fallback | wasted/failed requests, daily quota | ✅ `ratelimit.py`, `resilient.py` |

@@ -49,7 +49,7 @@ class Config:
     backend: str = "ollama"                  # "ollama", "openai", "gemini" or "local" (see modes)
     model: str = "qwen3:8b"                  # model tag/name understood by the backend
     host: str = "http://localhost:11434"     # Ollama server address
-    api_base: str = "http://127.0.0.1:8080/v1"  # OpenAI-compatible server (llama.cpp serve.ps1;
+    api_base: str = "http://127.0.0.1:8080/v1"  # OpenAI-compatible server (scripts\serve.ps1;
     #                                             LM Studio uses http://localhost:1234/v1)
     api_key: str = ""                        # bearer token for the OpenAI-compatible server
     workspace: Path = Path(".")              # the ONLY folder the agent may touch (default: here)

@@ -1,0 +1,47 @@
+<section class="page-hero">
+  <div class="container">
+    <p class="eyebrow">Setup builder</p>
+    <h1>Your setup, step by step</h1>
+    <p>Choose your system and the models you want. You get the exact steps and commands — nothing to install here,
+      nothing sent anywhere. Share the page's address to share your choice.</p>
+  </div>
+</section>
+
+<section class="section tight">
+  <div class="container builder">
+    <form id="builder" aria-label="Your setup">
+      <fieldset>
+        <legend><span>1</span>Your computer</legend>
+        <p class="hint">Windows gets a zip with everything inside; macOS and Linux use Python 3.10 or newer.</p>
+        <div class="choices">
+          <div class="choice"><input type="radio" name="os" id="os-windows" value="windows" checked><label for="os-windows"><strong>Windows</strong><small>10 or 11, 64-bit</small></label></div>
+          <div class="choice"><input type="radio" name="os" id="os-mac" value="mac"><label for="os-mac"><strong>macOS</strong><small>with Python 3.10+</small></label></div>
+          <div class="choice"><input type="radio" name="os" id="os-linux" value="linux"><label for="os-linux"><strong>Linux</strong><small>with Python 3.10+</small></label></div>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend><span>2</span>Online model</legend>
+        <p class="hint">Fast and strong; needs the internet. Gemini's key is free.</p>
+        <div class="choices">{{online_choices}}</div>
+      </fieldset>
+      <fieldset>
+        <legend><span>3</span>Offline model</legend>
+        <p class="hint">Runs on your computer: private, no quota, slower. It also takes over when the internet goes away.</p>
+        <div class="choices">{{offline_choices}}</div>
+      </fieldset>
+      <fieldset id="ram-choice">
+        <legend><span>4</span>Memory of your computer</legend>
+        <p class="hint">Decides which free model is suggested.</p>
+        <div class="choices">{{ram_choices}}</div>
+      </fieldset>
+    </form>
+    <aside class="result" aria-live="polite">
+      <div class="result-head"><h2>Your steps</h2></div>
+      <div class="result-body" id="builder-result">
+        <p class="note-box">The setup builder needs JavaScript. Without it, the <a href="docs/getting-started.html">Get
+          started guide</a> has every step for every choice.</p>
+      </div>
+    </aside>
+  </div>
+</section>
+<script type="application/json" id="setup-data">{{setup_json}}</script>

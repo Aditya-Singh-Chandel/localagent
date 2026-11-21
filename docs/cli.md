@@ -538,31 +538,35 @@ at once instead of printing an error (`guided_first_run`).
 350 |         agent.repair()
 351 |         print("\n[stopped - the conversation is kept; type your next request]")
 352 |         return ""
-353 |     shown = "".join(streamed).strip()
+353 |     shown = " ".join("".join(streamed).split())   # spacing does not matter when comparing
 354 |     if streamed:
 355 |         print()                                    # end the streamed line
-356 |     if answer.strip() and answer.strip() != shown:
-357 |         print(answer)                              # e.g. a finish summary that was not streamed
-358 |     if not plan_only:
-359 |         problems = toolbox.check_workspace(since=started)      # only what changed just now
-360 |         print("[check of changed files: all OK]" if not problems
-361 |               else "[workspace check FAILED]\n" + "\n".join(problems))
-362 |         outcome = toolbox.run_hook("after_request")      # e.g. your test suite
-363 |         if outcome is not None:
-364 |             print(f"[after_request hook: exit code {outcome[0]}]\n{outcome[1].strip()}")
-365 |     who = getattr(agent.backend, "last_model", "")
-366 |     print(f"[{meter.summary()}" + (f" | {who}" if who else "") + "]")
-367 |     return answer
-368 | 
+356 |     final = " ".join(answer.split())
+357 |     if final and not shown.endswith(final):
+358 |         print(answer)                              # e.g. a finish summary that was not streamed
+359 |     if not plan_only:
+360 |         problems = toolbox.check_workspace(since=started)      # only what changed just now
+361 |         print("[check of changed files: all OK]" if not problems
+362 |               else "[workspace check FAILED]\n" + "\n".join(problems))
+363 |         outcome = toolbox.run_hook("after_request")      # e.g. your test suite
+364 |         if outcome is not None:
+365 |             print(f"[after_request hook: exit code {outcome[0]}]\n{outcome[1].strip()}")
+366 |     who = getattr(agent.backend, "last_model", "")
+367 |     print(f"[{meter.summary()}" + (f" | {who}" if who else "") + "]")
+368 |     return answer
 369 | 
+370 | 
 ```
 - `stream` prints streamed text as it arrives; `show` prints progress lines (coloured by the chat).
 - Runs the agent. With `plan_only` the agent only investigates and returns a plan.
 - A model-service problem (`LLMError`) is printed and the chat continues. **Ctrl+C** (`KeyboardInterrupt`) stops the
   task: `agent.repair()` gives any half-finished tool calls an "interrupted" result so the conversation stays valid,
   and you can type the next request.
-- After the run: if text was streamed, the line is ended; the answer is printed too unless it is exactly what was
-  already streamed — so a `finish` summary always appears, even when the model streamed other text first.
+- After the run: if text was streamed, the line is ended; the answer is printed too unless the streamed text already
+  *ends with* it (spacing ignored) — so a `finish` summary always appears, even when the model streamed other text
+  first, and a plain answer streamed after the model's own remarks is not shown twice. The first version compared the
+  answer with *all* streamed text: a local model that said "I'll check the code..." before answering had its answer
+  printed a second time (found while recording the website's offline demo).
 - After a normal run (not a plan) the files **changed during this request** are verified once more (`since=started`):
   fast even in big projects, and never blaming you for files broken before. Then the `after_request` hook runs if you
   set one (for example your test suite) and its exit code and output are shown.
@@ -572,29 +576,29 @@ at once instead of printing an error (`guided_first_run`).
 
 ## `@file`, `# note` and the logs folder
 ```python
-370 | def attach_files(text: str, root: Path, limit: int) -> tuple[str, list[str]]:
-371 |     """``@path`` mentions of workspace files: their contents are added to the request, which
-372 |     saves the model a read_file call. Unknown paths stay as typed; ``limit`` caps the size."""
-373 |     attached: list[str] = []
-374 |     parts: list[str] = []
-375 |     total = 0
-376 |     for match in MENTION.finditer(text):
-377 |         name = match.group(1).rstrip(".,;:!?)\"'")
-378 |         try:
-379 |             path = resolve_inside(root, name)
-380 |         except SandboxError:
-381 |             continue
-382 |         if name in attached or not path.is_file() or looks_binary(path):
-383 |             continue
-384 |         content = path.read_text(encoding="utf-8-sig", errors="replace")
-385 |         if total + len(content) > limit:
-386 |             continue                               # too big for the context: the model reads it
-387 |         total += len(content)
-388 |         attached.append(name)
-389 |         parts.append(f"Contents of {name} (attached by the user):\n```\n{content}\n```")
-390 |     return (text + "\n\n" + "\n\n".join(parts) if parts else text), attached
-391 | 
+371 | def attach_files(text: str, root: Path, limit: int) -> tuple[str, list[str]]:
+372 |     """``@path`` mentions of workspace files: their contents are added to the request, which
+373 |     saves the model a read_file call. Unknown paths stay as typed; ``limit`` caps the size."""
+374 |     attached: list[str] = []
+375 |     parts: list[str] = []
+376 |     total = 0
+377 |     for match in MENTION.finditer(text):
+378 |         name = match.group(1).rstrip(".,;:!?)\"'")
+379 |         try:
+380 |             path = resolve_inside(root, name)
+381 |         except SandboxError:
+382 |             continue
+383 |         if name in attached or not path.is_file() or looks_binary(path):
+384 |             continue
+385 |         content = path.read_text(encoding="utf-8-sig", errors="replace")
+386 |         if total + len(content) > limit:
+387 |             continue                               # too big for the context: the model reads it
+388 |         total += len(content)
+389 |         attached.append(name)
+390 |         parts.append(f"Contents of {name} (attached by the user):\n```\n{content}\n```")
+391 |     return (text + "\n\n" + "\n\n".join(parts) if parts else text), attached
 392 | 
+393 | 
 ```
 - Like Claude Code's `@` mentions: for each `@path` naming a text file inside the workspace, the file's contents are added
   to the request, which saves the model a `read_file` call. Measured live: "what does @calc.py compute?" took 1 call and
@@ -604,62 +608,62 @@ at once instead of printing an error (`guided_first_run`).
   out the conversation (a file that does not fit is left for the model to read in parts).
 
 ```python
-393 | def remember(note: str, root: Path) -> Path:
-394 |     """Add ``note`` to AGENT.md under "## Notes" (both are created when missing)."""
-395 |     path = root / "AGENT.md"
-396 |     text, style = read_text(path) if path.is_file() else ("# Project notes\n", ("\n", False))
-397 |     if "## Notes" not in text:
-398 |         text = text.rstrip("\n") + "\n\n## Notes\n"
-399 |     start = text.index("## Notes")
-400 |     end = text.find("\n## ", start + 1)                # the next section, if any
-401 |     end = len(text) if end == -1 else end
-402 |     text = text[:end].rstrip("\n") + f"\n- {note}\n" + text[end:]
-403 |     write_text(path, text, style)
-404 |     return path
-405 | 
+394 | def remember(note: str, root: Path) -> Path:
+395 |     """Add ``note`` to AGENT.md under "## Notes" (both are created when missing)."""
+396 |     path = root / "AGENT.md"
+397 |     text, style = read_text(path) if path.is_file() else ("# Project notes\n", ("\n", False))
+398 |     if "## Notes" not in text:
+399 |         text = text.rstrip("\n") + "\n\n## Notes\n"
+400 |     start = text.index("## Notes")
+401 |     end = text.find("\n## ", start + 1)                # the next section, if any
+402 |     end = len(text) if end == -1 else end
+403 |     text = text[:end].rstrip("\n") + f"\n- {note}\n" + text[end:]
+404 |     write_text(path, text, style)
+405 |     return path
 406 | 
+407 | 
 ```
 - Like Claude Code's `#` memory: `# use pytest, not unittest` adds `- use pytest, not unittest` to `AGENT.md` under a
   `## Notes` heading — at the end of that section, before the next `## ` heading. A missing file or section is
   created. The file's line breaks are kept (`read_text`/`write_text`). No model call is used.
 
 ```python
-407 | def sessions_folder(config: Config) -> Path:
-408 |     """This project's conversation logs: <project>/.localagent/sessions (an absolute state_dir wins)."""
-409 |     return config.workspace / config.state_dir / "sessions"
-410 | 
+408 | def sessions_folder(config: Config) -> Path:
+409 |     """This project's conversation logs: <project>/.localagent/sessions (an absolute state_dir wins)."""
+410 |     return config.workspace / config.state_dir / "sessions"
 411 | 
+412 | 
 ```
 - Where this project's conversation logs live: `<workspace>\.localagent\sessions`. Joining a path with an absolute
   `state_dir` gives that absolute path (that is how `pathlib` joins), so a custom absolute location still works.
 
 ## `Chat` — the loop and its commands
 ```python
-412 | class Chat:
-413 |     """The interactive loop and its commands. Holds what a command may change: the model
-414 |     setup (/model), the conversation (/clear, /resume), and output waiting to be sent (!)."""
-415 | 
+413 | class Chat:
+414 |     """The interactive loop and its commands. Holds what a command may change: the model
+415 |     setup (/model), the conversation (/clear, /resume), and output waiting to be sent (!)."""
+416 | 
 ```
 ```python
-416 |     def __init__(self, config: Config, args: argparse.Namespace, backend: ChatBackend,
-417 |                  toolbox: ToolBox, meter: Meter) -> None:
-418 |         self.config, self.backend, self.toolbox, self.meter = config, backend, toolbox, meter
-419 |         self.ctx_chosen = args.num_ctx is not None or "LOCALAGENT_NUM_CTX" in os.environ
-420 |         self.root = config.workspace.resolve()
-421 |         self.log = SessionLog(sessions_folder(config))
-422 |         self.agent = Agent(config, backend, toolbox, meter, self.log)
-423 |         self.checkpoints = Checkpoints(config.workspace)
-424 |         self.commands = load_commands(config.workspace)  # custom /commands (.localagent/commands)
-425 |         self.show = make_printer(use_color())
-426 |         self.pending: list[str] = []                    # output of !commands, sent next time
-427 |         self.help = HELP + "".join(f"\n  /{name:<16} {(text.strip().splitlines() or [''])[0][:60]}"
-428 |                                    for name, text in sorted(self.commands.items()))
-429 |         if args.resume:
-430 |             previous = latest_session(sessions_folder(config))
-431 |             if previous is not None and previous != self.log.path:
-432 |                 self.agent.restore(load_session(previous))
-433 |                 print(f"resumed {previous.name}")
-434 | 
+417 |     def __init__(self, config: Config, args: argparse.Namespace, backend: ChatBackend,
+418 |                  toolbox: ToolBox, meter: Meter) -> None:
+419 |         self.config, self.backend, self.toolbox, self.meter = config, backend, toolbox, meter
+420 |         self.ctx_chosen = args.num_ctx is not None or "LOCALAGENT_NUM_CTX" in os.environ
+421 |         self.root = config.workspace.resolve()
+422 |         self.log = SessionLog(sessions_folder(config))
+423 |         self.agent = Agent(config, backend, toolbox, meter, self.log)
+424 |         self.checkpoints = Checkpoints(config.workspace)
+425 |         self.commands = load_commands(config.workspace)  # custom /commands (.localagent/commands)
+426 |         self.show = make_printer(use_color())
+427 |         self.pending: list[str] = []                    # output of !commands, sent next time
+428 |         self.help = HELP + "".join(f"\n  /{name:<16} {(text.strip().splitlines() or [''])[0][:60]}"
+429 |                                    for name, text in sorted(self.commands.items()))
+430 |         if args.resume:
+431 |             previous = latest_session(sessions_folder(config))
+432 |             if previous is not None and previous != self.log.path:
+433 |                 self.agent.restore(load_session(previous))
+434 |                 print(f"resumed {previous.name}")
+435 | 
 ```
 - Holds everything a command may change: the config and backend (`/model`), the agent and its session log (`/clear`,
   `/resume`), the undo steps, custom commands (from `.localagent/commands`, listed under the help text with the first
@@ -669,73 +673,73 @@ at once instead of printing an error (`guided_first_run`).
   after its last `/clear` or compaction — see `session.md`).
 
 ```python
-435 |     def run(self, text: str, plan_only: bool = False, allowed: frozenset[str] | None = None) -> str:
-436 |         """One request: earlier !command output and @file contents go with it; the files it
-437 |         changes become one /undo step."""
-438 |         label = (text.splitlines() or [""])[0][:60]          # how /undo names this step
-439 |         if self.pending:
-440 |             text = "\n\n".join(self.pending) + "\n\nMy request: " + text
-441 |             self.pending = []
-442 |         limit = int(self.config.num_ctx * 0.7) * 4 // 3      # attachments: a third of the budget
-443 |         text, attached = attach_files(text, self.root, limit)
-444 |         if attached:
-445 |             print(f"[attached: {', '.join(attached)}]")
-446 |         message = self.checkpoints.take(label)
-447 |         if message:
-448 |             print(f"[{message}]")
-449 |         try:
-450 |             return handle_request(self.agent, self.toolbox, self.meter, text, plan_only, allowed,
-451 |                                   self.show)
-452 |         finally:
-453 |             self.checkpoints.commit()
-454 | 
+436 |     def run(self, text: str, plan_only: bool = False, allowed: frozenset[str] | None = None) -> str:
+437 |         """One request: earlier !command output and @file contents go with it; the files it
+438 |         changes become one /undo step."""
+439 |         label = (text.splitlines() or [""])[0][:60]          # how /undo names this step
+440 |         if self.pending:
+441 |             text = "\n\n".join(self.pending) + "\n\nMy request: " + text
+442 |             self.pending = []
+443 |         limit = int(self.config.num_ctx * 0.7) * 4 // 3      # attachments: a third of the budget
+444 |         text, attached = attach_files(text, self.root, limit)
+445 |         if attached:
+446 |             print(f"[attached: {', '.join(attached)}]")
+447 |         message = self.checkpoints.take(label)
+448 |         if message:
+449 |             print(f"[{message}]")
+450 |         try:
+451 |             return handle_request(self.agent, self.toolbox, self.meter, text, plan_only, allowed,
+452 |                                   self.show)
+453 |         finally:
+454 |             self.checkpoints.commit()
+455 | 
 ```
 - One request: earlier `!` output goes first ("I ran ... Output: ... My request: ..."), `@file` contents are attached,
   and the files it changes become one `/undo` step labelled with the start of your request (`take` before, `commit`
   after — also when the request fails or is stopped).
 
 ```python
-455 |     def model_status(self) -> list[str]:
-456 |         """What /model shows: the mode, who answers, and what online and offline would use."""
-457 |         problem = online_problem(self.config)
-458 |         last = getattr(self.backend, "last_model", "")
-459 |         return [f"mode: {self.config.mode} ({MODE_TEXT.get(self.config.mode, '')})",
-460 |                 f"models now: {model_label(self.config)}" + (f"; last answer from {last}" if last else ""),
-461 |                 f"online:  {online_name(self.config)}, " + (problem or "key set"),
-462 |                 f"offline: {describe_local(self.config)}",
-463 |                 "switch with /model online, /model offline or /model auto "
-464 |                 "(other services and models: localagent setup)"]
-465 | 
+456 |     def model_status(self) -> list[str]:
+457 |         """What /model shows: the mode, who answers, and what online and offline would use."""
+458 |         problem = online_problem(self.config)
+459 |         last = getattr(self.backend, "last_model", "")
+460 |         return [f"mode: {self.config.mode} ({MODE_TEXT.get(self.config.mode, '')})",
+461 |                 f"models now: {model_label(self.config)}" + (f"; last answer from {last}" if last else ""),
+462 |                 f"online:  {online_name(self.config)}, " + (problem or "key set"),
+463 |                 f"offline: {describe_local(self.config)}",
+464 |                 "switch with /model online, /model offline or /model auto "
+465 |                 "(other services and models: localagent setup)"]
+466 | 
 ```
 - What `/model` shows: the mode and what it means, the model chain now and which model answered last, the online
   model with "key set" or what it still lacks, what the local model is (running, or started when needed, or not set
   up), and how to switch — other services and models are chosen with `localagent setup`.
 
 ```python
-466 |     def switch(self, mode: str) -> None:
-467 |         """/model <mode>: build the new model setup, start the local model if needed, swap it in.
-468 |         The conversation and the files stay; only who answers changes."""
-469 |         try:
-470 |             config, notes = choose_mode(replace(self.config, fallback_backend=""), mode,
-471 |                                         self.ctx_chosen)
-472 |             config = gemini_history(config, chosen=self.ctx_chosen)
-473 |             backend = make_backend(config)
-474 |             if isinstance(backend, LocalModel):
-475 |                 backend.ensure_ready()                  # start llama.cpp now, not mid-task
-476 |         except (ValueError, LLMError) as exc:
-477 |             print(f"cannot switch to {mode}: {exc}")
-478 |             return
-479 |         except KeyboardInterrupt:
-480 |             print("\n[switch stopped; nothing changed]")
-481 |             return
-482 |         if mode == "online" and stop_local_servers():
-483 |             notes.append("stopped the local model server (its memory is free again)")
-484 |         self.config, self.backend = config, backend
-485 |         self.agent.set_backend(backend, config)
-486 |         for note in notes:
-487 |             print(f"  {note}")
-488 |         print(f"[now {mode}: {model_label(config)}]")
-489 | 
+467 |     def switch(self, mode: str) -> None:
+468 |         """/model <mode>: build the new model setup, start the local model if needed, swap it in.
+469 |         The conversation and the files stay; only who answers changes."""
+470 |         try:
+471 |             config, notes = choose_mode(replace(self.config, fallback_backend=""), mode,
+472 |                                         self.ctx_chosen)
+473 |             config = gemini_history(config, chosen=self.ctx_chosen)
+474 |             backend = make_backend(config)
+475 |             if isinstance(backend, LocalModel):
+476 |                 backend.ensure_ready()                  # start llama.cpp now, not mid-task
+477 |         except (ValueError, LLMError) as exc:
+478 |             print(f"cannot switch to {mode}: {exc}")
+479 |             return
+480 |         except KeyboardInterrupt:
+481 |             print("\n[switch stopped; nothing changed]")
+482 |             return
+483 |         if mode == "online" and stop_local_servers():
+484 |             notes.append("stopped the local model server (its memory is free again)")
+485 |         self.config, self.backend = config, backend
+486 |         self.agent.set_backend(backend, config)
+487 |         for note in notes:
+488 |             print(f"  {note}")
+489 |         print(f"[now {mode}: {model_label(config)}]")
+490 | 
 ```
 - `/model <mode>`: builds the new setup (`choose_mode`, then the history budget) and the new backend. Going offline
   starts the local model **right away** (`ensure_ready`), so it loads now and not in the middle of your next task; this
@@ -745,107 +749,107 @@ at once instead of printing an error (`guided_first_run`).
 - Then the agent gets the new backend — the conversation and files stay — and the new setup is printed.
 
 ```python
-490 |     def resume(self, choice: str) -> None:
-491 |         """/resume: list this project's conversations (newest first), or continue number N."""
-492 |         sessions = list_sessions(sessions_folder(self.config))[::-1][:10]
-493 |         if not choice:
-494 |             for number, path in enumerate(sessions, start=1):
-495 |                 mark = "  (this conversation)" if path == self.log.path else ""
-496 |                 print(f"  {number}. {session_title(path)}{mark}")
-497 |             print("continue one with /resume <number>" if sessions else "no earlier conversations")
-498 |             return
-499 |         if not choice.isdigit() or not 1 <= int(choice) <= len(sessions):
-500 |             print(f"choose a number from 1 to {len(sessions)} (see /resume)")
-501 |             return
-502 |         picked = sessions[int(choice) - 1]
-503 |         if picked == self.log.path:
-504 |             print("that is this conversation")
-505 |             return
-506 |         self.agent.reset()
-507 |         self.agent.restore(load_session(picked))
-508 |         print(f"continued {picked.name} ({len(self.agent.messages) - 1} messages)")
-509 | 
+491 |     def resume(self, choice: str) -> None:
+492 |         """/resume: list this project's conversations (newest first), or continue number N."""
+493 |         sessions = list_sessions(sessions_folder(self.config))[::-1][:10]
+494 |         if not choice:
+495 |             for number, path in enumerate(sessions, start=1):
+496 |                 mark = "  (this conversation)" if path == self.log.path else ""
+497 |                 print(f"  {number}. {session_title(path)}{mark}")
+498 |             print("continue one with /resume <number>" if sessions else "no earlier conversations")
+499 |             return
+500 |         if not choice.isdigit() or not 1 <= int(choice) <= len(sessions):
+501 |             print(f"choose a number from 1 to {len(sessions)} (see /resume)")
+502 |             return
+503 |         picked = sessions[int(choice) - 1]
+504 |         if picked == self.log.path:
+505 |             print("that is this conversation")
+506 |             return
+507 |         self.agent.reset()
+508 |         self.agent.restore(load_session(picked))
+509 |         print(f"continued {picked.name} ({len(self.agent.messages) - 1} messages)")
+510 | 
 ```
 - `/resume` lists this project's last 10 conversations, newest first, each with its date and first request; the
   current one is marked. `/resume 3` clears the current conversation (logged as a reset) and continues number 3 — its
   messages are added to the current log, so it carries on there.
 
 ```python
-510 |     def shell(self, command: str) -> None:
-511 |         """``!command``: run it yourself in the project folder (you typed it, so no question);
-512 |         its output is shown, and sent along with your next request."""
-513 |         code, output = run_command(shell_argv(command), self.root, 600, self.config.max_output_chars)
-514 |         print(output.rstrip())
-515 |         print(f"[exit code {code}; the output goes with your next request]")
-516 |         self.pending.append(f"I ran `{command}` myself (exit code {code}). Output:\n{output.strip()}")
-517 | 
+511 |     def shell(self, command: str) -> None:
+512 |         """``!command``: run it yourself in the project folder (you typed it, so no question);
+513 |         its output is shown, and sent along with your next request."""
+514 |         code, output = run_command(shell_argv(command), self.root, 600, self.config.max_output_chars)
+515 |         print(output.rstrip())
+516 |         print(f"[exit code {code}; the output goes with your next request]")
+517 |         self.pending.append(f"I ran `{command}` myself (exit code {code}). Output:\n{output.strip()}")
+518 | 
 ```
 - `!command`, like Claude Code's bash mode: runs the command yourself in the project folder (PowerShell on Windows), with
   a 10-minute limit, **without asking** (you typed it) and **without a model call**. The output is shown and kept in
   `pending`, so the model sees it with your next request ("!pytest", then "fix the failures"). Ctrl+C stops it.
 
 ```python
-518 |     def command(self, text: str) -> bool:
-519 |         """Act on one line; False means quit."""
-520 |         command, _, rest = text.partition(" ")
-521 |         rest = rest.strip()
-522 |         name = command.lower()
-523 |         if name in ("/quit", "/exit"):
-524 |             return False
-525 |         if name == "/help":
-526 |             print(self.help)
-527 |         elif name in ("/reset", "/clear"):
-528 |             self.agent.reset()
-529 |             print("conversation cleared (files are unchanged)")
-530 |         elif name == "/undo":
-531 |             print(self.checkpoints.undo())
-532 |         elif name == "/stats":
-533 |             print(self.meter.summary())
-534 |             for line in getattr(self.backend, "status", lambda: [])():
-535 |                 print(line)                        # daily quota use per Gemini model
-536 |         elif name == "/compact":
-537 |             try:
-538 |                 print(self.agent.compact())
-539 |             except (LLMError, KeyboardInterrupt) as exc:
-540 |                 print(f"compaction stopped: {exc}")
-541 |         elif name == "/init":
-542 |             self.run(INIT_PROMPT, allowed=INIT_TOOLS)
-543 |             notes_file = self.root / "AGENT.md"
-544 |             print(f"[AGENT.md {'written' if notes_file.is_file() else 'was NOT written - try /init again'}]")
-545 |             self.agent.refresh_system()            # the new notes take effect immediately
-546 |         elif name == "/plan":
-547 |             if not rest:
-548 |                 print("usage: /plan <what you want done>")
-549 |             elif self.run(rest, plan_only=True) and confirm("Carry out this plan? [y/N] "):
-550 |                 self.run(PLAN_FOLLOW_UP)
-551 |         elif name in ("/model", "/online", "/offline", "/auto"):
-552 |             wanted = rest.lower() if name == "/model" else name[1:]
-553 |             if wanted:
-554 |                 self.switch(wanted)
-555 |             else:
-556 |                 print("\n".join(self.model_status()))
-557 |         elif name == "/resume":
-558 |             self.resume(rest)
-559 |         elif name == "/permissions":
-560 |             rules = self.toolbox.permissions
-561 |             print("allow: " + (", ".join(rules.allow) or "(none)"))
-562 |             print("deny:  " + (", ".join(rules.deny) or "(none)"))
-563 |             print(f"rules live in {USER_SETTINGS} and {self.root / PROJECT_SETTINGS}")
-564 |         elif name == "/doctor":
-565 |             print("\n".join(run_doctor(self.config)[1]))
-566 |         elif name.startswith("/") and name[1:] in self.commands:
-567 |             self.run(expand_command(self.commands[name[1:]], rest))
-568 |         elif name.startswith("/"):
-569 |             print(f"unknown command {command} - type /help (nothing was sent to the model)")
-570 |         elif text.startswith("!") and text[1:].strip():
-571 |             self.shell(text[1:].strip())
-572 |         elif text.startswith("#") and text[1:].strip() and "\n" not in text:
-573 |             print(f"[noted in {remember(text[1:].strip(), self.root)}]")
-574 |             self.agent.refresh_system()
-575 |         else:
-576 |             self.run(text)
-577 |         return True
-578 | 
+519 |     def command(self, text: str) -> bool:
+520 |         """Act on one line; False means quit."""
+521 |         command, _, rest = text.partition(" ")
+522 |         rest = rest.strip()
+523 |         name = command.lower()
+524 |         if name in ("/quit", "/exit"):
+525 |             return False
+526 |         if name == "/help":
+527 |             print(self.help)
+528 |         elif name in ("/reset", "/clear"):
+529 |             self.agent.reset()
+530 |             print("conversation cleared (files are unchanged)")
+531 |         elif name == "/undo":
+532 |             print(self.checkpoints.undo())
+533 |         elif name == "/stats":
+534 |             print(self.meter.summary())
+535 |             for line in getattr(self.backend, "status", lambda: [])():
+536 |                 print(line)                        # daily quota use per Gemini model
+537 |         elif name == "/compact":
+538 |             try:
+539 |                 print(self.agent.compact())
+540 |             except (LLMError, KeyboardInterrupt) as exc:
+541 |                 print(f"compaction stopped: {exc}")
+542 |         elif name == "/init":
+543 |             self.run(INIT_PROMPT, allowed=INIT_TOOLS)
+544 |             notes_file = self.root / "AGENT.md"
+545 |             print(f"[AGENT.md {'written' if notes_file.is_file() else 'was NOT written - try /init again'}]")
+546 |             self.agent.refresh_system()            # the new notes take effect immediately
+547 |         elif name == "/plan":
+548 |             if not rest:
+549 |                 print("usage: /plan <what you want done>")
+550 |             elif self.run(rest, plan_only=True) and confirm("Carry out this plan? [y/N] "):
+551 |                 self.run(PLAN_FOLLOW_UP)
+552 |         elif name in ("/model", "/online", "/offline", "/auto"):
+553 |             wanted = rest.lower() if name == "/model" else name[1:]
+554 |             if wanted:
+555 |                 self.switch(wanted)
+556 |             else:
+557 |                 print("\n".join(self.model_status()))
+558 |         elif name == "/resume":
+559 |             self.resume(rest)
+560 |         elif name == "/permissions":
+561 |             rules = self.toolbox.permissions
+562 |             print("allow: " + (", ".join(rules.allow) or "(none)"))
+563 |             print("deny:  " + (", ".join(rules.deny) or "(none)"))
+564 |             print(f"rules live in {USER_SETTINGS} and {self.root / PROJECT_SETTINGS}")
+565 |         elif name == "/doctor":
+566 |             print("\n".join(run_doctor(self.config)[1]))
+567 |         elif name.startswith("/") and name[1:] in self.commands:
+568 |             self.run(expand_command(self.commands[name[1:]], rest))
+569 |         elif name.startswith("/"):
+570 |             print(f"unknown command {command} - type /help (nothing was sent to the model)")
+571 |         elif text.startswith("!") and text[1:].strip():
+572 |             self.shell(text[1:].strip())
+573 |         elif text.startswith("#") and text[1:].strip() and "\n" not in text:
+574 |             print(f"[noted in {remember(text[1:].strip(), self.root)}]")
+575 |             self.agent.refresh_system()
+576 |         else:
+577 |             self.run(text)
+578 |         return True
+579 | 
 ```
 - Acts on one typed line and returns `False` to quit (`/quit`, `/exit`). The command word is matched in lower case.
 - `/help`; `/clear` or `/reset` (forget the conversation, logged so `--resume` respects it); `/undo`; `/stats` (also each
@@ -860,28 +864,28 @@ at once instead of printing an error (`guided_first_run`).
   system prompt is rebuilt so the note applies at once. Anything else is a request (`run`).
 
 ```python
-579 |     def loop(self, notes: list[str]) -> int:
-580 |         """Show the banner, then read and act on lines until /quit or end of input."""
-581 |         print(f"localagent {__version__} | {self.config.mode} | {model_label(self.config)} | "
-582 |               f"sandbox={self.config.sandbox} | folder={self.root}")
-583 |         for note in notes + self.toolbox.notes:
-584 |             print(f"  {note}")
-585 |         print(self.help)
-586 |         while True:
-587 |             try:
-588 |                 text = read_request()
-589 |             except (EOFError, KeyboardInterrupt):
-590 |                 print()
-591 |                 return 0
-592 |             if not text:
-593 |                 continue
-594 |             try:
-595 |                 if not self.command(text):
-596 |                     return 0
-597 |             except KeyboardInterrupt:              # e.g. Ctrl+C during a !command
-598 |                 print("\n[stopped]")
-599 | 
+580 |     def loop(self, notes: list[str]) -> int:
+581 |         """Show the banner, then read and act on lines until /quit or end of input."""
+582 |         print(f"localagent {__version__} | {self.config.mode} | {model_label(self.config)} | "
+583 |               f"sandbox={self.config.sandbox} | folder={self.root}")
+584 |         for note in notes + self.toolbox.notes:
+585 |             print(f"  {note}")
+586 |         print(self.help)
+587 |         while True:
+588 |             try:
+589 |                 text = read_request()
+590 |             except (EOFError, KeyboardInterrupt):
+591 |                 print()
+592 |                 return 0
+593 |             if not text:
+594 |                 continue
+595 |             try:
+596 |                 if not self.command(text):
+597 |                     return 0
+598 |             except KeyboardInterrupt:              # e.g. Ctrl+C during a !command
+599 |                 print("\n[stopped]")
 600 | 
+601 | 
 ```
 - The banner shows the version, the mode, the model chain, the sandbox and the folder, then the automatic-setup notes
   and the toolbox's notes (for example which MCP servers started), then `HELP`.
@@ -890,28 +894,28 @@ at once instead of printing an error (`guided_first_run`).
 
 ## `run_once` — the `-p` mode
 ```python
-601 | def run_once(config: Config, backend: ChatBackend, toolbox: ToolBox, meter: Meter,
-602 |              prompt: str) -> int:
-603 |     """``-p``: one request without the chat. The answer goes to standard output and progress
-604 |     to standard error, so scripts can use the answer; anything that needs a question is refused."""
-605 |     text = sys.stdin.read() if prompt == "-" else prompt
-606 |     root = config.workspace.resolve()
-607 |     text, _ = attach_files(text.strip(), root, int(config.num_ctx * 0.7) * 4 // 3)
-608 |     agent = Agent(config, backend, toolbox, meter, SessionLog(sessions_folder(config)))
-609 |     started = time.time()
-610 |     try:
-611 |         answer = agent.run(text, on_event=lambda line: print(line, file=sys.stderr))
-612 |     except LLMError as exc:
-613 |         print(f"error: {exc}", file=sys.stderr)
-614 |         return 1
-615 |     print(answer)
-616 |     problems = toolbox.check_workspace(since=started)
-617 |     if problems:
-618 |         print("[workspace check FAILED]\n" + "\n".join(problems), file=sys.stderr)
-619 |     print(f"[{meter.summary()}]", file=sys.stderr)
-620 |     return 1 if problems else 0
-621 | 
+602 | def run_once(config: Config, backend: ChatBackend, toolbox: ToolBox, meter: Meter,
+603 |              prompt: str) -> int:
+604 |     """``-p``: one request without the chat. The answer goes to standard output and progress
+605 |     to standard error, so scripts can use the answer; anything that needs a question is refused."""
+606 |     text = sys.stdin.read() if prompt == "-" else prompt
+607 |     root = config.workspace.resolve()
+608 |     text, _ = attach_files(text.strip(), root, int(config.num_ctx * 0.7) * 4 // 3)
+609 |     agent = Agent(config, backend, toolbox, meter, SessionLog(sessions_folder(config)))
+610 |     started = time.time()
+611 |     try:
+612 |         answer = agent.run(text, on_event=lambda line: print(line, file=sys.stderr))
+613 |     except LLMError as exc:
+614 |         print(f"error: {exc}", file=sys.stderr)
+615 |         return 1
+616 |     print(answer)
+617 |     problems = toolbox.check_workspace(since=started)
+618 |     if problems:
+619 |         print("[workspace check FAILED]\n" + "\n".join(problems), file=sys.stderr)
+620 |     print(f"[{meter.summary()}]", file=sys.stderr)
+621 |     return 1 if problems else 0
 622 | 
+623 | 
 ```
 - One request without the chat, for scripts and other programs: `localagent -p "list the TODO comments" > todos.txt`.
   The request may come from your input (`-p -`) and may attach `@files`.
@@ -922,21 +926,21 @@ at once instead of printing an error (`guided_first_run`).
 
 ## The product commands
 ```python
-623 | def run_subcommand(name: str, words: list[str]) -> int:
-624 |     """`localagent setup` and `localagent models ...` (see models.py); no chat is started."""
-625 |     try:
-626 |         apply_env(load_settings(Path(os.environ.get("LOCALAGENT_WORKSPACE", "."))))
-627 |         config = Config.from_env()
-628 |     except ValueError as exc:
-629 |         print(f"setup problem: {exc}")
-630 |         return 2
-631 |     try:
-632 |         return run_setup(config) if name == "setup" else run_models(words, config)
-633 |     except KeyboardInterrupt:                      # a download stopped: it continues next time
-634 |         print("\n[stopped - run the same command again to continue]")
-635 |         return 130
-636 | 
+624 | def run_subcommand(name: str, words: list[str]) -> int:
+625 |     """`localagent setup` and `localagent models ...` (see models.py); no chat is started."""
+626 |     try:
+627 |         apply_env(load_settings(Path(os.environ.get("LOCALAGENT_WORKSPACE", "."))))
+628 |         config = Config.from_env()
+629 |     except ValueError as exc:
+630 |         print(f"setup problem: {exc}")
+631 |         return 2
+632 |     try:
+633 |         return run_setup(config) if name == "setup" else run_models(words, config)
+634 |     except KeyboardInterrupt:                      # a download stopped: it continues next time
+635 |         print("\n[stopped - run the same command again to continue]")
+636 |         return 130
 637 | 
+638 | 
 ```
 - `localagent setup` (see `wizard.md`) and `localagent models ...` (see `models.md`). They are recognised **before**
   the flag parser,
@@ -946,25 +950,25 @@ at once instead of printing an error (`guided_first_run`).
 
 ## `guided_first_run` — the very first start
 ```python
-638 | def guided_first_run(config: Config, args: argparse.Namespace,
-639 |                      read: Callable[[str], str] = input) -> bool:
-640 |     """The very first start - no model set up, a person at the keyboard - offers the guided
-641 |     setup at once instead of an error. True when it ran and made a model ready."""
-642 |     interactive = sys.stdin.isatty() and sys.stdout.isatty()
-643 |     if (not interactive or args.prompt is not None or args.doctor or args.no_auto
-644 |             or args.backend is not None or not online_problem(config) or local_kind(config)):
-645 |         return False
-646 |     print("No model is set up yet. The guided setup takes a minute: an online service with your "
-647 |           "key (Gemini's is free),\na model server you already run, or a free model downloaded "
-648 |           "for you.")
-649 |     try:
-650 |         answer = read("Start it now? [Y/n] ").strip().lower()
-651 |     except (EOFError, KeyboardInterrupt):
-652 |         print()
-653 |         return False
-654 |     return answer in ("", "y", "yes") and run_subcommand("setup", []) == 0
-655 | 
+639 | def guided_first_run(config: Config, args: argparse.Namespace,
+640 |                      read: Callable[[str], str] = input) -> bool:
+641 |     """The very first start - no model set up, a person at the keyboard - offers the guided
+642 |     setup at once instead of an error. True when it ran and made a model ready."""
+643 |     interactive = sys.stdin.isatty() and sys.stdout.isatty()
+644 |     if (not interactive or args.prompt is not None or args.doctor or args.no_auto
+645 |             or args.backend is not None or not online_problem(config) or local_kind(config)):
+646 |         return False
+647 |     print("No model is set up yet. The guided setup takes a minute: an online service with your "
+648 |           "key (Gemini's is free),\na model server you already run, or a free model downloaded "
+649 |           "for you.")
+650 |     try:
+651 |         answer = read("Start it now? [Y/n] ").strip().lower()
+652 |     except (EOFError, KeyboardInterrupt):
+653 |         print()
+654 |         return False
+655 |     return answer in ("", "y", "yes") and run_subcommand("setup", []) == 0
 656 | 
+657 | 
 ```
 - Offers the guided setup instead of an error when **all** of these hold: a person is typing (input and output are a
   terminal), it is a normal chat start (no `-p`, `--doctor`, `--no-auto` or `--backend`), no online model works and
@@ -974,61 +978,61 @@ at once instead of printing an error (`guided_first_run`).
 
 ## `main` — start-up
 ```python
-657 | def main(argv: list[str] | None = None) -> int:
-658 |     """Entry point: choose the setup, build the components, then chat (or answer once)."""
-659 |     for stream in (sys.stdout, sys.stderr):        # a character the console cannot show must
-660 |         if hasattr(stream, "reconfigure"):         # not crash the program (piped output on Windows)
-661 |             stream.reconfigure(errors="replace")
-662 |     words = sys.argv[1:] if argv is None else argv
-663 |     if words and words[0] in SUBCOMMANDS:
-664 |         return run_subcommand(words[0], words[1:])
-665 |     args = build_parser().parse_args(words)
-666 |     workspace = args.workspace or Path(os.environ.get("LOCALAGENT_WORKSPACE", "."))
-667 |     try:
-668 |         settings = load_settings(workspace)        # its "env" applies before the config is read
-669 |         apply_env(settings)
-670 |         config = build_config(args)
-671 |         if guided_first_run(config, args):         # the setup saved new settings: read them again
-672 |             settings = load_settings(workspace)
-673 |             apply_env(settings)
-674 |             config = build_config(args)
-675 |     except ValueError as exc:                      # e.g. broken settings.json, a typo in a variable
-676 |         print(f"setup problem: {exc}")
-677 |         return 2
-678 |     notes: list[str] = []
-679 |     try:
-680 |         if not args.no_auto:
-681 |             config, notes = auto_configure(config, args)
-682 |     except ValueError as exc:                      # e.g. no model at all yet
-683 |         if not args.doctor:
-684 |             print(f"setup problem: {exc}")
-685 |             return 2
-686 |         notes = [f"FAIL  {exc}"]
-687 |     if args.doctor:
-688 |         healthy, report = run_doctor(config)
-689 |         print("\n".join(notes + report))
-690 |         return 0 if healthy else 1
-691 |     try:
-692 |         backend = make_backend(config)
-693 |     except ValueError as exc:                      # e.g. missing key
-694 |         print(f"setup problem: {exc}")
-695 |         return 2
-696 |     approver = Approver()
-697 |     approve: Callable[[str], bool] = approver
-698 |     if config.auto_approve:
-699 |         approve = lambda _a: True                  # noqa: E731 (a one-line answer)
-700 |     elif args.prompt is not None:
-701 |         approve = refuse
-702 |     meter = Meter()
-703 |     toolbox = ToolBox(config, approve, settings)
-704 |     approver.permissions = toolbox.permissions
-705 |     try:
-706 |         if args.prompt is not None:
-707 |             return run_once(config, backend, toolbox, meter, args.prompt)
-708 |         return Chat(config, args, backend, toolbox, meter).loop(notes)
-709 |     finally:
-710 |         toolbox.close()                            # stops the sandbox and MCP servers
-711 |         stop_local_servers()                       # and a local model this run started
+658 | def main(argv: list[str] | None = None) -> int:
+659 |     """Entry point: choose the setup, build the components, then chat (or answer once)."""
+660 |     for stream in (sys.stdout, sys.stderr):        # a character the console cannot show must
+661 |         if hasattr(stream, "reconfigure"):         # not crash the program (piped output on Windows)
+662 |             stream.reconfigure(errors="replace")
+663 |     words = sys.argv[1:] if argv is None else argv
+664 |     if words and words[0] in SUBCOMMANDS:
+665 |         return run_subcommand(words[0], words[1:])
+666 |     args = build_parser().parse_args(words)
+667 |     workspace = args.workspace or Path(os.environ.get("LOCALAGENT_WORKSPACE", "."))
+668 |     try:
+669 |         settings = load_settings(workspace)        # its "env" applies before the config is read
+670 |         apply_env(settings)
+671 |         config = build_config(args)
+672 |         if guided_first_run(config, args):         # the setup saved new settings: read them again
+673 |             settings = load_settings(workspace)
+674 |             apply_env(settings)
+675 |             config = build_config(args)
+676 |     except ValueError as exc:                      # e.g. broken settings.json, a typo in a variable
+677 |         print(f"setup problem: {exc}")
+678 |         return 2
+679 |     notes: list[str] = []
+680 |     try:
+681 |         if not args.no_auto:
+682 |             config, notes = auto_configure(config, args)
+683 |     except ValueError as exc:                      # e.g. no model at all yet
+684 |         if not args.doctor:
+685 |             print(f"setup problem: {exc}")
+686 |             return 2
+687 |         notes = [f"FAIL  {exc}"]
+688 |     if args.doctor:
+689 |         healthy, report = run_doctor(config)
+690 |         print("\n".join(notes + report))
+691 |         return 0 if healthy else 1
+692 |     try:
+693 |         backend = make_backend(config)
+694 |     except ValueError as exc:                      # e.g. missing key
+695 |         print(f"setup problem: {exc}")
+696 |         return 2
+697 |     approver = Approver()
+698 |     approve: Callable[[str], bool] = approver
+699 |     if config.auto_approve:
+700 |         approve = lambda _a: True                  # noqa: E731 (a one-line answer)
+701 |     elif args.prompt is not None:
+702 |         approve = refuse
+703 |     meter = Meter()
+704 |     toolbox = ToolBox(config, approve, settings)
+705 |     approver.permissions = toolbox.permissions
+706 |     try:
+707 |         if args.prompt is not None:
+708 |             return run_once(config, backend, toolbox, meter, args.prompt)
+709 |         return Chat(config, args, backend, toolbox, meter).loop(notes)
+710 |     finally:
+711 |         toolbox.close()                            # stops the sandbox and MCP servers
+712 |         stop_local_servers()                       # and a local model this run started
 ```
 - First makes the output robust: with output piped or redirected on Windows, Python writes in the old Windows code
   page, where one emoji or arrow in a model's answer or a diff would crash the program with `UnicodeEncodeError`;

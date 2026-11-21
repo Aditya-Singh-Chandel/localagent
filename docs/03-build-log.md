@@ -75,7 +75,7 @@ Hardware: 15.7 GB RAM, Intel i7-1255U, NVIDIA MX550 with 2 GB VRAM, Intel UHD gr
   | 13 and up | crashes (out of the MX550's 2 GB) | — |
 
   So the 2 GB card can hold only ~11 of the model's 36 layers: **+45 % generation, +86 % prompt speed**. This is a real but
-  limited gain — a GPU with more memory would move far more. `serve.ps1` defaults to **9 layers** (`-GpuLayers`) because the
+  limited gain — a GPU with more memory would move far more. `scripts\serve.ps1` defaults to **9 layers** (`-GpuLayers`) because the
   server also needs GPU memory for the context cache; `-GpuLayers 0` selects the CPU build. The full eval then ran fizzbuzz in
   88 s (vs 107–182 s before).
 
@@ -182,7 +182,7 @@ strong reserve is only touched when a task is going wrong.
 
 | # | Feature | Why | Where |
 |---|---|---|---|
-| 1 | `localagent` command for any folder; the current folder is the workspace | Claude Code works where you start it | `install.ps1`, `config.py` |
+| 1 | `localagent` command for any folder; the current folder is the workspace | Claude Code works where you start it | `scripts\install.ps1`, `config.py` |
 | 2 | Folder walking that never enters `node_modules`, `.venv`, `.localagent` ... | real projects hold 100 000+ files in such folders | `sandbox.py` |
 | 3 | One quota file per user (`~/.localagent/usage.json`) | quotas belong to the key, not the project; shared with containers by a mount | `config.py` |
 | 4 | Checks for JSON, TOML, JavaScript besides Python | real projects are not only Python | `verify.py` |
@@ -479,6 +479,19 @@ look broken when it was not). The screenshots found three real problems: documen
 underscores of names like `read_secret`. The Windows zip lost mypy, which only `--type-check` uses: 35.7 MB became
 22.8 MB, which also fits hosts that refuse files over 25 MB.
 
+**The site made into a product.** The first site was correct but plain, and its main button changed its own target
+on computers that were not Windows — behaviour nobody asked for. The second version is built like an official product
+site, still from plain files: a first screen with the headline and a terminal that replays four **real** recorded
+sessions (three with Gemini, one offline with the local model), a download page with every checksum, a setup builder
+that turns choices into exact steps (generated from the program's own tables, so it cannot drift), user guides written
+for people who download it, search on every page, light and dark themes, a phone menu, and self-hosted fonts. React
+was considered and not used: it would add a package tree and a second build tool for the same HTML, and the site would
+no longer build with the project's one Python command. Nothing on the site navigates or downloads by itself any more.
+Recording the offline session found a bug in the chat itself: a local model that says something before using a tool
+had its final answer printed twice — the answer was compared with *all* streamed text instead of its end (fixed with a
+test). The repository's front page was tidied too: the developer scripts moved to `scripts\` and the community files
+to `.github\`, where GitHub still shows them.
+
 ## 7. Errors met and how each was fixed
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -515,7 +528,7 @@ underscores of names like `read_secret`. The Windows zip lost mypy, which only `
 
 ## 8. How to reproduce everything (commands)
 ```
-# model server (GPU-assisted):             .\serve.ps1            (CPU only: .\serve.ps1 -GpuLayers 0)
+# model server (GPU-assisted):             .\scripts\serve.ps1            (CPU only: .\scripts\serve.ps1 -GpuLayers 0)
 # chat with the agent:                     python -m localagent --backend openai --api-base http://127.0.0.1:8080/v1 --model qwen3-8b
 # score the model:                         python -m evals.run_evals --backend openai --api-base http://127.0.0.1:8080/v1 --model qwen3-8b [--trace] [--only fix_bug]
 # unit tests (no model needed):            .venv\Scripts\python -m unittest discover -s tests -t .
@@ -524,7 +537,7 @@ underscores of names like `read_secret`. The Windows zip lost mypy, which only `
 ```
 
 ## 9. Status and honest limits
-* **Now (version 0.6, 21 Nov 2026):** 254 unit tests pass (real Docker when running, a fake MCP server, fake model,
+* **Now (version 0.6, 21 Nov 2026):** 259 unit tests pass (real Docker when running, a fake MCP server, fake model,
   llama.cpp and online-service servers, local web servers, every installed language checker); ruff and mypy clean;
   docs audit passes (41 pages, every code line documented exactly once); CI is green on Linux (Python 3.10-3.14),
   Windows and the real Docker sandbox. Checked live: the local model through the automatic start (section 6g), and

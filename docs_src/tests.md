@@ -592,12 +592,15 @@ Node, Go, Rust, gcc/g++ and PowerShell, so they all ran); everything else uses f
 @@ tests/test_phase9.py StreamTests.test_text_and_tool_calls_are_assembled @@
 @@ tests/test_phase9.py StreamTests.test_error_inside_a_stream @@
 @@ tests/test_phase9.py StreamTests.test_summary_is_printed_when_streamed_text_differs @@
+@@ tests/test_phase9.py StreamTests.test_a_streamed_answer_is_not_printed_twice @@
 - `lines` turns event texts into `data: ...` lines ending with `[DONE]`, as a server sends them.
 - Two text pieces become "Hello" and reach the display in order; a comment line is ignored; a tool call split over two
   chunks (name `read_` + `file`, argument text in two halves) is glued back together with its id and thought
   signature; the token counts from the last chunk are returned.
 - An error object inside the stream raises `LLMError`.
 - When the model streams "Working on it." but finishes with the summary "All done: 3 files.", both appear on screen.
+- A model that streams "Let me look.", uses a tool, then streams its plain answer "The answer is 42." (how local
+  models often answer) shows that answer exactly once.
 
 ## Helper agents
 @@ tests/test_phase9.py HelperTests @@
@@ -1126,7 +1129,7 @@ configuration, the modes with another service, the doctor's check, the first-sta
 
 **Role:** proves `tools/build_site.py`: the Markdown it renders, the problems its checks find, and a whole site built
 from the real `docs\` and `website\`, checked, and served over HTTP. The download files are small stand-ins, so the
-tests need no release build and no network. 13 tests, about 5 seconds.
+tests need no release build and no network. 17 tests, about 7 seconds.
 
 ## Helpers
 @@ tests/test_site.py header @@
@@ -1174,24 +1177,50 @@ tests need no release build and no network. 13 tests, about 5 seconds.
 @@ tests/test_site.py PageTests @@
 @@ tests/test_site.py PageTests.test_titles_descriptions_order_and_templates @@
 - Titles come from the first heading (a file name, a folder name, a guide's name); a long description is cut at a word
-  with "..."; an unknown page lands in "More"; a value that contains `{{b}}` is put in as it is, and a template asking
-  for an unknown value stops the build; sizes read "101 KB" and "22.8 MB".
+  with "..."; the menu puts a guide under "Get started", the overview under "How it is built", a code page under its
+  area and an unknown page under "More"; a value that contains `{{b}}` is put in as it is, and a template asking for an
+  unknown value stops the build; sizes read "101 KB" and "22.8 MB".
+
+## The data in the pages
+@@ tests/test_site.py DataTests @@
+@@ tests/test_site.py DataTests.test_data_inside_a_page_cannot_break_it @@
+@@ tests/test_site.py DataTests.test_release_facts_come_from_the_files @@
+- Data holding `</script>` and `{{x}}` comes out with neither, yet reads back as the same data. A recorded session's
+  lines come out escaped (`fix <it>` cannot become a tag) with the player's classes.
+- The release date and notes are read from a changelog (and "not yet released" without one); a file's size and SHA-256
+  are computed from the file (the known checksum of "abc").
+
+@@ tests/test_site.py DataTests.test_the_setup_builder_follows_the_program @@
+@@ tests/test_site.py DataTests.test_search_entries_follow_the_headings @@
+- Server names become `lmstudio` and `llamacpp`; memory thresholds read "16 GB or more", "8 GB or more", "Less than 8
+  GB". The setup builder's data starts with Gemini and OpenAI, its "skip" number is one past the last service (as in
+  the real setup menu), Ollama is offered, and Gemini is chosen at first. The link rule keeps the site's own pages,
+  turns documentation pages into their `.html`, and drops a file that is not on the site.
+- A small rendered page gives three search entries — the page, then "One" and "Two" with their addresses and texts —
+  without the code block and without the heading's `#` link.
 
 ## The whole site
 @@ tests/test_site.py SiteTests @@
+@@ tests/test_site.py SiteTests.build @@
+- Builds with the test count replaced by 42: counting the real tests inside a test run is slow, and the real count is
+  shown when the site is built for real.
+
 @@ tests/test_site.py SiteTests.test_the_real_site_is_built_checked_and_served @@
-- Builds the real site with an address, then runs the full check with the **real** owner name read from git — so CI
-  proves on every push that no page shows it. The sitemap lists the pages and `robots.txt` names it. A local web server
-  then serves the folder: the home page names the zip and has its canonical link, a docs page marks itself in the menu,
-  the zip arrives byte for byte, and a missing page is a 404.
+- Builds the real site with an address and runs the full check with the **real** owner name read from git — so CI
+  proves on every push that no page shows it. Every kind of page is written; the sitemap lists them and `robots.txt`
+  names it; the search index has the guide. A local web server then serves the folder: the home page has its canonical
+  link, the number of tests and the sessions; the download page links the zip with `download` and shows its checksum
+  (computed from the stand-in file); a docs page marks itself in the menu; the zip arrives byte for byte; a missing
+  page is a 404.
 
 @@ tests/test_site.py SiteTests.test_downloads_can_live_elsewhere @@
 @@ tests/test_site.py SiteTests.test_problems_are_found @@
 @@ tests/test_site.py SiteTests.test_a_folder_that_is_not_a_site_is_never_replaced @@
 @@ tests/test_site.py SiteTests.test_the_owner_is_read_from_the_remote @@
-- With `--downloads-url` no download is copied, the links point there, and the site still checks clean.
+- With `--downloads-url` no download is copied, the download page links there, and the site still checks clean.
 - A broken page is caught on every count: an unfilled placeholder, a wrong closing tag, a tag never closed, a missing
-  file, a missing section, and a private name in a text file.
+  file, a missing section, an inline style, an inline event handler, an inline script (but not a JSON data block),
+  broken JSON, and a private name in a text file.
 - A folder holding someone's own file is never deleted by a build into it; without release files the build stops.
 - The owner comes from both forms of a GitHub address (`https://` and `git@`), with and without dashes; any other
   address gives nothing to look for.

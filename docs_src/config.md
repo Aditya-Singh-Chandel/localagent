@@ -51,7 +51,7 @@ can build their own `Config`.
   You normally do not set it: the **mode** chooses it (see below). Setting it by hand (`--backend`) skips the mode.
 - `model`: the model tag/name the server understands. `host`: where Ollama listens.
 - `api_base` / `api_key`: address and bearer token for an OpenAI-compatible server. The default
-  `http://127.0.0.1:8080/v1` is where `serve.ps1` starts llama.cpp (LM Studio uses `http://localhost:1234/v1`).
+  `http://127.0.0.1:8080/v1` is where `scripts\serve.ps1` starts llama.cpp (LM Studio uses `http://localhost:1234/v1`).
 - `workspace`: the **only** folder the agent may read or write (enforced by `sandbox.py`). Default `.` = the folder you
   start the agent in, like Claude Code: `cd` into a project, run `localagent`.
 - `state_dir`: where session logs go, **relative to the workspace**: `<project>\.localagent\sessions`, next to the
