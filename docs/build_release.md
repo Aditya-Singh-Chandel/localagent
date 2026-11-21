@@ -226,31 +226,37 @@ website: `tools/build_site.py` (see `build_site.md`) builds a complete, self-con
 
 ```python
 138 | def write_checksums(files: list[Path], dist: Path) -> Path:
-139 |     """SHA256SUMS.txt in the usual `<checksum>  <file name>` form (`sha256sum -c` reads it)."""
-140 |     lines = [f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}" for f in files]
-141 |     target = dist / "SHA256SUMS.txt"
-142 |     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
-143 |     return target
-144 | 
-145 | 
+139 |     """SHA256SUMS.txt in the usual `<checksum>  <file name>` form (`sha256sum -c` reads it), with
+140 |     Unix line endings on every system: written with Windows' "\\r\\n", `sha256sum -c` on Linux and
+141 |     macOS looks for file names that end in an invisible carriage return, and fails."""
+142 |     lines = [f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}" for f in files]
+143 |     target = dist / "SHA256SUMS.txt"
+144 |     target.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+145 |     return target
+146 | 
+147 | 
 ```
 - `SHA256SUMS.txt` in the standard format, so anyone can check a download (`certutil -hashfile <file> SHA256` on
   Windows, `sha256sum -c SHA256SUMS.txt` elsewhere).
+- Written with Unix line endings (`newline="\n"`) on every system. Python's text mode on Windows writes `\r\n`, and
+  `sha256sum -c` on Linux and macOS then looks for files whose names end in an invisible carriage return — and fails.
+  Found by checking the published 0.6.1 release the way a Linux user would (its file, built on GitHub's Windows
+  machine, had the Windows endings; the release pages got fixed copies).
 
 ```python
-146 | def release_notes(version: str, changelog: str) -> str:
-147 |     """This version's section of CHANGELOG.md (from its "## <version>" heading to the next one),
-148 |     with a line on checking the downloads."""
-149 |     lines = changelog.splitlines()
-150 |     start = next((i for i, line in enumerate(lines) if line.startswith(f"## {version} ")), None)
-151 |     if start is None:
-152 |         raise SystemExit(f"CHANGELOG.md has no section '## {version} ...': write it before releasing")
-153 |     end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
-154 |     body = "\n".join(lines[start + 1:end]).strip()
-155 |     return (f"{body}\n\nCheck a download against `SHA256SUMS.txt`: on Windows "
-156 |             "`certutil -hashfile <file> SHA256`, elsewhere `sha256sum -c SHA256SUMS.txt`.\n")
-157 | 
-158 | 
+148 | def release_notes(version: str, changelog: str) -> str:
+149 |     """This version's section of CHANGELOG.md (from its "## <version>" heading to the next one),
+150 |     with a line on checking the downloads."""
+151 |     lines = changelog.splitlines()
+152 |     start = next((i for i, line in enumerate(lines) if line.startswith(f"## {version} ")), None)
+153 |     if start is None:
+154 |         raise SystemExit(f"CHANGELOG.md has no section '## {version} ...': write it before releasing")
+155 |     end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+156 |     body = "\n".join(lines[start + 1:end]).strip()
+157 |     return (f"{body}\n\nCheck a download against `SHA256SUMS.txt`: on Windows "
+158 |             "`certutil -hashfile <file> SHA256`, elsewhere `sha256sum -c SHA256SUMS.txt`.\n")
+159 | 
+160 | 
 ```
 - The text of a release page: this version's part of `CHANGELOG.md` (from its `## 0.6.0 — date` heading to the next
   `## ` heading), plus one line on checking the downloads against `SHA256SUMS.txt`. The heading must start with
@@ -258,35 +264,35 @@ website: `tools/build_site.py` (see `build_site.md`) builds a complete, self-con
   the build and says what to write, so no release goes out without notes.
 
 ```python
-159 | def main(argv: list[str]) -> int:
-160 |     """Build everything into dist/ (and the release notes into build/) and list it."""
-161 |     parser = argparse.ArgumentParser(description="Build the wheel and the portable Windows zip.")
-162 |     parser.add_argument("--tag", help="stop unless this tag (e.g. v0.6.0) names this version")
-163 |     parser.add_argument("--with-mypy", action="store_true", help="put mypy into the Windows zip too")
-164 |     args = parser.parse_args(argv)
-165 |     if args.tag is not None and args.tag != f"v{__version__}":
-166 |         raise SystemExit(f"tag {args.tag} does not match the version in localagent/__init__.py "
-167 |                          f"(v{__version__})")
-168 |     dist, build = ROOT / "dist", ROOT / "build"
-169 |     dist.mkdir(exist_ok=True)
-170 |     build.mkdir(exist_ok=True)
-171 |     for old in dist.glob(f"localagent-{__version__}*"):
-172 |         old.unlink()
-173 |     notes = build / "RELEASE_NOTES.md"
-174 |     notes.write_text(release_notes(__version__, (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")),
-175 |                      encoding="utf-8")
-176 |     wheel = build_wheel(dist)
-177 |     bundle = build_windows_bundle(wheel, build, dist, args.with_mypy)
-178 |     sums = write_checksums([wheel, bundle], dist)
-179 |     for made in (wheel, bundle, sums, notes):
-180 |         print(f"{made.stat().st_size / 1e6:8.1f} MB  {made.relative_to(ROOT)}")
-181 |     return 0
-182 | 
-183 | 
+161 | def main(argv: list[str]) -> int:
+162 |     """Build everything into dist/ (and the release notes into build/) and list it."""
+163 |     parser = argparse.ArgumentParser(description="Build the wheel and the portable Windows zip.")
+164 |     parser.add_argument("--tag", help="stop unless this tag (e.g. v0.6.0) names this version")
+165 |     parser.add_argument("--with-mypy", action="store_true", help="put mypy into the Windows zip too")
+166 |     args = parser.parse_args(argv)
+167 |     if args.tag is not None and args.tag != f"v{__version__}":
+168 |         raise SystemExit(f"tag {args.tag} does not match the version in localagent/__init__.py "
+169 |                          f"(v{__version__})")
+170 |     dist, build = ROOT / "dist", ROOT / "build"
+171 |     dist.mkdir(exist_ok=True)
+172 |     build.mkdir(exist_ok=True)
+173 |     for old in dist.glob(f"localagent-{__version__}*"):
+174 |         old.unlink()
+175 |     notes = build / "RELEASE_NOTES.md"
+176 |     notes.write_text(release_notes(__version__, (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")),
+177 |                      encoding="utf-8")
+178 |     wheel = build_wheel(dist)
+179 |     bundle = build_windows_bundle(wheel, build, dist, args.with_mypy)
+180 |     sums = write_checksums([wheel, bundle], dist)
+181 |     for made in (wheel, bundle, sums, notes):
+182 |         print(f"{made.stat().st_size / 1e6:8.1f} MB  {made.relative_to(ROOT)}")
+183 |     return 0
+184 | 
+185 | 
 ```
 ```python
-184 | if __name__ == "__main__":
-185 |     raise SystemExit(main(sys.argv[1:]))
+186 | if __name__ == "__main__":
+187 |     raise SystemExit(main(sys.argv[1:]))
 ```
 - The options are read with `argparse`: `--tag` and `--with-mypy`.
 - `--tag v0.6.0` (what the release workflow passes) first checks that the tag names the version in

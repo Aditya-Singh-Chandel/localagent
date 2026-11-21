@@ -3,6 +3,13 @@
 All notable changes to localagent. The full story of every decision, with measurements, is in
 `docs/03-build-log.md`.
 
+## Unreleased
+
+### Fixed
+- `SHA256SUMS.txt` has Unix line endings, so `sha256sum -c SHA256SUMS.txt` works on Linux and macOS (it was written
+  with Windows line endings on the build machine). The files on the 0.6.0 and 0.6.1 release pages were replaced with
+  fixed copies; the checksums themselves were always right.
+
 ## 0.6.1 — 21 November 2026
 
 ### Fixed
