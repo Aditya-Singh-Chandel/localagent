@@ -136,10 +136,12 @@ def build_windows_bundle(wheel: Path, build: Path, dist: Path, with_mypy: bool =
 
 
 def write_checksums(files: list[Path], dist: Path) -> Path:
-    """SHA256SUMS.txt in the usual `<checksum>  <file name>` form (`sha256sum -c` reads it)."""
+    """SHA256SUMS.txt in the usual `<checksum>  <file name>` form (`sha256sum -c` reads it), with
+    Unix line endings on every system: written with Windows' "\\r\\n", `sha256sum -c` on Linux and
+    macOS looks for file names that end in an invisible carriage return, and fails."""
     lines = [f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}" for f in files]
     target = dist / "SHA256SUMS.txt"
-    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     return target
 
 

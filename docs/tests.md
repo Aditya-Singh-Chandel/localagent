@@ -4098,7 +4098,7 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 
 **Role:** proves the parts that turn the agent into a downloadable product — verified and resumable downloads, safe
 unpacking, the model catalog, `localagent setup` and `localagent models` — without downloading anything real: a small
-local file server plays GitHub and Hugging Face. 12 tests, about 3 seconds. (The guided setup's own tests are in
+local file server plays GitHub and Hugging Face. 14 tests, about 3 seconds. (The guided setup's own tests are in
 `test_providers.py`, next to the provider choices it offers.)
 
 ## Helpers
@@ -4107,68 +4107,76 @@ local file server plays GitHub and Hugging Face. 12 tests, about 3 seconds. (The
   2 | catalog and `localagent setup` / `localagent models` (no real download, no model needed)."""
   3 | import contextlib
   4 | import hashlib
-  5 | import io
-  6 | import json
-  7 | import os
-  8 | import tarfile
-  9 | import tempfile
- 10 | import threading
- 11 | import unittest
- 12 | import zipfile
- 13 | from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
- 14 | from pathlib import Path
- 15 | from unittest import mock
- 16 | 
- 17 | from localagent import cli, models
- 18 | from localagent.config import Config
- 19 | from localagent.fetch import DownloadError, download, extract_archive
- 20 | from localagent.settings import save_user_env
- 21 | 
- 22 | DATA = bytes(range(256)) * 4096                  # 1 MB of test content
- 23 | DATA_SHA = hashlib.sha256(DATA).hexdigest()
- 24 | 
- 25 | 
+  5 | import importlib.util
+  6 | import io
+  7 | import json
+  8 | import os
+  9 | import tarfile
+ 10 | import tempfile
+ 11 | import threading
+ 12 | import unittest
+ 13 | import zipfile
+ 14 | from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+ 15 | from pathlib import Path
+ 16 | from unittest import mock
+ 17 | 
+ 18 | from localagent import cli, models
+ 19 | from localagent.config import Config
+ 20 | from localagent.fetch import DownloadError, download, extract_archive
+ 21 | from localagent.settings import save_user_env
+ 22 | 
+ 23 | _SPEC = importlib.util.spec_from_file_location(
+ 24 |     "build_release", Path(__file__).resolve().parent.parent / "tools" / "build_release.py")
+ 25 | assert _SPEC is not None and _SPEC.loader is not None
+ 26 | release = importlib.util.module_from_spec(_SPEC)
+ 27 | _SPEC.loader.exec_module(release)
+ 28 | 
+ 29 | DATA = bytes(range(256)) * 4096                  # 1 MB of test content
+ 30 | DATA_SHA = hashlib.sha256(DATA).hexdigest()
+ 31 | 
+ 32 | 
 ```
 - `DATA` is 1 MB of test content and `DATA_SHA` its checksum, standing in for a model file.
+- `release` is `tools/build_release.py`, loaded by its path (the `tools` folder is not a package).
 
 ```python
- 26 | class RangeServer:
- 27 |     """A file server that understands Range requests (or ignores them), and can stop early."""
- 28 | 
+ 33 | class RangeServer:
+ 34 |     """A file server that understands Range requests (or ignores them), and can stop early."""
+ 35 | 
 ```
 ```python
- 29 |     def __init__(self, data: bytes, honour_range: bool = True, cut_at: int | None = None) -> None:
- 30 |         outer = self
- 31 |         self.ranges: list[str | None] = []
- 32 | 
- 33 |         class Handler(BaseHTTPRequestHandler):
- 34 |             def do_GET(self):  # noqa: N802 (name fixed by http.server)
- 35 |                 asked = self.headers.get("Range")
- 36 |                 outer.ranges.append(asked)
- 37 |                 body, status = data, 200
- 38 |                 if asked and honour_range:
- 39 |                     body, status = data[int(asked.split("=")[1].split("-")[0]):], 206
- 40 |                 if cut_at is not None:
- 41 |                     body = body[:cut_at]                 # the connection "breaks" early
- 42 |                 self.send_response(status)
- 43 |                 self.send_header("Content-Length", str(len(body)))
- 44 |                 self.end_headers()
- 45 |                 self.wfile.write(body)
- 46 | 
- 47 |             def log_message(self, *args):
- 48 |                 pass
- 49 | 
- 50 |         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
- 51 |         self.url = f"http://127.0.0.1:{self._server.server_port}/file.bin"
- 52 |         threading.Thread(target=self._server.serve_forever, daemon=True).start()
+ 36 |     def __init__(self, data: bytes, honour_range: bool = True, cut_at: int | None = None) -> None:
+ 37 |         outer = self
+ 38 |         self.ranges: list[str | None] = []
+ 39 | 
+ 40 |         class Handler(BaseHTTPRequestHandler):
+ 41 |             def do_GET(self):  # noqa: N802 (name fixed by http.server)
+ 42 |                 asked = self.headers.get("Range")
+ 43 |                 outer.ranges.append(asked)
+ 44 |                 body, status = data, 200
+ 45 |                 if asked and honour_range:
+ 46 |                     body, status = data[int(asked.split("=")[1].split("-")[0]):], 206
+ 47 |                 if cut_at is not None:
+ 48 |                     body = body[:cut_at]                 # the connection "breaks" early
+ 49 |                 self.send_response(status)
+ 50 |                 self.send_header("Content-Length", str(len(body)))
+ 51 |                 self.end_headers()
+ 52 |                 self.wfile.write(body)
  53 | 
+ 54 |             def log_message(self, *args):
+ 55 |                 pass
+ 56 | 
+ 57 |         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+ 58 |         self.url = f"http://127.0.0.1:{self._server.server_port}/file.bin"
+ 59 |         threading.Thread(target=self._server.serve_forever, daemon=True).start()
+ 60 | 
 ```
 ```python
- 54 |     def close(self) -> None:
- 55 |         self._server.shutdown()
- 56 |         self._server.server_close()
- 57 | 
- 58 | 
+ 61 |     def close(self) -> None:
+ 62 |         self._server.shutdown()
+ 63 |         self._server.server_close()
+ 64 | 
+ 65 | 
 ```
 - A file server on a free local port that records every `Range` header it receives, answers a Range request with `206`
   and the rest of the file (or, with `honour_range=False`, ignores it and sends everything with `200`), and with
@@ -4176,163 +4184,163 @@ local file server plays GitHub and Hugging Face. 12 tests, about 3 seconds. (The
 
 ## Downloads
 ```python
- 59 | class DownloadTests(unittest.TestCase):
+ 66 | class DownloadTests(unittest.TestCase):
 ```
 ```python
- 60 |     def serve(self, **kw) -> RangeServer:
- 61 |         server = RangeServer(DATA, **kw)
- 62 |         self.addCleanup(server.close)
- 63 |         return server
- 64 | 
+ 67 |     def serve(self, **kw) -> RangeServer:
+ 68 |         server = RangeServer(DATA, **kw)
+ 69 |         self.addCleanup(server.close)
+ 70 |         return server
+ 71 | 
 ```
 ```python
- 65 |     def test_a_download_is_verified_and_kept_once(self):
- 66 |         server = self.serve()
- 67 |         with tempfile.TemporaryDirectory() as tmp:
- 68 |             target = Path(tmp) / "m.gguf"
- 69 |             seen: list[int] = []
- 70 |             download(server.url, target, DATA_SHA, len(DATA), lambda done, _total: seen.append(done))
- 71 |             self.assertEqual(target.read_bytes(), DATA)
- 72 |             self.assertEqual(seen[-1], len(DATA))
- 73 |             download(server.url, target, DATA_SHA, len(DATA))
- 74 |             self.assertEqual(len(server.ranges), 1)                # already there: no second fetch
- 75 | 
+ 72 |     def test_a_download_is_verified_and_kept_once(self):
+ 73 |         server = self.serve()
+ 74 |         with tempfile.TemporaryDirectory() as tmp:
+ 75 |             target = Path(tmp) / "m.gguf"
+ 76 |             seen: list[int] = []
+ 77 |             download(server.url, target, DATA_SHA, len(DATA), lambda done, _total: seen.append(done))
+ 78 |             self.assertEqual(target.read_bytes(), DATA)
+ 79 |             self.assertEqual(seen[-1], len(DATA))
+ 80 |             download(server.url, target, DATA_SHA, len(DATA))
+ 81 |             self.assertEqual(len(server.ranges), 1)                # already there: no second fetch
+ 82 | 
 ```
 ```python
- 76 |     def test_a_wrong_checksum_deletes_the_file(self):
- 77 |         server = self.serve()
- 78 |         with tempfile.TemporaryDirectory() as tmp:
- 79 |             target = Path(tmp) / "m.gguf"
- 80 |             with self.assertRaisesRegex(DownloadError, "does not match its published checksum"):
- 81 |                 download(server.url, target, "0" * 64, len(DATA))
- 82 |             self.assertEqual(list(Path(tmp).iterdir()), [])
- 83 | 
+ 83 |     def test_a_wrong_checksum_deletes_the_file(self):
+ 84 |         server = self.serve()
+ 85 |         with tempfile.TemporaryDirectory() as tmp:
+ 86 |             target = Path(tmp) / "m.gguf"
+ 87 |             with self.assertRaisesRegex(DownloadError, "does not match its published checksum"):
+ 88 |                 download(server.url, target, "0" * 64, len(DATA))
+ 89 |             self.assertEqual(list(Path(tmp).iterdir()), [])
+ 90 | 
 ```
 - A download arrives complete and reports progress up to its size; asking again sends no second request.
 - With a wrong checksum the download fails and nothing is left in the folder — not even the part.
 
 ```python
- 84 |     def test_an_interrupted_download_continues_where_it_stopped(self):
- 85 |         with tempfile.TemporaryDirectory() as tmp:
- 86 |             target = Path(tmp) / "m.gguf"
- 87 |             broken = self.serve(cut_at=300_000)
- 88 |             with self.assertRaisesRegex(DownloadError, "run the same command again"):
- 89 |                 download(broken.url, target, DATA_SHA, len(DATA))
- 90 |             self.assertEqual(target.with_name("m.gguf.part").stat().st_size, 300_000)
- 91 |             good = self.serve()
- 92 |             download(good.url, target, DATA_SHA, len(DATA))
- 93 |             self.assertEqual(good.ranges, ["bytes=300000-"])        # only the rest was asked for
- 94 |             self.assertEqual(target.read_bytes(), DATA)
- 95 | 
-```
-```python
- 96 |     def test_a_server_ignoring_the_range_sends_everything_again(self):
- 97 |         with tempfile.TemporaryDirectory() as tmp:
- 98 |             target = Path(tmp) / "m.gguf"
- 99 |             target.with_name("m.gguf.part").write_bytes(DATA[:1000])
-100 |             download(self.serve(honour_range=False).url, target, DATA_SHA, len(DATA))
+ 91 |     def test_an_interrupted_download_continues_where_it_stopped(self):
+ 92 |         with tempfile.TemporaryDirectory() as tmp:
+ 93 |             target = Path(tmp) / "m.gguf"
+ 94 |             broken = self.serve(cut_at=300_000)
+ 95 |             with self.assertRaisesRegex(DownloadError, "run the same command again"):
+ 96 |                 download(broken.url, target, DATA_SHA, len(DATA))
+ 97 |             self.assertEqual(target.with_name("m.gguf.part").stat().st_size, 300_000)
+ 98 |             good = self.serve()
+ 99 |             download(good.url, target, DATA_SHA, len(DATA))
+100 |             self.assertEqual(good.ranges, ["bytes=300000-"])        # only the rest was asked for
 101 |             self.assertEqual(target.read_bytes(), DATA)
 102 | 
+```
+```python
+103 |     def test_a_server_ignoring_the_range_sends_everything_again(self):
+104 |         with tempfile.TemporaryDirectory() as tmp:
+105 |             target = Path(tmp) / "m.gguf"
+106 |             target.with_name("m.gguf.part").write_bytes(DATA[:1000])
+107 |             download(self.serve(honour_range=False).url, target, DATA_SHA, len(DATA))
+108 |             self.assertEqual(target.read_bytes(), DATA)
+109 | 
 ```
 - A connection that breaks after 300 000 bytes leaves exactly that part and the advice to run again; the next run asks
   only for `bytes=300000-` and ends with the complete, verified file.
 - A server that ignores the Range request still ends with the right file (the part is started again).
 
 ```python
-103 |     def test_archives_are_unpacked_only_inside_their_folder(self):
-104 |         with tempfile.TemporaryDirectory() as tmp:
-105 |             root = Path(tmp)
-106 |             good, evil = root / "good.zip", root / "evil.zip"
-107 |             with zipfile.ZipFile(good, "w") as bundle:
-108 |                 bundle.writestr("build/llama-server.exe", b"MZ")
-109 |             with zipfile.ZipFile(evil, "w") as bundle:
-110 |                 bundle.writestr("../outside.txt", b"x")
-111 |             extract_archive(good, root / "out")
-112 |             self.assertTrue((root / "out" / "build" / "llama-server.exe").is_file())
-113 |             with self.assertRaisesRegex(DownloadError, "would land outside"):
-114 |                 extract_archive(evil, root / "out2")
-115 |             self.assertFalse((root / "outside.txt").exists())
-116 |             tgz = root / "build.tar.gz"
-117 |             with tarfile.open(tgz, "w:gz") as bundle:
-118 |                 info = tarfile.TarInfo("bin/llama-server")
-119 |                 info.size = 2
-120 |                 bundle.addfile(info, io.BytesIO(b"\x7fE"))
-121 |             extract_archive(tgz, root / "out3")
-122 |             self.assertTrue((root / "out3" / "bin" / "llama-server").is_file())
-123 | 
-124 | 
+110 |     def test_archives_are_unpacked_only_inside_their_folder(self):
+111 |         with tempfile.TemporaryDirectory() as tmp:
+112 |             root = Path(tmp)
+113 |             good, evil = root / "good.zip", root / "evil.zip"
+114 |             with zipfile.ZipFile(good, "w") as bundle:
+115 |                 bundle.writestr("build/llama-server.exe", b"MZ")
+116 |             with zipfile.ZipFile(evil, "w") as bundle:
+117 |                 bundle.writestr("../outside.txt", b"x")
+118 |             extract_archive(good, root / "out")
+119 |             self.assertTrue((root / "out" / "build" / "llama-server.exe").is_file())
+120 |             with self.assertRaisesRegex(DownloadError, "would land outside"):
+121 |                 extract_archive(evil, root / "out2")
+122 |             self.assertFalse((root / "outside.txt").exists())
+123 |             tgz = root / "build.tar.gz"
+124 |             with tarfile.open(tgz, "w:gz") as bundle:
+125 |                 info = tarfile.TarInfo("bin/llama-server")
+126 |                 info.size = 2
+127 |                 bundle.addfile(info, io.BytesIO(b"\x7fE"))
+128 |             extract_archive(tgz, root / "out3")
+129 |             self.assertTrue((root / "out3" / "bin" / "llama-server").is_file())
+130 | 
+131 | 
 ```
 - A normal zip unpacks; a zip with `../outside.txt` is refused and writes nothing outside; a `.tar.gz` (the Linux and
   macOS format) unpacks too.
 
 ## Catalog and llama.cpp
 ```python
-125 | class CatalogTests(unittest.TestCase):
+132 | class CatalogTests(unittest.TestCase):
 ```
 ```python
-126 |     def test_the_suggestion_follows_the_memory(self):
-127 |         self.assertEqual(models.recommend(15.7).name, "qwen3-8b")
-128 |         self.assertEqual(models.recommend(7.8).name, "qwen3-4b")
-129 |         self.assertEqual(models.recommend(4.0).name, "qwen3-1.7b")
-130 |         self.assertEqual(models.recommend(None).name, "qwen3-4b")
-131 |         self.assertEqual(models.catalog_entry(" QWEN3-4B ").file, "Qwen3-4B-Q4_K_M.gguf")
-132 |         self.assertIsNone(models.catalog_entry("gpt-9"))
-133 |         memory = models.total_memory_gb()
-134 |         self.assertTrue(memory is None or memory > 0.5)
-135 |         self.assertTrue(all(len(m.sha256) == 64 and m.url.endswith(m.file) for m in models.CATALOG))
-136 | 
+133 |     def test_the_suggestion_follows_the_memory(self):
+134 |         self.assertEqual(models.recommend(15.7).name, "qwen3-8b")
+135 |         self.assertEqual(models.recommend(7.8).name, "qwen3-4b")
+136 |         self.assertEqual(models.recommend(4.0).name, "qwen3-1.7b")
+137 |         self.assertEqual(models.recommend(None).name, "qwen3-4b")
+138 |         self.assertEqual(models.catalog_entry(" QWEN3-4B ").file, "Qwen3-4B-Q4_K_M.gguf")
+139 |         self.assertIsNone(models.catalog_entry("gpt-9"))
+140 |         memory = models.total_memory_gb()
+141 |         self.assertTrue(memory is None or memory > 0.5)
+142 |         self.assertTrue(all(len(m.sha256) == 64 and m.url.endswith(m.file) for m in models.CATALOG))
+143 | 
 ```
 - 15.7 GB → the 8B model, 7.8 GB → 4B, 4 GB → 1.7B, unknown → 4B; names match in any case; this computer's memory is
   read; every catalog entry has a 64-character checksum and a matching address.
 
 ```python
-137 |     def test_the_newest_llama_build_with_a_checksum_is_chosen(self):
-138 |         def asset(tag, variant, digest="sha256:" + "a" * 64):
-139 |             name = f"llama-{tag}-bin-{variant}.zip"
-140 |             return {"name": name, "size": 10, "browser_download_url": f"https://x/{name}", "digest": digest}
-141 |         releases = [{"tag_name": "v1.0.0", "assets": [{"name": "nightly-tag.txt"}]},     # placeholder
-142 |                     {"tag_name": "b2", "assets": [asset("b2", "win-vulkan-x64", digest="")]},
-143 |                     {"tag_name": "b1", "assets": [asset("b1", "win-cpu-x64"), asset("b1", "win-vulkan-x64")]}]
-144 |         with mock.patch.object(models, "get_json", return_value=releases):
-145 |             name, url, size, sha = models.find_llama_release(("win-vulkan-x64", "win-cpu-x64"))
-146 |             self.assertEqual((name, sha), ("llama-b1-bin-win-vulkan-x64.zip", "a" * 64))
-147 |             with self.assertRaisesRegex(DownloadError, "no llama.cpp build"):
-148 |                 models.find_llama_release(("macos-arm64",))
-149 | 
+144 |     def test_the_newest_llama_build_with_a_checksum_is_chosen(self):
+145 |         def asset(tag, variant, digest="sha256:" + "a" * 64):
+146 |             name = f"llama-{tag}-bin-{variant}.zip"
+147 |             return {"name": name, "size": 10, "browser_download_url": f"https://x/{name}", "digest": digest}
+148 |         releases = [{"tag_name": "v1.0.0", "assets": [{"name": "nightly-tag.txt"}]},     # placeholder
+149 |                     {"tag_name": "b2", "assets": [asset("b2", "win-vulkan-x64", digest="")]},
+150 |                     {"tag_name": "b1", "assets": [asset("b1", "win-cpu-x64"), asset("b1", "win-vulkan-x64")]}]
+151 |         with mock.patch.object(models, "get_json", return_value=releases):
+152 |             name, url, size, sha = models.find_llama_release(("win-vulkan-x64", "win-cpu-x64"))
+153 |             self.assertEqual((name, sha), ("llama-b1-bin-win-vulkan-x64.zip", "a" * 64))
+154 |             with self.assertRaisesRegex(DownloadError, "no llama.cpp build"):
+155 |                 models.find_llama_release(("macos-arm64",))
+156 | 
 ```
 - Three releases: a placeholder like llama.cpp's real `v1.0.0`, one whose file has no checksum, and one with both
   builds. The Vulkan build of the third is chosen; a platform no release has gives a clear error.
 
 ```python
-150 |     def test_llama_cpp_is_installed_from_a_verified_archive(self):
-151 |         payload = io.BytesIO()
-152 |         with zipfile.ZipFile(payload, "w") as bundle:
-153 |             bundle.writestr("llama-server.exe", b"MZ fake program")
-154 |         data = payload.getvalue()
-155 |         server = RangeServer(data)
-156 |         self.addCleanup(server.close)
-157 |         with tempfile.TemporaryDirectory() as tmp, \
-158 |                 mock.patch.object(models, "HOME", Path(tmp)), \
-159 |                 mock.patch.object(models, "find_llama_release",
-160 |                                   return_value=("llama-b9-bin-win-cpu-x64.zip", server.url, len(data),
-161 |                                                 hashlib.sha256(data).hexdigest())):
-162 |             folder = models.install_llama(lambda _d, _t: None)
-163 |             self.assertEqual(folder, Path(tmp) / "llama" / "llama-b9-bin-win-cpu-x64")
-164 |             self.assertTrue((folder / "llama-server.exe").is_file())
-165 |             self.assertEqual(list((Path(tmp) / "llama" / "downloads").iterdir()), [])   # zip deleted
-166 | 
+157 |     def test_llama_cpp_is_installed_from_a_verified_archive(self):
+158 |         payload = io.BytesIO()
+159 |         with zipfile.ZipFile(payload, "w") as bundle:
+160 |             bundle.writestr("llama-server.exe", b"MZ fake program")
+161 |         data = payload.getvalue()
+162 |         server = RangeServer(data)
+163 |         self.addCleanup(server.close)
+164 |         with tempfile.TemporaryDirectory() as tmp, \
+165 |                 mock.patch.object(models, "HOME", Path(tmp)), \
+166 |                 mock.patch.object(models, "find_llama_release",
+167 |                                   return_value=("llama-b9-bin-win-cpu-x64.zip", server.url, len(data),
+168 |                                                 hashlib.sha256(data).hexdigest())):
+169 |             folder = models.install_llama(lambda _d, _t: None)
+170 |             self.assertEqual(folder, Path(tmp) / "llama" / "llama-b9-bin-win-cpu-x64")
+171 |             self.assertTrue((folder / "llama-server.exe").is_file())
+172 |             self.assertEqual(list((Path(tmp) / "llama" / "downloads").iterdir()), [])   # zip deleted
+173 | 
 ```
 ```python
-167 |     def test_a_model_goes_to_the_models_folder(self):
-168 |         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(models, "HOME", Path(tmp)), \
-169 |                 mock.patch.object(models, "download", return_value=Path("x")) as fetched:
-170 |             model = models.CATALOG[1]
-171 |             models.install_model(model, lambda _d, _t: None)
-172 |             url, target, sha, size, _progress = fetched.call_args.args
-173 |             self.assertEqual((url, target, sha, size),
-174 |                              (model.url, Path(tmp) / "models" / model.file, model.sha256, model.size))
-175 | 
-176 | 
+174 |     def test_a_model_goes_to_the_models_folder(self):
+175 |         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(models, "HOME", Path(tmp)), \
+176 |                 mock.patch.object(models, "download", return_value=Path("x")) as fetched:
+177 |             model = models.CATALOG[1]
+178 |             models.install_model(model, lambda _d, _t: None)
+179 |             url, target, sha, size, _progress = fetched.call_args.args
+180 |             self.assertEqual((url, target, sha, size),
+181 |                              (model.url, Path(tmp) / "models" / model.file, model.sha256, model.size))
+182 | 
+183 | 
 ```
 - A zip holding a fake `llama-server.exe`, served locally, is downloaded, verified, unpacked into its build folder,
   and its archive deleted.
@@ -4340,59 +4348,59 @@ local file server plays GitHub and Hugging Face. 12 tests, about 3 seconds. (The
 
 ## The models command and the settings file
 ```python
-177 | class SetupTests(unittest.TestCase):
+184 | class SetupTests(unittest.TestCase):
 ```
 ```python
-178 |     def test_models_list_and_use(self):
-179 |         with tempfile.TemporaryDirectory() as tmp:
-180 |             home = Path(tmp)
-181 |             (home / "models").mkdir()
-182 |             gguf = home / "models" / "Qwen3-4B-Q4_K_M.gguf"
-183 |             gguf.write_bytes(b"GGUF")
-184 |             settings = home / "settings.json"
-185 |             said: list[str] = []
-186 |             with mock.patch.object(models, "HOME", home), \
-187 |                     mock.patch.object(models, "CHECKOUT", home / "none"), \
-188 |                     mock.patch.object(models, "find_model_file", return_value=gguf), \
-189 |                     mock.patch.dict(os.environ, {"LOCALAGENT_MODEL_FILE": ""}):
-190 |                 self.assertEqual(models.run_models([], Config(), said.append, settings), 0)
-191 |                 self.assertTrue(any(line.startswith("  * ") and "Qwen3-4B" in line for line in said))
-192 |                 self.assertEqual(models.run_models(["use", "qwen3-4b"], Config(), said.append, settings), 0)
-193 |                 self.assertEqual(json.loads(settings.read_text(encoding="utf-8"))["env"]
-194 |                                  ["LOCALAGENT_MODEL_FILE"], str(gguf.resolve()))
-195 |                 self.assertEqual(models.run_models(["use", "qwen3-8b"], Config(), said.append, settings), 2)
-196 |                 self.assertEqual(models.run_models(["download", "nope"], Config(), said.append, settings), 2)
-197 |                 self.assertEqual(models.run_models(["frobnicate"], Config(), said.append, settings), 2)
-198 | 
+185 |     def test_models_list_and_use(self):
+186 |         with tempfile.TemporaryDirectory() as tmp:
+187 |             home = Path(tmp)
+188 |             (home / "models").mkdir()
+189 |             gguf = home / "models" / "Qwen3-4B-Q4_K_M.gguf"
+190 |             gguf.write_bytes(b"GGUF")
+191 |             settings = home / "settings.json"
+192 |             said: list[str] = []
+193 |             with mock.patch.object(models, "HOME", home), \
+194 |                     mock.patch.object(models, "CHECKOUT", home / "none"), \
+195 |                     mock.patch.object(models, "find_model_file", return_value=gguf), \
+196 |                     mock.patch.dict(os.environ, {"LOCALAGENT_MODEL_FILE": ""}):
+197 |                 self.assertEqual(models.run_models([], Config(), said.append, settings), 0)
+198 |                 self.assertTrue(any(line.startswith("  * ") and "Qwen3-4B" in line for line in said))
+199 |                 self.assertEqual(models.run_models(["use", "qwen3-4b"], Config(), said.append, settings), 0)
+200 |                 self.assertEqual(json.loads(settings.read_text(encoding="utf-8"))["env"]
+201 |                                  ["LOCALAGENT_MODEL_FILE"], str(gguf.resolve()))
+202 |                 self.assertEqual(models.run_models(["use", "qwen3-8b"], Config(), said.append, settings), 2)
+203 |                 self.assertEqual(models.run_models(["download", "nope"], Config(), said.append, settings), 2)
+204 |                 self.assertEqual(models.run_models(["frobnicate"], Config(), said.append, settings), 2)
+205 | 
 ```
 ```python
-199 |     def test_saving_a_setting_keeps_the_others(self):
-200 |         with tempfile.TemporaryDirectory() as tmp:
-201 |             path = Path(tmp) / "settings.json"
-202 |             path.write_text('{"permissions": {"allow": ["run_tests"]}}', encoding="utf-8")
-203 |             save_user_env("A", "1", path)
-204 |             save_user_env("B", "2", path)
-205 |             data = json.loads(path.read_text(encoding="utf-8"))
-206 |             self.assertEqual(data, {"permissions": {"allow": ["run_tests"]}, "env": {"A": "1", "B": "2"}})
-207 |             save_user_env("A", None, path)                    # None forgets a setting
-208 |             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["env"], {"B": "2"})
-209 |             if os.name != "nt":                               # it can hold keys: yours alone
-210 |                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-211 | 
+206 |     def test_saving_a_setting_keeps_the_others(self):
+207 |         with tempfile.TemporaryDirectory() as tmp:
+208 |             path = Path(tmp) / "settings.json"
+209 |             path.write_text('{"permissions": {"allow": ["run_tests"]}}', encoding="utf-8")
+210 |             save_user_env("A", "1", path)
+211 |             save_user_env("B", "2", path)
+212 |             data = json.loads(path.read_text(encoding="utf-8"))
+213 |             self.assertEqual(data, {"permissions": {"allow": ["run_tests"]}, "env": {"A": "1", "B": "2"}})
+214 |             save_user_env("A", None, path)                    # None forgets a setting
+215 |             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["env"], {"B": "2"})
+216 |             if os.name != "nt":                               # it can hold keys: yours alone
+217 |                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+218 | 
 ```
 ```python
-212 |     def test_the_commands_are_reached_from_the_command_line(self):
-213 |         with mock.patch.object(cli, "run_models", return_value=0) as listed, \
-214 |                 mock.patch.object(cli, "run_setup", return_value=0) as guided:
-215 |             self.assertEqual(cli.main(["models", "use", "qwen3-4b"]), 0)
-216 |             self.assertEqual(listed.call_args.args[0], ["use", "qwen3-4b"])
-217 |             self.assertEqual(cli.main(["setup"]), 0)
-218 |             self.assertTrue(guided.called)
-219 |         with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
-220 |             cli.main(["--help"])
-221 |         self.assertIn("localagent setup", out.getvalue())
-222 | 
-223 | 
+219 |     def test_the_commands_are_reached_from_the_command_line(self):
+220 |         with mock.patch.object(cli, "run_models", return_value=0) as listed, \
+221 |                 mock.patch.object(cli, "run_setup", return_value=0) as guided:
+222 |             self.assertEqual(cli.main(["models", "use", "qwen3-4b"]), 0)
+223 |             self.assertEqual(listed.call_args.args[0], ["use", "qwen3-4b"])
+224 |             self.assertEqual(cli.main(["setup"]), 0)
+225 |             self.assertTrue(guided.called)
+226 |         with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+227 |             cli.main(["--help"])
+228 |         self.assertIn("localagent setup", out.getvalue())
+229 | 
+230 | 
 ```
 - The list marks the model in use with `*`; `use qwen3-4b` saves its full path; a model that is not there, an unknown
   download and an unknown action each return 2.
@@ -4400,9 +4408,44 @@ local file server plays GitHub and Hugging Face. 12 tests, about 3 seconds. (The
   macOS the file can be read by its owner only (mode 600), because it can hold keys.
 - `localagent models use qwen3-4b` and `localagent setup` reach their functions; `--help` names the commands.
 
+## The release files
 ```python
-224 | if __name__ == "__main__":
-225 |     unittest.main()
+231 | class ReleaseTests(unittest.TestCase):
+```
+```python
+232 |     def test_the_checksum_file_works_with_sha256sum_everywhere(self):
+233 |         with tempfile.TemporaryDirectory() as tmp:
+234 |             first, second = Path(tmp) / "a.zip", Path(tmp) / "b.whl"
+235 |             first.write_bytes(b"abc")
+236 |             second.write_bytes(b"")
+237 |             data = release.write_checksums([first, second], Path(tmp)).read_bytes()
+238 |         self.assertNotIn(b"\r", data)          # Windows line endings break `sha256sum -c` on Linux and macOS
+239 |         self.assertEqual(data.decode("utf-8").splitlines(), [
+240 |             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  a.zip",
+241 |             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  b.whl"])
+242 | 
+```
+```python
+243 |     def test_release_notes_come_from_the_changelog(self):
+244 |         changelog = "# Changelog\n\n## 9.9.9 — today\n\n### Fixed\n- a bug\n\n## 9.9.8 — earlier\n- old\n"
+245 |         notes = release.release_notes("9.9.9", changelog)
+246 |         self.assertTrue(notes.startswith("### Fixed\n- a bug\n\n"))
+247 |         self.assertIn("sha256sum -c SHA256SUMS.txt", notes)
+248 |         self.assertNotIn("old", notes)
+249 |         with self.assertRaises(SystemExit):                   # no section: no release without notes
+250 |             release.release_notes("1.2.3", changelog)
+251 | 
+252 | 
+```
+- The checksum file has no carriage return — on Windows too — and holds the known SHA-256 of "abc" and of an empty
+  file, each followed by two spaces and the name. With the old writer this test fails on Windows: the bug the
+  published 0.6.1 checksum file had.
+- The release notes are this version's section only (not the older one), end with how to check a download, and a
+  version without a section stops the build.
+
+```python
+253 | if __name__ == "__main__":
+254 |     unittest.main()
 ```
 - Lets you run the file directly.
 

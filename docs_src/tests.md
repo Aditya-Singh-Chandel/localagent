@@ -922,12 +922,13 @@ return. 59 tests, about 11 seconds, no model and no internet needed.
 
 **Role:** proves the parts that turn the agent into a downloadable product — verified and resumable downloads, safe
 unpacking, the model catalog, `localagent setup` and `localagent models` — without downloading anything real: a small
-local file server plays GitHub and Hugging Face. 12 tests, about 3 seconds. (The guided setup's own tests are in
+local file server plays GitHub and Hugging Face. 14 tests, about 3 seconds. (The guided setup's own tests are in
 `test_providers.py`, next to the provider choices it offers.)
 
 ## Helpers
 @@ tests/test_product.py header @@
 - `DATA` is 1 MB of test content and `DATA_SHA` its checksum, standing in for a model file.
+- `release` is `tools/build_release.py`, loaded by its path (the `tools` folder is not a package).
 
 @@ tests/test_product.py RangeServer @@
 @@ tests/test_product.py RangeServer.__init__ @@
@@ -980,6 +981,16 @@ local file server plays GitHub and Hugging Face. 12 tests, about 3 seconds. (The
 - Saving two variables keeps the permission rules already in the file; saving `None` forgets one again; on Linux and
   macOS the file can be read by its owner only (mode 600), because it can hold keys.
 - `localagent models use qwen3-4b` and `localagent setup` reach their functions; `--help` names the commands.
+
+## The release files
+@@ tests/test_product.py ReleaseTests @@
+@@ tests/test_product.py ReleaseTests.test_the_checksum_file_works_with_sha256sum_everywhere @@
+@@ tests/test_product.py ReleaseTests.test_release_notes_come_from_the_changelog @@
+- The checksum file has no carriage return — on Windows too — and holds the known SHA-256 of "abc" and of an empty
+  file, each followed by two spaces and the name. With the old writer this test fails on Windows: the bug the
+  published 0.6.1 checksum file had.
+- The release notes are this version's section only (not the older one), end with how to check a download, and a
+  version without a section stops the build.
 
 @@ tests/test_product.py footer @@
 - Lets you run the file directly.

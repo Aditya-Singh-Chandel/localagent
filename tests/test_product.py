@@ -2,6 +2,7 @@
 catalog and `localagent setup` / `localagent models` (no real download, no model needed)."""
 import contextlib
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -18,6 +19,12 @@ from localagent import cli, models
 from localagent.config import Config
 from localagent.fetch import DownloadError, download, extract_archive
 from localagent.settings import save_user_env
+
+_SPEC = importlib.util.spec_from_file_location(
+    "build_release", Path(__file__).resolve().parent.parent / "tools" / "build_release.py")
+assert _SPEC is not None and _SPEC.loader is not None
+release = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(release)
 
 DATA = bytes(range(256)) * 4096                  # 1 MB of test content
 DATA_SHA = hashlib.sha256(DATA).hexdigest()
@@ -219,6 +226,28 @@ class SetupTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
             cli.main(["--help"])
         self.assertIn("localagent setup", out.getvalue())
+
+
+class ReleaseTests(unittest.TestCase):
+    def test_the_checksum_file_works_with_sha256sum_everywhere(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = Path(tmp) / "a.zip", Path(tmp) / "b.whl"
+            first.write_bytes(b"abc")
+            second.write_bytes(b"")
+            data = release.write_checksums([first, second], Path(tmp)).read_bytes()
+        self.assertNotIn(b"\r", data)          # Windows line endings break `sha256sum -c` on Linux and macOS
+        self.assertEqual(data.decode("utf-8").splitlines(), [
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  a.zip",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  b.whl"])
+
+    def test_release_notes_come_from_the_changelog(self):
+        changelog = "# Changelog\n\n## 9.9.9 — today\n\n### Fixed\n- a bug\n\n## 9.9.8 — earlier\n- old\n"
+        notes = release.release_notes("9.9.9", changelog)
+        self.assertTrue(notes.startswith("### Fixed\n- a bug\n\n"))
+        self.assertIn("sha256sum -c SHA256SUMS.txt", notes)
+        self.assertNotIn("old", notes)
+        with self.assertRaises(SystemExit):                   # no section: no release without notes
+            release.release_notes("1.2.3", changelog)
 
 
 if __name__ == "__main__":

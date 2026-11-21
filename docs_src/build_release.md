@@ -85,6 +85,10 @@ website: `tools/build_site.py` (see `build_site.md`) builds a complete, self-con
 @@ tools/build_release.py write_checksums @@
 - `SHA256SUMS.txt` in the standard format, so anyone can check a download (`certutil -hashfile <file> SHA256` on
   Windows, `sha256sum -c SHA256SUMS.txt` elsewhere).
+- Written with Unix line endings (`newline="\n"`) on every system. Python's text mode on Windows writes `\r\n`, and
+  `sha256sum -c` on Linux and macOS then looks for files whose names end in an invisible carriage return — and fails.
+  Found by checking the published 0.6.1 release the way a Linux user would (its file, built on GitHub's Windows
+  machine, had the Windows endings; the release pages got fixed copies).
 
 @@ tools/build_release.py release_notes @@
 - The text of a release page: this version's part of `CHANGELOG.md` (from its `## 0.6.0 — date` heading to the next

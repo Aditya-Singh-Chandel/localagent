@@ -523,6 +523,7 @@ to `.github\`, where GitHub still shows them.
 | (0.6) piped setup answers: the first one was refused | Windows PowerShell 5.1 puts a byte-order mark before piped text | answers drop `﻿` |
 | (0.6) a scripted setup hung asking for a key | Windows' `getpass` reads the keyboard only | `input` when no person is typing |
 | (0.6) `--doctor` said Gemini's model was not offered (custom service) | Gemini lists `models/<name>` | the prefix is removed before comparing |
+| (0.6.1) `sha256sum -c SHA256SUMS.txt` failed on Linux and macOS | the release is built on Windows, where Python's text mode wrote `\r\n` | the file is written with `newline="\n"`; a test; fixed copies on the release pages |
 | (0.6) edit scripts wrote a real line break into a string | `
 ` in a Python string inside a shell heredoc is a line break | edits are written as JSON files or with the editor tool |
 
@@ -537,7 +538,7 @@ to `.github\`, where GitHub still shows them.
 ```
 
 ## 9. Status and honest limits
-* **Now (version 0.6, 21 Nov 2026):** 259 unit tests pass (real Docker when running, a fake MCP server, fake model,
+* **Now (version 0.6, 21 Nov 2026):** 261 unit tests pass (real Docker when running, a fake MCP server, fake model,
   llama.cpp and online-service servers, local web servers, every installed language checker); ruff and mypy clean;
   docs audit passes (41 pages, every code line documented exactly once); CI is green on Linux (Python 3.10-3.14),
   Windows and the real Docker sandbox. Checked live: the local model through the automatic start (section 6g), and

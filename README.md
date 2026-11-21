@@ -122,7 +122,7 @@ every line of code is documented in its page under [docs/](docs).
 
 ```
 python -m venv .venv && .venv\Scripts\python -m pip install -e ".[dev]"
-.venv\Scripts\python -m unittest discover -s tests -t .     # 259 tests, no model needed
+.venv\Scripts\python -m unittest discover -s tests -t .     # 261 tests, no model needed
 .venv\Scripts\python tools\build_docs.py                    # rebuild and audit the docs
 .venv\Scripts\python tools\build_release.py                 # the wheel and the portable Windows zip
 .venv\Scripts\python tools\build_site.py                    # the website, ready to upload anywhere
