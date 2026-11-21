@@ -45,7 +45,8 @@ def walk_files(root: Path) -> Iterator[Path]:
 
 def _in_git_repo(root: Path) -> bool:
     """True when ``root`` or a folder above it holds a ``.git`` entry (folder or file)."""
-    return any((folder / ".git").exists() for folder in (root, *root.parents))
+    real = root.resolve()
+    return any((folder / ".git").exists() for folder in (real, *real.parents))
 
 
 def project_files(root: Path) -> Iterator[Path]:
@@ -53,9 +54,10 @@ def project_files(root: Path) -> Iterator[Path]:
 
     ``git ls-files`` knows the ignore rules exactly (nested .gitignore files, global
     excludes), so build output and downloads the project ignores never reach the model.
-    Without git, or outside a repository, every file is walked as usual.
+    Without git, or outside a repository, every file is walked as usual. Paths come back in the
+    form ``root`` was given (like ``walk_files``), so ``relative_to(root)`` always works - on
+    Windows a folder may be named in two ways (``RUNNER~1`` and ``runneradmin``).
     """
-    root = root.resolve()
     listed = None
     if _in_git_repo(root):
         try:

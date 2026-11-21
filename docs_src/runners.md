@@ -104,7 +104,13 @@ The image is built from `docker/sandbox.Dockerfile` (explained in `docker.md`).
   - `--pids-limit 256` stops "fork bombs" (programs that create processes endlessly);
   - `--security-opt no-new-privileges` stops programs from gaining extra rights;
   - `-v <workspace>:/work -w /work` mounts the workspace and starts there;
-  - `--network none` unless `sandbox_network` is on (`--network` flag).
+  - `--network none` unless `sandbox_network` is on (`--network` flag);
+  - on Linux and macOS, `--user <your user id>:<your group id>` and `HOME=/tmp`: there the shared folder keeps the
+    host's file ownership, so the image's own user (id 1000) could not read a workspace belonging to another user id,
+    and files the code creates would belong to a stranger. Running as you keeps every file yours — and still not as
+    root (when you yourself are root, the image's normal user is kept). Docker Desktop on Windows does not enforce
+    ownership, so nothing is added there. Found while adding the CI job that builds and runs the sandbox on Linux,
+    where the runner's user id is 1001.
 - If Docker fails (for example Docker Desktop is not running) the error says so. On success it remembers it started
   and registers `stop` to run at exit.
 

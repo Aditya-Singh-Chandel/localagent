@@ -287,13 +287,17 @@ The image is built from `docker/sandbox.Dockerfile` (explained in `docker.md`).
 172 |                 "-v", f"{self._root}:{CONTAINER_WORKDIR}", "-w", CONTAINER_WORKDIR]
 173 |         if not self._cfg.sandbox_network:
 174 |             argv += ["--network", "none"]
-175 |         code, out = self._docker(*argv, self._cfg.sandbox_image)
-176 |         if code != 0:
-177 |             raise RuntimeError(f"Could not start the sandbox container: {out.strip()[:300]}\n"
-178 |                                "Is Docker Desktop running?")
-179 |         self._started = True
-180 |         atexit.register(self.stop)
-181 | 
+175 |         if sys.platform != "win32":
+176 |             uid, gid = os.getuid(), os.getgid()
+177 |             if uid != 0:                           # Linux/macOS: the files stay yours (see docs)
+178 |                 argv += ["--user", f"{uid}:{gid}", "-e", "HOME=/tmp"]
+179 |         code, out = self._docker(*argv, self._cfg.sandbox_image)
+180 |         if code != 0:
+181 |             raise RuntimeError(f"Could not start the sandbox container: {out.strip()[:300]}\n"
+182 |                                "Is Docker Desktop running?")
+183 |         self._started = True
+184 |         atexit.register(self.stop)
+185 | 
 ```
 - Does nothing if already started.
 - Checks that the sandbox image exists; if not, raises an error that contains the exact build command.
@@ -303,21 +307,27 @@ The image is built from `docker/sandbox.Dockerfile` (explained in `docker.md`).
   - `--pids-limit 256` stops "fork bombs" (programs that create processes endlessly);
   - `--security-opt no-new-privileges` stops programs from gaining extra rights;
   - `-v <workspace>:/work -w /work` mounts the workspace and starts there;
-  - `--network none` unless `sandbox_network` is on (`--network` flag).
+  - `--network none` unless `sandbox_network` is on (`--network` flag);
+  - on Linux and macOS, `--user <your user id>:<your group id>` and `HOME=/tmp`: there the shared folder keeps the
+    host's file ownership, so the image's own user (id 1000) could not read a workspace belonging to another user id,
+    and files the code creates would belong to a stranger. Running as you keeps every file yours — and still not as
+    root (when you yourself are root, the image's normal user is kept). Docker Desktop on Windows does not enforce
+    ownership, so nothing is added there. Found while adding the CI job that builds and runs the sandbox on Linux,
+    where the runner's user id is 1001.
 - If Docker fails (for example Docker Desktop is not running) the error says so. On success it remembers it started
   and registers `stop` to run at exit.
 
 ```python
-182 |     def stop(self) -> None:
-183 |         """Remove the container (safe to call more than once, even after the folder is gone)."""
-184 |         if not self._started:
-185 |             return
-186 |         self._started = False
-187 |         try:                                       # no cwd: the workspace may already be deleted
-188 |             subprocess.run(["docker", "rm", "-f", self.name], capture_output=True, timeout=60)
-189 |         except (OSError, subprocess.TimeoutExpired):
-190 |             pass                                   # best effort; `docker ps` shows leftovers
-191 | 
+186 |     def stop(self) -> None:
+187 |         """Remove the container (safe to call more than once, even after the folder is gone)."""
+188 |         if not self._started:
+189 |             return
+190 |         self._started = False
+191 |         try:                                       # no cwd: the workspace may already be deleted
+192 |             subprocess.run(["docker", "rm", "-f", self.name], capture_output=True, timeout=60)
+193 |         except (OSError, subprocess.TimeoutExpired):
+194 |             pass                                   # best effort; `docker ps` shows leftovers
+195 | 
 ```
 - Removes the container with `docker rm -f`. It deliberately runs **without** a working folder: in the eval harness the
   temporary workspace may already be deleted when clean-up runs, and Windows refuses to start a program in a folder that
@@ -325,44 +335,44 @@ The image is built from `docker/sandbox.Dockerfile` (explained in `docker.md`).
   and `docker ps` shows any leftovers.
 
 ```python
-192 |     def _tests_command(self) -> list[str]:
-193 |         """The project's test command inside the container (see ``test_kind``)."""
-194 |         kind = test_kind(self._root)
-195 |         if kind == "npm":
-196 |             return ["npm", "test"]
-197 |         if kind == "go":
-198 |             return ["go", "test", "./..."]
-199 |         if kind == "cargo":
-200 |             return ["cargo", "test"]
-201 |         return ["sh", "-c", PYTHON_TESTS_SH.format(start=_unittest_start(self._root))]
-202 | 
+196 |     def _tests_command(self) -> list[str]:
+197 |         """The project's test command inside the container (see ``test_kind``)."""
+198 |         kind = test_kind(self._root)
+199 |         if kind == "npm":
+200 |             return ["npm", "test"]
+201 |         if kind == "go":
+202 |             return ["go", "test", "./..."]
+203 |         if kind == "cargo":
+204 |             return ["cargo", "test"]
+205 |         return ["sh", "-c", PYTHON_TESTS_SH.format(start=_unittest_start(self._root))]
+206 | 
 ```
 - The same choice as on the host, inside the container: `npm test`, `go test ./...`, `cargo test`, or the Python
   command `PYTHON_TESTS_SH` (pytest when installed — the sandbox image has it — else unittest). The container's own
   Python is used: a Windows virtual environment cannot run on Linux.
 
 ```python
-203 |     def run(self, kind: str, args: list[str]) -> tuple[int, str]:
-204 |         """Run inside the container; a timeout also kills the processes inside it."""
-205 |         try:
-206 |             self.start()
-207 |         except RuntimeError as exc:
-208 |             return 125, str(exc)
-209 |         seconds = self._cfg.command_timeout
-210 |         if kind == "python":
-211 |             inner = ["python", *args]
-212 |         elif kind == "tests":
-213 |             inner = ["sh", "-c", args[0]] if args else self._tests_command()
-214 |             seconds = max(self._cfg.test_timeout, seconds)
-215 |         else:
-216 |             inner = ["sh", "-c", args[0]]
-217 |         argv = ["docker", "exec", self.name, "timeout", "-s", "KILL", str(seconds), *inner]
-218 |         code, out = run_command(argv, self._root, seconds + 15, self._cfg.max_output_chars)
-219 |         if code == 137:                           # killed by `timeout -s KILL`
-220 |             return 124, f"Command timed out after {seconds}s and was killed.\n{out}"
-221 |         return code, out
-222 | 
-223 | 
+207 |     def run(self, kind: str, args: list[str]) -> tuple[int, str]:
+208 |         """Run inside the container; a timeout also kills the processes inside it."""
+209 |         try:
+210 |             self.start()
+211 |         except RuntimeError as exc:
+212 |             return 125, str(exc)
+213 |         seconds = self._cfg.command_timeout
+214 |         if kind == "python":
+215 |             inner = ["python", *args]
+216 |         elif kind == "tests":
+217 |             inner = ["sh", "-c", args[0]] if args else self._tests_command()
+218 |             seconds = max(self._cfg.test_timeout, seconds)
+219 |         else:
+220 |             inner = ["sh", "-c", args[0]]
+221 |         argv = ["docker", "exec", self.name, "timeout", "-s", "KILL", str(seconds), *inner]
+222 |         code, out = run_command(argv, self._root, seconds + 15, self._cfg.max_output_chars)
+223 |         if code == 137:                           # killed by `timeout -s KILL`
+224 |             return 124, f"Command timed out after {seconds}s and was killed.\n{out}"
+225 |         return code, out
+226 | 
+227 | 
 ```
 - Starts the container if needed (a start failure becomes exit code 125 with the advice text, so the model and you
   see it instead of a crash).
@@ -374,42 +384,42 @@ The image is built from `docker/sandbox.Dockerfile` (explained in `docker.md`).
 
 ## Choosing and checking
 ```python
-224 | def make_runner(config: Config, root: Path) -> Runner:
-225 |     """Pick the runner named by ``config.sandbox``."""
-226 |     if config.sandbox == "docker":
-227 |         return DockerRunner(config, root)
-228 |     if config.sandbox == "local":
-229 |         return LocalRunner(config, root)
-230 |     raise ValueError(f"unknown sandbox '{config.sandbox}'. Choose 'local' or 'docker'.")
-231 | 
-232 | 
+228 | def make_runner(config: Config, root: Path) -> Runner:
+229 |     """Pick the runner named by ``config.sandbox``."""
+230 |     if config.sandbox == "docker":
+231 |         return DockerRunner(config, root)
+232 |     if config.sandbox == "local":
+233 |         return LocalRunner(config, root)
+234 |     raise ValueError(f"unknown sandbox '{config.sandbox}'. Choose 'local' or 'docker'.")
+235 | 
+236 | 
 ```
 - Builds the runner named by `config.sandbox`, or explains the valid names.
 
 ```python
-233 | def sandbox_image_ready(image: str) -> bool:
-234 |     """True when Docker answers AND the sandbox image exists (one quick command)."""
-235 |     try:
-236 |         done = subprocess.run(["docker", "image", "inspect", image], capture_output=True,
-237 |                               timeout=20)
-238 |     except (OSError, subprocess.TimeoutExpired):
-239 |         return False
-240 |     return done.returncode == 0
-241 | 
-242 | 
+237 | def sandbox_image_ready(image: str) -> bool:
+238 |     """True when Docker answers AND the sandbox image exists (one quick command)."""
+239 |     try:
+240 |         done = subprocess.run(["docker", "image", "inspect", image], capture_output=True,
+241 |                               timeout=20)
+242 |     except (OSError, subprocess.TimeoutExpired):
+243 |         return False
+244 |     return done.returncode == 0
+245 | 
+246 | 
 ```
 - One `docker image inspect <image>`: succeeds only when the Docker engine answers **and** the image exists. The CLI uses
   it to pick the Docker sandbox automatically.
 
 ```python
-243 | def docker_available() -> bool:
-244 |     """True when the docker command exists and its daemon answers."""
-245 |     try:
-246 |         done = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"],
-247 |                               capture_output=True, text=True, timeout=20)
-248 |     except (OSError, subprocess.TimeoutExpired):
-249 |         return False
-250 |     return done.returncode == 0
+247 | def docker_available() -> bool:
+248 |     """True when the docker command exists and its daemon answers."""
+249 |     try:
+250 |         done = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"],
+251 |                               capture_output=True, text=True, timeout=20)
+252 |     except (OSError, subprocess.TimeoutExpired):
+253 |         return False
+254 |     return done.returncode == 0
 ```
 - Runs `docker info`; `True` only if the `docker` program exists **and** the Docker engine answers. Used by
   `--doctor` and to skip the Docker test when Docker is not running.

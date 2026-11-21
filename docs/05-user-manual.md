@@ -71,7 +71,7 @@ shows calls, tokens, time and **which model answered**.
 ### Commands outside the chat
 | Command | Does | File |
 |---|---|---|
-| `localagent setup` | guided first run: checks or asks for the Gemini key (saved in your user settings), suggests a model for this computer's memory and offers to download it and llama.cpp, checks Docker | `models.py` |
+| `localagent setup` | guided first run: the online service (Gemini free, or OpenAI, Anthropic, OpenRouter, Groq, Mistral, DeepSeek, any OpenAI-compatible address — key checked before it is saved, model suggested), the offline model (a server you already run, found by itself: Ollama, LM Studio, llama.cpp, vLLM, Jan; a free model downloaded for you; or a server at another address), and Docker. Also offered by itself on the very first `localagent` | `wizard.py` |
 | `localagent models` | installed models (`*` = in use), the catalog, the suggestion for this computer | `models.py` |
 | `localagent models download NAME` | fetch `qwen3-8b`, `qwen3-4b` or `qwen3-1.7b` — resumable, checksum-verified | `models.py`, `fetch.py` |
 | `localagent models use NAME-or-FILE` | the model offline mode uses from now on | `models.py` |
@@ -98,6 +98,7 @@ shows calls, tokens, time and **which model answered**.
 | `--reasoning low` | less hidden "thinking" on models that support it (faster, fewer tokens) |
 | `--type-check` | also run mypy on Python files |
 | `--doctor` | check the whole setup and exit |
+| `--provider NAME[:MODEL]` | the online service for this run, e.g. `--provider groq` or `--provider anthropic:claude-haiku-5-5` |
 | `--no-auto` | no automatic choices |
 
 Service mode (`python -m localagent.server`) has its own flags: `--host`, `--port`, `--token`, `--root`,
@@ -110,6 +111,11 @@ Service mode (`python -m localagent.server`) has its own flags: `--host`, `--por
 |---|---|
 | `GEMINI_API_KEY` | your Gemini key (never put it in code or in a project's settings file) |
 | `LOCALAGENT_MODE` | `auto` (default), `online` or `offline` |
+| `LOCALAGENT_PROVIDER` | the online service: `gemini` (default), `openai`, `anthropic`, `openrouter`, `groq`, `mistral`, `deepseek` or `custom` |
+| `LOCALAGENT_PROVIDER_MODEL` | that service's model (Gemini uses its own chain) |
+| `LOCALAGENT_PROVIDER_BASE` | its address — needed for `custom`, possible for any (e.g. a company proxy) |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `LOCALAGENT_PROVIDER_KEY` | each service's key, under its usual name (`LOCALAGENT_PROVIDER_KEY` for `custom`) |
+| `LOCALAGENT_LOCAL_SERVER` | which local model counts: empty (any that answers), `openai` (the server at `LOCALAGENT_API_BASE`) or `ollama` |
 | `LOCALAGENT_MODEL_FILE`, `LOCALAGENT_LLAMA_SERVER` | the local model (`.gguf`) and llama.cpp's `llama-server` (default: looked for, see `01-setup-and-models.md`) |
 | `LOCALAGENT_GPU_LAYERS` | model layers on the graphics card (default: as many as fit; `0` = processor only) |
 | `LOCALAGENT_LOCAL_CTX`, `LOCALAGENT_THREADS` | the local model's context window (default 8192) and CPU threads (default: automatic) |

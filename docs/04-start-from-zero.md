@@ -192,7 +192,7 @@ localagent 0.6.0 | auto | gemini:gemini-3.5-flash-lite > gemini-3.1-flash-lite >
   mode auto: Gemini answers (GEMINI_API_KEY is set)
   offline backup: Qwen3-8B-Q4_K_M.gguf with llama.cpp (started when needed)
   sandbox: docker (Docker and the sandbox image are ready)
-  history budget: 32768 tokens (Gemini handles long conversations)
+  history budget: 32768 tokens (online models handle long conversations)
 ```
 (`localagent --offline` uses only the local model, `--online` only Gemini; `/model` switches later. Flags such as
 `--backend`, `--sandbox` or `--no-auto` override the automatic choices. Without the installer:

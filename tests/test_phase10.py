@@ -470,6 +470,18 @@ class SessionAndUndoTests(unittest.TestCase):
             self.assertIn("left 1 file(s) alone", message)
             self.assertEqual(points.undo(), "nothing to undo")
 
+    def test_a_same_size_edit_in_the_same_clock_tick_is_still_seen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "keep.txt"
+            path.write_text("v1", encoding="utf-8")
+            stamp = path.stat().st_mtime_ns
+            points = Checkpoints(Path(tmp))
+            points.take()
+            path.write_text("v2", encoding="utf-8")              # same size ...
+            os.utime(path, ns=(stamp, stamp))                    # ... and the same coarse time stamp
+            self.assertIn("restored 1", points.undo())          # seen anyway (it was "racy")
+            self.assertEqual(path.read_text(encoding="utf-8"), "v1")
+
     def test_snapshots_store_each_content_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             for i in range(5):
@@ -670,12 +682,12 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(config.fallback_backend, "ollama")
         config, notes = self.choose("auto", local="openai")
         self.assertEqual((config.backend, config.num_ctx), ("local", 8192))
-        self.assertIn("no GEMINI_API_KEY", notes[0])
+        self.assertIn("no online model is set up", notes[0])
         config, _ = self.choose("offline", key="k", local="local")
         self.assertEqual((config.backend, config.mode), ("local", "offline"))
 
     def test_impossible_modes_say_what_to_do(self):
-        with self.assertRaisesRegex(ValueError, "online mode needs a Gemini key"):
+        with self.assertRaisesRegex(ValueError, "online mode needs a working online model: GEMINI_API_KEY"):
             self.choose("online")
         with self.assertRaisesRegex(ValueError, "No local model"):
             self.choose("offline", key="k")

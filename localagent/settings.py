@@ -71,13 +71,21 @@ def load_settings(workspace: Path, user_file: Path = USER_SETTINGS) -> dict:
     return merged
 
 
-def save_user_env(name: str, value: str, path: Path = USER_SETTINGS) -> Path:
+def save_user_env(name: str, value: str | None, path: Path = USER_SETTINGS) -> Path:
     """Remember ``name=value`` in your user settings file's ``env`` (used by `localagent setup`
-    and `localagent models use`); the rest of the file is kept as it is."""
+    and `localagent models use`); ``None`` forgets the name. The rest of the file is kept as it
+    is. The file can hold keys, so on Linux and macOS only you may read it (Windows already
+    keeps your user folder to you)."""
     data = read_json(path)
-    data.setdefault("env", {})[name] = value
+    env = data.setdefault("env", {})
+    if value is None:
+        env.pop(name, None)
+    else:
+        env[name] = value
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        path.chmod(0o600)
     return path
 
 

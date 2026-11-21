@@ -1,21 +1,23 @@
-# Online and offline: Gemini, or a brain on your own computer
+# Online and offline: an online service, or a brain on your own computer
 
-The agent has two kinds of brain and switches between them for you:
+The agent has two kinds of brain and switches between them for you. Online, Google Gemini is the default because its
+key is free; any other service works with your own key (see "Other online services" below). Offline, it uses a model
+server you already run, or downloads and runs a free model for you. `localagent setup` offers all of it.
 
 | | **Online** — Gemini | **Offline** — the local model |
 |---|---|---|
 | Runs on | Google's servers | your own PC (llama.cpp, or Ollama / LM Studio) |
 | Needs | internet + a free key (`04-start-from-zero.md`, Step 6) | ~6 GB of free memory, two files (below) |
-| Speed (this laptop) | 1-3 s per step | 20-60 s per step |
+| Speed (the reference laptop) | 1-3 s per step | 20-60 s per step |
 | Quality (15 eval tasks) | 15/15 | 12/15 |
 | Limits | daily quota per model | none |
 | Your code goes to | Google | nowhere — it stays on your computer |
 
 ## The three modes
-- **auto** (the default): Gemini answers. When Gemini cannot be reached — no internet — or its daily quota is gone,
-  the local model answers instead, **by itself and immediately**, and Gemini takes over again when it is back. Without
-  a Gemini key, auto simply uses the local model.
-- **online**: only Gemini. Nothing local is started.
+- **auto** (the default): the online model answers. When it cannot be reached — no internet — or its daily quota is
+  gone, the local model answers instead, **by itself and immediately**, and the online model takes over again when it
+  is back. With nothing online set up, auto simply uses the local model.
+- **online**: only the online model. Nothing local is started.
 - **offline**: only the local model. Nothing is sent to the internet.
 
 Choose when you start (`localagent --offline`, `localagent --online`), make it your default (`setx LOCALAGENT_MODE
@@ -29,6 +31,34 @@ you> /model auto            (or /auto)    back to automatic
 The conversation and your files stay as they are; only who answers changes. After every request the last line names
 the model that answered (`... | gemini-3.5-flash-lite` or `... | local:Qwen3-8B-Q4_K_M`), so you always know whether
 the internet was used.
+
+## Other online services
+Gemini's free key is the easiest start; nothing else is needed. If you already pay for another service, or want a
+different model, `localagent setup` offers it (step 1) and checks the key by listing the service's models, which
+costs nothing:
+
+| Service | Key variable | Notes (Nov 2026) |
+|---|---|---|
+| OpenAI | `OPENAI_API_KEY` | pay per use; suggested model `gpt-5-mini` |
+| Anthropic | `ANTHROPIC_API_KEY` | pay per use; suggested `claude-sonnet-5-5` |
+| OpenRouter | `OPENROUTER_API_KEY` | one key, hundreds of models, some free (`:free` names) |
+| Groq | `GROQ_API_KEY` | free tier, very fast |
+| Mistral | `MISTRAL_API_KEY` | free tier |
+| DeepSeek | `DEEPSEEK_API_KEY` | very low prices |
+| any OpenAI-compatible address | `LOCALAGENT_PROVIDER_KEY` (optional) | Together, Fireworks, a company gateway, a big GPU box |
+
+A key you already set for other tools is found by itself (setup marks it `[key found]`). For one run only:
+`localagent --provider groq` or `--provider openai:gpt-5`. The suggested models are a starting point: setup lists
+what your key really offers, and any of them can be typed. Only Gemini was checked live with real keys; the others
+are tested against a local stand-in that answers the same way (`tests/test_providers.py`). Each service has its own
+privacy rules — offline mode is the one where nothing leaves your computer.
+
+## A model server you already run
+Ollama, LM Studio, llama.cpp's server, vLLM and Jan are found by `localagent setup` when they run at their usual
+address, and offered first with their models. Choose one and the agent uses it — and only it — for offline work.
+A server on another computer works too: "a model server at another address", e.g. `http://192.168.1.20:8080/v1`.
+With Ollama the agent uses Ollama's own interface, because only that one lets it ask for an 8K context window
+(`LOCALAGENT_LOCAL_CTX`); with the others, load the model with a context of at least 8K in that program.
 
 ## What offline needs, and where to put it
 Two files: the **llama.cpp server program** (`llama-server.exe`) and a **model** (a `.gguf` file). The agent looks in
@@ -72,7 +102,7 @@ It listens only on `127.0.0.1`, so no other computer can use it. Details: `local
 - **Already running a server?** `serve.ps1`, Ollama or LM Studio — the agent uses it instead of starting one, and does
   not stop it.
 
-## Your machine (measured)
+## The reference laptop (where every number in these docs was measured)
 15.7 GB RAM · Intel i7-1255U · NVIDIA MX550 with 2 GB of graphics memory · Python 3.14.0b1 (a beta build; the code
 also runs on 3.10-3.13, which CI tests).
 Consequence: models run mostly on the processor from normal memory. Budget about 6 GB for the model, so an **8B

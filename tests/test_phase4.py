@@ -14,7 +14,7 @@ from localagent.llm import LLMError, Reply
 from localagent.openai_compat import OpenAICompatClient, to_openai
 from localagent.ratelimit import QuotaExhausted, RateLimiter, pacific_day
 from localagent.resilient import Entry, FallbackBackend, estimate_tokens, server_delay
-from localagent.runners import DockerRunner, LocalRunner, docker_available
+from localagent.runners import DockerRunner, LocalRunner, docker_available, sandbox_image_ready
 from localagent.tools import ToolBox
 
 from .test_phase2 import FakeServer
@@ -278,7 +278,9 @@ class GeminiWireTests(unittest.TestCase):
                 return {"data": [{"id": "models/m1"}, {"id": "models/m2"}]}
             raise OSError("connection refused")             # the backup server is not running
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch("localagent.doctor._get_json", side_effect=fake_get):
+                mock.patch("localagent.doctor._get_json", side_effect=fake_get), \
+                mock.patch("localagent.doctor.running_local", return_value=""), \
+                mock.patch("localagent.doctor.find_llama_server", return_value=None):
             config = replace(Config(), backend="gemini", gemini_api_key="k", gemini_models=("m1",),
                              gemini_strong_models=("m2",), fallback_backend="openai",
                              usage_file=Path(tmp) / "usage.json")
@@ -305,7 +307,8 @@ class RunnerTests(unittest.TestCase):
             self.assertIn("ERROR", box.call("run_shell", {"command": "  "}))
             box.close()                                      # never started: nothing to stop
 
-    @unittest.skipUnless(docker_available(), "Docker is not running")
+    @unittest.skipUnless(docker_available() and sandbox_image_ready("localagent-sandbox:latest"),
+                         "Docker is not running, or the sandbox image is not built")
     def test_docker_sandbox_isolation_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = replace(Config(), workspace=Path(tmp), sandbox="docker", command_timeout=20)
@@ -313,9 +316,10 @@ class RunnerTests(unittest.TestCase):
             try:
                 box.call("write_file", {"path": "hi.py", "content": "print('from container')\n"})
                 self.assertIn("from container", box.call("run_python", {"path": "hi.py"}))
-                who = box.call("run_shell", {"command": "whoami && pwd"})
-                self.assertIn("agent", who)                  # not root
-                self.assertIn("/work", who)
+                who = box.call("run_shell", {"command": "id -u && pwd"}).splitlines()
+                self.assertEqual(who[0], "exit code 0")
+                self.assertNotEqual(who[1], "0")             # not root
+                self.assertEqual(who[2], "/work")
                 net = box.call("run_shell", {"command": "python -c \"import urllib.request as u; "
                                              "u.urlopen('http://example.com', timeout=5)\""})
                 self.assertNotIn("exit code 0", net)         # no network by default

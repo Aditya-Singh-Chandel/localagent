@@ -1,0 +1,26 @@
+name: release
+# Push a tag such as v0.6.0 (it must match localagent/__init__.py) and this builds the wheel and the
+# portable Windows zip on a clean Windows machine and publishes them, with SHA256SUMS.txt and the
+# version's CHANGELOG section, as a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write          # to create the release and upload its files; nothing else
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: python tools/build_release.py --tag "${{ github.ref_name }}"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ github.ref_name }}"
+          --title "localagent ${{ github.ref_name }}"
+          --notes-file build/RELEASE_NOTES.md
+          (Get-ChildItem dist -File).FullName

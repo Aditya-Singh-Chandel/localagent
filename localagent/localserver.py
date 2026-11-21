@@ -70,10 +70,11 @@ def ollama_up(host: str) -> bool:
 
 
 def running_local(config: Config) -> str:
-    """Which local model server answers now: "openai" (llama.cpp, LM Studio...), "ollama" or ""."""
-    if server_up(config.api_base):
+    """Which local model server answers now: "openai" (llama.cpp, LM Studio...), "ollama" or "".
+    With ``local_server`` set, only that kind counts."""
+    if config.local_server in ("", "openai") and server_up(config.api_base):
         return "openai"
-    if ollama_up(config.host):
+    if config.local_server in ("", "ollama") and ollama_up(config.host):
         return "ollama"
     return ""
 
@@ -125,6 +126,10 @@ def describe_local(config: Config) -> str:
         return f"the model server at {config.api_base} (running)"
     if kind == "ollama":
         return f"Ollama at {config.host}, model {config.model} (running)"
+    if config.local_server == "ollama":
+        return f"Ollama at {config.host}, model {config.model} (not running now: start Ollama)"
+    if config.local_server == "openai" and not can_start(config):
+        return f"the model server at {config.api_base} (not answering now)"
     model = find_model_file(config)
     if can_start(config) and model is not None:
         return f"{model.name} with llama.cpp (started when needed)"

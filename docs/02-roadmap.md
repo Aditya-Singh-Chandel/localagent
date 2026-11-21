@@ -1,4 +1,4 @@
-# Roadmap — from this laptop agent to a scalable system
+# Roadmap — from a laptop agent to a scalable system
 
 Legend: ✅ built and tested · 🔜 next · 📋 planned. Status is honest: only ✅ items exist in the code today.
 

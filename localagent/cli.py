@@ -2,9 +2,10 @@
 
 Start it inside a project folder:  localagent        (or: python -m localagent)
 One request, answer printed:       localagent -p "what does this project do?"
-The model follows the mode: "auto" (the default) answers with Gemini when a key is set and
-with the local model when Gemini cannot be reached; "online" uses only Gemini; "offline" only
-the local model. Choose with --online / --offline, or switch any time in the chat with /model.
+The model follows the mode: "auto" (the default) answers with the online model (Gemini, or the
+service chosen in `localagent setup`) and with the local model when that cannot be reached;
+"online" uses only the online model; "offline" only the local one. Choose with --online /
+--offline, or switch any time in the chat with /model.
 Everything else is chosen from what this computer has (the Docker sandbox when it is ready);
 --backend and --no-auto still let you set everything by hand.
 """
@@ -21,21 +22,23 @@ from typing import Callable
 
 from . import __version__
 from .agent import Agent
-from .backends import BACKENDS, GEMINI_KEY_HELP, make_backend
+from .backends import BACKENDS, make_backend
 from .checkpoint import Checkpoints
-from .config import MODES, Config, gemini_history, overlay
+from .config import MODES, Config, gemini_history, online_problem, overlay, with_provider
 from .doctor import run_doctor
 from .llm import ChatBackend, LLMError
 from .localserver import (NO_LOCAL_MODEL, SETUP_HINT, LocalModel, can_start, describe_local,
                           find_model_file, ollama_up, server_up, stop_local_servers)
 from .meter import Meter
-from .models import run_models, run_setup
+from .models import run_models
+from .providers import PROVIDERS, find_provider
 from .runners import sandbox_image_ready
 from .sandbox import SandboxError, looks_binary, resolve_inside, run_command, shell_argv
 from .session import SessionLog, latest_session, list_sessions, load_session, session_title
 from .settings import (PROJECT_SETTINGS, USER_SETTINGS, Permissions, apply_env, expand_command,
                        load_commands, load_settings, suggest_rule)
 from .tools import Approval, ToolBox, read_text, write_text
+from .wizard import run_setup
 
 HELP = """Commands:
   /plan <request>    look first, show a plan, then carry it out if you agree
@@ -64,15 +67,16 @@ INIT_TOOLS = frozenset({"write_file"})           # /init may read anything but o
 PLAN_FOLLOW_UP = "Implement the plan above step by step, verify the result, then finish."
 BUILT_IN = {"/quit", "/exit", "/help", "/reset", "/clear", "/undo", "/stats", "/compact", "/init",
             "/plan", "/model", "/online", "/offline", "/auto", "/resume", "/permissions", "/doctor"}
-MODE_TEXT = {"auto": "Gemini, and the local model when Gemini cannot be reached",
-             "online": "Gemini only", "offline": "the local model only"}
+MODE_TEXT = {"auto": "the online model, and the local model when it cannot be reached",
+             "online": "the online model only", "offline": "the local model only"}
 NOTHING_HELP = ("No model is available yet. The guided setup takes a minute:  localagent setup\n"
-                "Or by hand (one or both):\n"
-                f"  online:  {GEMINI_KEY_HELP}\n  offline: {NO_LOCAL_MODEL}\n"
+                "It offers a free Gemini key; your own key for OpenAI, Anthropic, OpenRouter, Groq, "
+                "Mistral or DeepSeek;\na model server you already run (Ollama, LM Studio, llama.cpp); "
+                "or a free model it downloads and runs for you.\n"
                 "Then run  localagent --doctor  to check.")
 SUBCOMMANDS = ("setup", "models")                # product commands, handled before the flags
-COMMANDS_EPILOG = ("commands:\n  localagent setup            guided first run: Gemini key, offline "
-                   "model, Docker\n  localagent models           local models: list, download NAME, "
+COMMANDS_EPILOG = ("commands:\n  localagent setup            guided first run: online service and key, "
+                   "offline model, Docker\n  localagent models           local models: list, download NAME, "
                    "use NAME-or-FILE")
 MENTION = re.compile(r"(?<!\S)@([^\s@]+)")       # "@src/app.py", not an e-mail address
 COLORS = {"+": "32", "-": "31", "@": "36"}       # diff lines: green, red, cyan
@@ -144,6 +148,9 @@ def build_parser() -> argparse.ArgumentParser:
                                      epilog=COMMANDS_EPILOG,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=f"localagent {__version__}")
+    parser.add_argument("--provider", metavar="NAME[:MODEL]",
+                        help="the online service: " + ", ".join(p.name for p in PROVIDERS)
+                             + " - with a model if you like, e.g. openai:gpt-5-mini")
     parser.add_argument("-p", "--print", dest="prompt", metavar="REQUEST",
                         help="answer one request, print the answer and exit ('-' reads it from input)")
     add_model_flags(parser)
@@ -171,13 +178,21 @@ def build_config(args: argparse.Namespace) -> Config:
     config = overlay(Config.from_env(), **model_flags(args), workspace=args.workspace,
                      num_ctx=args.num_ctx, fallback_backend=args.fallback,
                      reasoning_effort=args.reasoning)
-    return replace(config, type_check=args.type_check, auto_approve=args.auto_approve,
-                   sandbox_network=args.network, allow_host_shell=args.allow_shell)
+    config = replace(config, type_check=args.type_check, auto_approve=args.auto_approve,
+                     sandbox_network=args.network, allow_host_shell=args.allow_shell)
+    if args.provider:                              # --provider NAME[:MODEL]
+        name, _, model = args.provider.partition(":")
+        kept = config.provider_model if name.strip().lower() == config.provider else ""
+        config = with_provider(config, name, model or kept)
+    return config
 
 
 def local_kind(config: Config) -> str:
     """The local model the modes would use: "openai" (a server answers at api_base), "ollama"
-    (Ollama answers), "local" (llama.cpp can be started here) or "" (none)."""
+    (Ollama answers), "local" (llama.cpp can be started here) or "" (none). A kind chosen in
+    `localagent setup` (``local_server``) is trusted; it is checked when it is used."""
+    if config.local_server:
+        return config.local_server
     if server_up(config.api_base):
         return "openai"
     if ollama_up(config.host):
@@ -190,13 +205,17 @@ def choose_mode(config: Config, mode: str, ctx_chosen: bool = False) -> tuple[Co
     saying what to do, when the mode cannot work on this computer."""
     if mode not in MODES:
         raise ValueError(f"unknown mode '{mode}': choose {', '.join(MODES)}")
-    keyed = bool(config.gemini_api_key)
-    if mode == "online" and not keyed:
-        raise ValueError("online mode needs a Gemini key. " + GEMINI_KEY_HELP)
-    if mode == "online" or (mode == "auto" and keyed):
+    provider = find_provider(config.provider) or PROVIDERS[0]
+    problem = online_problem(config)
+    if mode == "online" and problem:
+        raise ValueError(f"online mode needs a working online model: {problem}")
+    if mode == "online" or (mode == "auto" and not problem):
         backup = "" if mode == "online" else (config.fallback_backend or local_kind(config))
-        config = replace(config, mode=mode, backend="gemini", fallback_backend=backup)
-        notes = [f"mode {mode}: Gemini answers (GEMINI_API_KEY is set)"]
+        backend = "gemini" if provider.name == "gemini" else "hosted"
+        config = replace(config, mode=mode, backend=backend, fallback_backend=backup)
+        keyed = config.gemini_api_key if backend == "gemini" else config.provider_key
+        notes = [f"mode {mode}: {online_name(config)} answers"
+                 + (f" ({provider.key_env} is set)" if keyed else "")]
         if mode == "auto":
             notes.append("offline backup: " + (describe_local(config) if backup else
                                                f"none set up ({SETUP_HINT})"))
@@ -206,7 +225,7 @@ def choose_mode(config: Config, mode: str, ctx_chosen: bool = False) -> tuple[Co
     context = config.num_ctx if ctx_chosen else config.local_ctx
     config = replace(config, mode=mode, backend="local", fallback_backend="", num_ctx=context,
                      local_ctx=context)
-    reason = "" if mode == "offline" else " (no GEMINI_API_KEY, so offline)"
+    reason = "" if mode == "offline" else " (no online model is set up, so offline)"
     return config, [f"mode {mode}: the local model answers{reason} - {describe_local(config)}"]
 
 
@@ -220,27 +239,43 @@ def auto_configure(config: Config, args: argparse.Namespace) -> tuple[Config, li
             and sandbox_image_ready(config.sandbox_image)):
         config = replace(config, sandbox="docker")
         notes.append("sandbox: docker (Docker and the sandbox image are ready)")
-    if (config.backend == "gemini" and not config.fallback_backend and args.fallback is None
-            and config.mode != "online" and server_up(config.api_base)):
+    if (config.backend in ("gemini", "hosted") and not config.fallback_backend
+            and args.fallback is None and config.mode != "online" and server_up(config.api_base)):
         config = replace(config, fallback_backend="openai")
         notes.append(f"fallback: the local model server at {config.api_base}")
     budgeted = gemini_history(config, chosen=ctx_chosen)
     if budgeted.num_ctx != config.num_ctx:
         config = budgeted
-        notes.append(f"history budget: {config.num_ctx} tokens (Gemini handles long conversations)")
+        notes.append(f"history budget: {config.num_ctx} tokens (online models handle long "
+                     "conversations)")
     return config, notes
+
+
+def online_name(config: Config) -> str:
+    """The online model in a few words: "Gemini", "OpenAI gpt-5-mini", "m at https://..."."""
+    provider = find_provider(config.provider) or PROVIDERS[0]
+    if provider.name == "gemini":
+        return "Gemini"
+    if provider.name == "custom":
+        return f"{config.provider_model} at {config.provider_base}"
+    return f"{provider.title} {config.provider_model}"
 
 
 def model_label(config: Config) -> str:
     """Short description of which model(s) will answer, for banners and scoreboards."""
     local = find_model_file(config)
     local_name = f"local:{local.stem}" if local else "local model"
+    if config.local_server == "ollama":
+        local_name = f"ollama:{config.model}"
+    elif config.local_server == "openai" and config.api_base != Config.api_base:
+        local_name = f"openai:{config.model}"          # your own server, not the downloaded model
+    backup = "" if not config.fallback_backend else (
+        f" > {local_name}" if config.fallback_backend in ("local", config.local_server)
+        else f" > {config.fallback_backend}:{config.model}")
     if config.backend == "gemini":
-        chain = " > ".join(config.gemini_models + config.gemini_strong_models)
-        backup = "" if not config.fallback_backend else (
-            f" > {local_name}" if config.fallback_backend == "local"
-            else f" > {config.fallback_backend}:{config.model}")
-        return f"gemini:{chain}{backup}"
+        return "gemini:" + " > ".join(config.gemini_models + config.gemini_strong_models) + backup
+    if config.backend == "hosted":
+        return f"{config.provider}:{config.provider_model}{backup}"
     if config.backend == "local":
         return local_name
     return f"{config.backend}:{config.model}"
@@ -419,13 +454,14 @@ class Chat:
 
     def model_status(self) -> list[str]:
         """What /model shows: the mode, who answers, and what online and offline would use."""
-        key = "key set" if self.config.gemini_api_key else "no key - " + GEMINI_KEY_HELP
+        problem = online_problem(self.config)
         last = getattr(self.backend, "last_model", "")
         return [f"mode: {self.config.mode} ({MODE_TEXT.get(self.config.mode, '')})",
                 f"models now: {model_label(self.config)}" + (f"; last answer from {last}" if last else ""),
-                f"online:  Gemini, {key}",
+                f"online:  {online_name(self.config)}, " + (problem or "key set"),
                 f"offline: {describe_local(self.config)}",
-                "switch with /model online, /model offline or /model auto"]
+                "switch with /model online, /model offline or /model auto "
+                "(other services and models: localagent setup)"]
 
     def switch(self, mode: str) -> None:
         """/model <mode>: build the new model setup, start the local model if needed, swap it in.
@@ -599,6 +635,25 @@ def run_subcommand(name: str, words: list[str]) -> int:
         return 130
 
 
+def guided_first_run(config: Config, args: argparse.Namespace,
+                     read: Callable[[str], str] = input) -> bool:
+    """The very first start - no model set up, a person at the keyboard - offers the guided
+    setup at once instead of an error. True when it ran and made a model ready."""
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if (not interactive or args.prompt is not None or args.doctor or args.no_auto
+            or args.backend is not None or not online_problem(config) or local_kind(config)):
+        return False
+    print("No model is set up yet. The guided setup takes a minute: an online service with your "
+          "key (Gemini's is free),\na model server you already run, or a free model downloaded "
+          "for you.")
+    try:
+        answer = read("Start it now? [Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer in ("", "y", "yes") and run_subcommand("setup", []) == 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point: choose the setup, build the components, then chat (or answer once)."""
     for stream in (sys.stdout, sys.stderr):        # a character the console cannot show must
@@ -613,6 +668,10 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings(workspace)        # its "env" applies before the config is read
         apply_env(settings)
         config = build_config(args)
+        if guided_first_run(config, args):         # the setup saved new settings: read them again
+            settings = load_settings(workspace)
+            apply_env(settings)
+            config = build_config(args)
     except ValueError as exc:                      # e.g. broken settings.json, a typo in a variable
         print(f"setup problem: {exc}")
         return 2

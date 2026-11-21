@@ -1,9 +1,7 @@
-"""Client for any OpenAI-compatible server (LM Studio, llama.cpp, vLLM, ...).
+"""Client for any OpenAI-compatible server: online services (OpenAI, Anthropic, OpenRouter,
+Groq, Mistral, DeepSeek, Gemini...) and local ones (LM Studio, llama.cpp, vLLM, ...).
 
-This is the scaling path: run the same agent against a bigger model on a GPU
-box by pointing ``--backend openai --api-base http://host:port/v1`` at it.
-Internal messages use Ollama's shape, so they are converted on the way out and
-back in.
+Internal messages use Ollama's shape, so they are converted on the way out and back in.
 """
 from __future__ import annotations
 
@@ -13,6 +11,9 @@ from typing import Iterable
 
 from .config import Config
 from .llm import LLMError, Reply, TokenSink, post
+from .providers import Provider, key_headers
+
+OPTIONAL_FIELDS = ("temperature", "stream_options", "reasoning_effort", "max_tokens")
 
 # Google's documented placeholder for tool calls that have no signature of their own
 # (e.g. made by another model before a fallback switch). Gemini 3 rejects them otherwise.
@@ -112,11 +113,25 @@ def read_stream(lines: Iterable[bytes], on_token: TokenSink | None) -> tuple[dic
     return message, usage
 
 
-class OpenAICompatClient:
-    """Chat client for ``/chat/completions`` servers (streaming by default)."""
+def refused_field(error: LLMError, payload: dict) -> str:
+    """The optional request field a server refused - named in its HTTP 400/422 answer - or ""."""
+    if error.status not in (400, 422):
+        return ""
+    text = str(error)
+    return next((name for name in OPTIONAL_FIELDS if name in payload and name in text), "")
 
-    def __init__(self, config: Config) -> None:
+
+class OpenAICompatClient:
+    """Chat client for ``/chat/completions`` servers (streaming by default).
+
+    ``provider`` (an online service from providers.py) adds the headers and request fields that
+    service expects. An optional field a server refuses is left out from then on.
+    """
+
+    def __init__(self, config: Config, provider: Provider | None = None) -> None:
         self._config = config
+        self._provider = provider
+        self.dropped: set[str] = set()               # optional fields this server refused
 
     def chat(self, messages: list[dict], tools: list[dict],
              on_token: TokenSink | None = None) -> Reply:
@@ -133,10 +148,16 @@ class OpenAICompatClient:
             payload["tools"] = tools
         if self._config.reasoning_effort:            # e.g. "low": less hidden thinking
             payload["reasoning_effort"] = self._config.reasoning_effort
-        headers = {"Authorization": f"Bearer {self._config.api_key}"} if self._config.api_key else {}
+        if self._provider is not None and self._provider.max_tokens:
+            payload["max_tokens"] = self._provider.max_tokens
+        for name in self.dropped:
+            payload.pop(name, None)
+        if self._provider is not None:
+            headers = key_headers(self._provider, self._config.api_key)
+        else:
+            headers = {"Authorization": f"Bearer {self._config.api_key}"} if self._config.api_key else {}
         started = time.monotonic()
-        with post(self._config.api_base + "/chat/completions", payload, headers,
-                  timeout=self._config.request_timeout) as response:
+        with self._send(payload, headers) as response:
             if self._config.stream:
                 try:
                     message, usage = read_stream(response, on_token)
@@ -165,3 +186,18 @@ class OpenAICompatClient:
             completion_tokens=completion,
             seconds=time.monotonic() - started,
         )
+
+    def _send(self, payload: dict, headers: dict[str, str]):
+        """POST the request. When the server refuses an optional field (a model that only allows
+        its default temperature, a service that does not know ``stream_options``...), that
+        field is left out and the request sent again - and from then on."""
+        while True:
+            try:
+                return post(self._config.api_base + "/chat/completions", payload, headers,
+                            timeout=self._config.request_timeout)
+            except LLMError as exc:
+                field = refused_field(exc, payload)
+                if not field:
+                    raise
+                self.dropped.add(field)
+                del payload[field]

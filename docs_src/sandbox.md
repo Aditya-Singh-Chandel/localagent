@@ -37,7 +37,8 @@ goes through `walk_files` (never entering folders such as `node_modules` or `.ve
 ## `project_files` — what the model sees
 @@ localagent/sandbox.py _in_git_repo @@
 - True when the folder, or any folder above it, contains `.git` (a folder normally; a *file* in git worktrees and
-  submodules). Checking first avoids starting `git` for folders that are not repositories.
+  submodules). Checking first avoids starting `git` for folders that are not repositories. The folder is resolved
+  (made absolute) for this check only.
 
 @@ localagent/sandbox.py project_files @@
 - In a git repository, asks git for the project's files: `ls-files --cached` (tracked) `--others` (new, not yet added)
@@ -47,6 +48,9 @@ goes through `walk_files` (never entering folders such as `node_modules` or `.ve
   5 GB model from the file overview.
 - Paths inside a skipped folder are still dropped, and so are files `--cached` lists although they were deleted since
   the last commit.
+- The paths are built from `root` **exactly as it was given**, like `walk_files` does. The first version resolved it
+  first, and the first CI run on Windows showed why that is wrong: Windows can name one folder in two ways (the short
+  `RUNNER~1` and the long `runneradmin`), so a caller's `path.relative_to(root)` failed.
 - Falls back to `walk_files` when git is missing, the folder is not a repository, git fails — or git lists nothing at
   all, which happens when the whole folder is ignored (the HTTP server keeps its session workspaces in an ignored
   `sessions/` folder; without the fallback the model would see an empty project).

@@ -1,7 +1,8 @@
 """Backend registry: choose the model client by name.
 
-Adding a new provider means writing one class with a ``chat`` method and adding
-one line to ``BACKENDS``; nothing else in the program changes.
+Adding a new kind of model client means writing one class with a ``chat`` method and adding one
+line to ``BACKENDS``; a new online service that speaks the OpenAI API needs only a line in
+``providers.py``.
 """
 from __future__ import annotations
 
@@ -9,16 +10,15 @@ import sys
 from dataclasses import replace
 from typing import Callable
 
-from .config import Config
+from .config import Config, online_problem
 from .llm import ChatBackend, OllamaClient, reachable
 from .localserver import LocalModel
 from .openai_compat import OpenAICompatClient
+from .providers import PROVIDERS, find_provider, key_help
 from .ratelimit import shared_limiter
 from .resilient import Entry, FallbackBackend
 
-GEMINI_KEY_HELP = (
-    "GEMINI_API_KEY is not set. Create a free key at https://aistudio.google.com/apikey, "
-    "then run:  setx GEMINI_API_KEY \"your-key\"  and open a NEW terminal.")
+GEMINI_KEY_HELP = key_help(PROVIDERS[0])
 LOCAL_KINDS = ("local", "openai", "ollama")
 
 
@@ -41,8 +41,20 @@ def model_limits(config: Config, model: str) -> tuple[int, int]:
 
 
 def make_local(config: Config) -> ChatBackend:
-    """The local model: a running llama.cpp / LM Studio / Ollama server, or llama.cpp started."""
-    return LocalModel(config, on_notice=_notice)
+    """The local model: a running llama.cpp / LM Studio / Ollama server, or llama.cpp started
+    (``local_server`` may limit the choice to one kind)."""
+    return LocalModel(config, config.local_server, on_notice=_notice)
+
+
+def add_backup(config: Config, entries: list[Entry]) -> None:
+    """Append auto mode's local backup model (``fallback_backend``) to a chain of online models."""
+    if not config.fallback_backend:
+        return
+    if config.fallback_backend not in LOCAL_KINDS:
+        raise ValueError("fallback_backend must be 'local', 'openai' or 'ollama'")
+    kind = "" if config.fallback_backend == "local" else config.fallback_backend
+    name = "local" if not kind else f"{kind}:{config.model}"
+    entries.append(Entry(name, LocalModel(config, kind, on_notice=_notice)))
 
 
 def make_gemini(config: Config) -> ChatBackend:
@@ -65,20 +77,33 @@ def make_gemini(config: Config) -> ChatBackend:
         entries, strong = strong + cheap, []
     else:                                            # free: cheap first, strong kept in reserve
         entries = cheap
-    if config.fallback_backend:
-        if config.fallback_backend not in LOCAL_KINDS:
-            raise ValueError("fallback_backend must be 'local', 'openai' or 'ollama'")
-        kind = "" if config.fallback_backend == "local" else config.fallback_backend
-        name = "local" if not kind else f"{kind}:{config.model}"
-        entries.append(Entry(name, LocalModel(config, kind, on_notice=_notice)))
+    add_backup(config, entries)
     return FallbackBackend(entries, config.max_retries, on_notice=_notice, strong=strong,
                            probe=lambda: reachable(config.gemini_base))
+
+
+def make_hosted(config: Config) -> ChatBackend:
+    """Another online service (OpenAI, Anthropic, OpenRouter...): its model, then an optional
+    local backup. Paid services have no free quota to share out, so there is no rate limiter;
+    a "slow down" answer is still waited out and retried."""
+    problem = online_problem(config)
+    if problem:
+        raise ValueError(problem)
+    provider = find_provider(config.provider) or PROVIDERS[-1]
+    client_config = replace(config, api_base=config.provider_base, api_key=config.provider_key,
+                            model=config.provider_model, request_timeout=config.gemini_timeout)
+    entries = [Entry(f"{provider.name}:{config.provider_model}",
+                     OpenAICompatClient(client_config, provider))]
+    add_backup(config, entries)
+    return FallbackBackend(entries, config.max_retries, on_notice=_notice,
+                           probe=lambda: reachable(config.provider_base))
 
 
 BACKENDS: dict[str, Callable[[Config], ChatBackend]] = {
     "ollama": OllamaClient,
     "openai": OpenAICompatClient,
     "gemini": make_gemini,
+    "hosted": make_hosted,
     "local": make_local,
 }
 

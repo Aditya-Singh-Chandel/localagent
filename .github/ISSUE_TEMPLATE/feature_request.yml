@@ -1,0 +1,24 @@
+name: Feature request
+description: An idea that would make localagent better
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The roadmap (docs/02-roadmap.md) lists what is already planned — your idea may be there.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation and what gets in the way, before any solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+  - type: textarea
+    id: cost
+    attributes:
+      label: Would it change how many model calls a task needs?
+      description: localagent tries hard to finish tasks in few calls; a feature that adds calls needs a reason.

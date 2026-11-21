@@ -8,8 +8,9 @@
      0.0 MB  dist\SHA256SUMS.txt                          checksums to publish next to them
 ```
 **The Windows zip** holds everything: Python itself (the official "embeddable" Python 3.14.10 from python.org, about
-12 MB), the agent, ruff and mypy (its verification layers), launchers and two double-clickable helpers. A user
-unzips it, double-clicks `install.cmd` (it adds the folder to their PATH), opens a new terminal and types
+12 MB), the agent, ruff (its lint layer), launchers and two double-clickable helpers. A user
+unzips it, double-clicks `install.cmd` (it adds the folder to their PATH and starts the guided setup right there),
+opens a new terminal and types
 `localagent setup`. Tested exactly like that (20 Nov 2026): unzipped into a fresh folder, `--version`, the bundled
 Python found both checkers, broken code was rejected, `--doctor` reported correctly, and a real request was answered
 in 1 call.
@@ -17,13 +18,25 @@ in 1 call.
 ```
 localagent-0.6.0-windows-x64\
   localagent.cmd        runs python\python.exe -m localagent with your arguments
-  install.cmd/.ps1      adds this folder to YOUR user PATH (nothing else changes)
+  install.cmd/.ps1      adds this folder to YOUR user PATH (nothing else changes), then runs the setup
   uninstall.cmd/.ps1    removes it again
   README.txt            the four steps above
   LICENSE, THIRD_PARTY_NOTICES.md
   python\               embeddable Python 3.14.10 (its python314._pth also lists ..\lib)
-  lib\                  localagent, ruff, mypy, and docker\ (for the sandbox image)
+  lib\                  localagent, ruff, and docker\ (for the sandbox image)
 ```
+
+## Publishing a release (`.github/workflows/release.yml`)
+Raise the version in `localagent/__init__.py`, write its section in `CHANGELOG.md`, merge, then push a tag:
+```
+git tag v0.6.0
+git push origin v0.6.0
+```
+The tag starts the release workflow on a clean Windows machine of GitHub's: it checks out that exact commit, installs
+Python 3.14, runs `python tools/build_release.py --tag v0.6.0` and publishes a GitHub release named after the tag,
+with the release notes and every file in `dist\` attached. The workflow may only write releases
+(`permissions: contents: write`); its token is GitHub's own and expires with the run. The same files can be put on any
+website: `tools/build_site.py` (see `build_site.md`) builds a complete, self-contained download site from them.
 
 ## Module header
 @@ tools/build_release.py header @@
@@ -37,9 +50,11 @@ localagent-0.6.0-windows-x64\
   in paths with spaces, thanks to the quotes); `%*` passes all arguments on.
 - `INSTALL_CMD`/`UNINSTALL_CMD`: double-clickable wrappers that run the PowerShell scripts with `-ExecutionPolicy
   Bypass` (scripts from the internet are blocked by default) and pause so the message can be read.
-- `INSTALL_PS1` adds the folder to the user PATH only when missing; `UNINSTALL_PS1` removes exactly that entry. Both
+- `INSTALL_PS1` adds the folder to the user PATH only when missing, then starts `localagent setup` with the bundled
+  Python (named by its full path: the new PATH only reaches terminals opened later), so a double-click ends with a
+  working agent; `UNINSTALL_PS1` removes exactly that entry. Both
   touch only the current user's PATH — no administrator rights needed.
-- `README_TXT` is the four-step guide inside the zip.
+- `README_TXT` is the four-step guide inside the zip; it names every kind of brain the setup offers.
 
 ## Steps
 @@ tools/build_release.py run @@
@@ -57,7 +72,9 @@ localagent-0.6.0-windows-x64\
 @@ tools/build_release.py build_windows_bundle @@
 - Starts from an empty staging folder in `build\`. Downloads the embeddable Python (verified, cached in
   `build\cache\`) and unpacks it into `python\`.
-- `pip install --target lib` installs the wheel *with its `dev` extra* (ruff, mypy) into `lib\`. `--platform win_amd64
+- `pip install --target lib` installs the wheel and ruff into `lib\` — and mypy only with `--with-mypy`: mypy and its
+  compiled parts are about 48 MB unpacked, which doubled the download (35.7 MB with it), yet it runs only with
+  `--type-check`. Without it the zip is about half the size and fits hosts that limit a file to 25 MB. `--platform win_amd64
   --python-version 3.14 --only-binary=:all:` makes pip choose the files for the **bundled** Python, not for the one
   running the build. ruff finds its program in `lib\bin\` (it looks next to its package for exactly this kind of
   install).
@@ -69,7 +86,20 @@ localagent-0.6.0-windows-x64\
 - `SHA256SUMS.txt` in the standard format, so anyone can check a download (`certutil -hashfile <file> SHA256` on
   Windows, `sha256sum -c SHA256SUMS.txt` elsewhere).
 
+@@ tools/build_release.py release_notes @@
+- The text of a release page: this version's part of `CHANGELOG.md` (from its `## 0.6.0 — date` heading to the next
+  `## ` heading), plus one line on checking the downloads against `SHA256SUMS.txt`. The heading must start with
+  `## <version> ` — the space after the version keeps `0.6.0` from also matching a `0.6.01`. A missing section stops
+  the build and says what to write, so no release goes out without notes.
+
 @@ tools/build_release.py main @@
 @@ tools/build_release.py footer @@
-- Removes this version's old files from `dist\`, builds the wheel, the bundle and the checksums, and lists them with
-  their sizes. `dist\` and `build\` are in `.gitignore`: release files are published, not committed.
+- The options are read with `argparse`: `--tag` and `--with-mypy`.
+- `--tag v0.6.0` (what the release workflow passes) first checks that the tag names the version in
+  `localagent/__init__.py`. A tag that does not match stops everything before a single file is built: a release can
+  never carry the files of another version.
+- Then it writes the release notes to `build\RELEASE_NOTES.md`, removes this version's old files from `dist\`, builds
+  the wheel, the bundle and the checksums, and lists them all with their sizes. `dist\` and `build\` are in
+  `.gitignore`: release files are published, not committed.
+- The footer hands the command-line words after the script's name (`sys.argv[1:]`) to `main`, which passes
+  `--with-mypy` on to `build_windows_bundle`.

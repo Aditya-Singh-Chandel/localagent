@@ -13,11 +13,13 @@ by all steps, and a file whose size and time stamp are unchanged is not read aga
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from .sandbox import walk_files
 
+RACY_NS = 2_000_000_000            # files changed less than 2 s before a scan are read again
 MAX_FILE_BYTES = 1_000_000
 MAX_SNAPSHOT_FILES = 3000          # above this, snapshots are switched off (use git instead)
 MAX_SNAPSHOT_BYTES = 60_000_000    # ~60 MB of file contents
@@ -51,10 +53,17 @@ class Checkpoints:
         self.disabled = ""                        # reason, once the folder proved too large
 
     def _scan(self) -> dict[str, str]:
-        """{relative path: content id} of every small workspace file; reads only changed files."""
+        """{relative path: content id} of every small workspace file; reads only changed files.
+
+        A file changed in the last ``RACY_NS`` before the scan is remembered as "not to be
+        trusted" (time stamp -1): a second edit within the same clock tick, with the same size,
+        would otherwise look unchanged - Windows' time stamps are coarse (git calls this
+        "racily clean" and re-reads such files too).
+        """
         snapshot: dict[str, str] = {}
         seen: dict[str, tuple[int, int, str]] = {}
         total = 0
+        scan_ns = time.time_ns()
         for path in walk_files(self._root):
             try:
                 stat = path.stat()
@@ -78,7 +87,8 @@ class Checkpoints:
                 digest = hashlib.sha256(data).hexdigest()
                 self._blobs.setdefault(digest, data)
             snapshot[key] = digest
-            seen[key] = (stat.st_size, stat.st_mtime_ns, digest)
+            racy = scan_ns - stat.st_mtime_ns < RACY_NS
+            seen[key] = (stat.st_size, -1 if racy else stat.st_mtime_ns, digest)
         self._seen = seen
         return snapshot
 

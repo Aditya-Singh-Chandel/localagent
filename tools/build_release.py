@@ -2,15 +2,19 @@
 installed (it carries its own Python).
 
 Usage (from the project folder, with the project's .venv):
-    python tools/build_release.py          # writes dist/ and prints what it made
+    python tools/build_release.py              # writes dist/ and prints what it made
+    python tools/build_release.py --tag v0.6.0 # the same, after checking the tag is this version
+    python tools/build_release.py --with-mypy  # the Windows zip with mypy too (about twice the size)
 
 dist/localagent-<version>-py3-none-any.whl     pip install / pipx install, any system
 dist/localagent-<version>-windows-x64.zip      unzip, double-click install.cmd, done
 dist/SHA256SUMS.txt                            checksums to publish next to the downloads
+build/RELEASE_NOTES.md                         this version's CHANGELOG section, for the release page
 The embeddable Python is downloaded once (checksum-pinned) into build/cache/.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import shutil
 import subprocess
@@ -42,7 +46,11 @@ if (($path -split ";") -contains $here) {
     [Environment]::SetEnvironmentVariable("Path", $new, "User")
     Write-Host "Added $here to your PATH."
 }
-Write-Host "Open a NEW terminal and type:  localagent setup"
+Write-Host ""
+Write-Host "Next, the guided setup (about a minute; run it again any time with: localagent setup)"
+& "$here\\python\\python.exe" -m localagent setup
+Write-Host ""
+Write-Host "Done. Open a NEW terminal in a project folder and type:  localagent"
 """
 UNINSTALL_PS1 = """# Removes this folder from YOUR user PATH. Then delete the folder itself.
 # Your settings, logs and downloaded models stay in %USERPROFILE%\\.localagent (delete it too to remove them).
@@ -55,16 +63,19 @@ Write-Host "Removed $here from your PATH. You can now delete this folder."
 """
 README_TXT = """localagent {version} for Windows (64-bit), portable
 
-A coding agent like Claude Code: online with Google Gemini, offline with a model on your PC.
+A coding agent for your terminal: online with Google Gemini (free key) or your own key for
+OpenAI, Anthropic, OpenRouter, Groq, Mistral, DeepSeek; offline with a model on your PC.
 
 1. Unzip this folder somewhere permanent, for example C:\\Tools\\localagent (not Downloads).
-2. Double-click install.cmd once. It adds this folder to your PATH (only for your account).
-3. Open a NEW terminal (PowerShell) and run:   localagent setup
-   It asks for a free Gemini key and offers to download the offline model for your PC.
-4. Then, in any project folder:               localagent
+2. Double-click install.cmd once. It adds this folder to your PATH (only for your account)
+   and starts the guided setup: an online service and key, and/or a model on this PC
+   (one you already run - Ollama, LM Studio - or a free one it downloads for you).
+3. Open a NEW terminal (PowerShell) in a project folder and type:   localagent
+4. Change the setup any time with:   localagent setup
 
 Python {python} is included; nothing else has to be installed. Docker Desktop is optional (a sealed
 box for running code). Check the setup at any time:  localagent --doctor
+Type checks (--type-check) need mypy, which this download leaves out to stay small.
 Uninstall: double-click uninstall.cmd, then delete this folder (and %USERPROFILE%\\.localagent).
 License: MIT (LICENSE). Included third-party software: THIRD_PARTY_NOTICES.md.
 """
@@ -93,8 +104,9 @@ def add_lib_to_pth(python_dir: Path) -> None:
     pth.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def build_windows_bundle(wheel: Path, build: Path, dist: Path) -> Path:
-    """The portable folder (embedded Python + agent + ruff/mypy + launchers), zipped."""
+def build_windows_bundle(wheel: Path, build: Path, dist: Path, with_mypy: bool = False) -> Path:
+    """The portable folder (embedded Python + agent + ruff + launchers), zipped; mypy only when
+    asked for - it would double the download and is used only with --type-check."""
     name = f"localagent-{__version__}-windows-x64"
     stage = build / name
     if stage.exists():
@@ -103,9 +115,10 @@ def build_windows_bundle(wheel: Path, build: Path, dist: Path) -> Path:
                           PYTHON_SIZE)
     extract_archive(python_zip, stage / "python")
     add_lib_to_pth(stage / "python")
+    tools = ["ruff", "mypy"] if with_mypy else ["ruff"]
     run(sys.executable, "-m", "pip", "install", "-q", "--target", str(stage / "lib"),
         "--python-version", PYTHON_VERSION.rsplit(".", 1)[0], "--only-binary=:all:",
-        "--platform", "win_amd64", f"{wheel}[dev]")
+        "--platform", "win_amd64", str(wheel), *tools)
     shutil.copytree(ROOT / "docker", stage / "lib" / "docker")   # for the sandbox-image hint
     files = {"localagent.cmd": LAUNCHER, "install.cmd": INSTALL_CMD, "uninstall.cmd": UNINSTALL_CMD,
              "install.ps1": INSTALL_PS1, "uninstall.ps1": UNINSTALL_PS1,
@@ -130,19 +143,43 @@ def write_checksums(files: list[Path], dist: Path) -> Path:
     return target
 
 
-def main() -> int:
-    """Build everything into dist/ and list it."""
+def release_notes(version: str, changelog: str) -> str:
+    """This version's section of CHANGELOG.md (from its "## <version>" heading to the next one),
+    with a line on checking the downloads."""
+    lines = changelog.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.startswith(f"## {version} ")), None)
+    if start is None:
+        raise SystemExit(f"CHANGELOG.md has no section '## {version} ...': write it before releasing")
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    body = "\n".join(lines[start + 1:end]).strip()
+    return (f"{body}\n\nCheck a download against `SHA256SUMS.txt`: on Windows "
+            "`certutil -hashfile <file> SHA256`, elsewhere `sha256sum -c SHA256SUMS.txt`.\n")
+
+
+def main(argv: list[str]) -> int:
+    """Build everything into dist/ (and the release notes into build/) and list it."""
+    parser = argparse.ArgumentParser(description="Build the wheel and the portable Windows zip.")
+    parser.add_argument("--tag", help="stop unless this tag (e.g. v0.6.0) names this version")
+    parser.add_argument("--with-mypy", action="store_true", help="put mypy into the Windows zip too")
+    args = parser.parse_args(argv)
+    if args.tag is not None and args.tag != f"v{__version__}":
+        raise SystemExit(f"tag {args.tag} does not match the version in localagent/__init__.py "
+                         f"(v{__version__})")
     dist, build = ROOT / "dist", ROOT / "build"
     dist.mkdir(exist_ok=True)
+    build.mkdir(exist_ok=True)
     for old in dist.glob(f"localagent-{__version__}*"):
         old.unlink()
+    notes = build / "RELEASE_NOTES.md"
+    notes.write_text(release_notes(__version__, (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")),
+                     encoding="utf-8")
     wheel = build_wheel(dist)
-    bundle = build_windows_bundle(wheel, build, dist)
+    bundle = build_windows_bundle(wheel, build, dist, args.with_mypy)
     sums = write_checksums([wheel, bundle], dist)
-    for made in (wheel, bundle, sums):
+    for made in (wheel, bundle, sums, notes):
         print(f"{made.stat().st_size / 1e6:8.1f} MB  {made.relative_to(ROOT)}")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

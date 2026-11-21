@@ -1,15 +1,15 @@
-"""Local models and the guided first run: which model suits this computer, which are installed,
-and fetching llama.cpp and a model (resumable, checked against the publisher's checksum).
+"""Local models: which model suits this computer, which are installed, and fetching llama.cpp
+and a model (resumable, checked against the publisher's checksum).
 
-  localagent setup                      the guided first run: Gemini key, offline model, Docker
   localagent models                     installed models, the catalog, the recommendation
   localagent models download qwen3-4b   fetch a catalog model (about 2.5 GB)
   localagent models use qwen3-4b        make it the model offline mode uses
+
+The guided first run (`localagent setup`) lives in wizard.py and uses these helpers.
 """
 from __future__ import annotations
 
 import ctypes
-import getpass
 import os
 import platform
 import stat
@@ -21,12 +21,10 @@ from typing import Callable
 
 from .config import Config
 from .fetch import DownloadError, Progress, download, extract_archive, get_json
-from .localserver import CHECKOUT, HOME, find_llama_server, find_model_file
-from .runners import docker_available, sandbox_image_ready
+from .localserver import CHECKOUT, HOME, find_model_file
 from .settings import USER_SETTINGS, save_user_env
 
 LLAMA_RELEASES = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=15"
-KEY_PAGE = "https://aistudio.google.com/apikey"
 GiB = 1024 ** 3
 Say = Callable[[str], None]
 
@@ -162,15 +160,6 @@ def install_llama(on_progress: Progress, variants: tuple[str, ...] | None = None
     return folder
 
 
-def check_gemini_key(config: Config, key: str) -> str:
-    """"ok", "rejected" or "unreachable" for a Gemini key (listing models costs no quota)."""
-    try:
-        get_json(config.gemini_base + "/models", {"Authorization": f"Bearer {key}"}, timeout=15)
-    except DownloadError as exc:
-        return "rejected" if "HTTP 4" in str(exc) else "unreachable"
-    return "ok"
-
-
 def progress_printer(say: Say = print) -> Progress:
     """Shows a download's progress: in place once a second in a terminal, else every 30 s."""
     started, shown = time.monotonic(), [0.0]
@@ -195,107 +184,13 @@ def progress_printer(say: Say = print) -> Progress:
     return show
 
 
-def _sandbox_hint() -> str:
+def sandbox_hint() -> str:
     """The command that builds the sandbox image, with this copy's Dockerfile when it has one."""
     dockerfile = CHECKOUT / "docker" / "sandbox.Dockerfile"
     if dockerfile.is_file():
         return (f'docker build -t localagent-sandbox:latest -f "{dockerfile}" '
                 f'"{dockerfile.parent}"')
     return "see docs/docker.md for the sandbox image"
-
-
-def run_setup(config: Config, ask: Callable[[str], str] = input,
-              secret: Callable[[str], str] = getpass.getpass, say: Say = print,
-              settings_file: Path = USER_SETTINGS, progress: Progress | None = None) -> int:
-    """`localagent setup`: the guided first run. Returns 0 when at least one model is ready."""
-    def yes(question: str) -> bool:
-        try:
-            answer = ask(question).strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return False
-        return answer in ("", "y", "yes")                # Enter accepts the suggestion
-
-    say("localagent setup: three short steps; Enter accepts the suggestion in [brackets].")
-    say("\n1/3  Online model: Gemini (fast, a free daily quota)")
-    online = _setup_gemini(config, secret, say, settings_file)
-    say("\n2/3  Offline model: runs on this computer (private, no quota, slower)")
-    offline = _setup_local(config, yes, say, progress or progress_printer(say))
-    say("\n3/3  Sandbox: Docker runs the agent's code in a sealed box (optional)")
-    if not docker_available():
-        say("  note  Docker is not running. Install Docker Desktop (docker.com) and start it - or work "
-            "without it: code then runs on this computer, after your approval.")
-    elif sandbox_image_ready(config.sandbox_image):
-        say("  ok    Docker and the sandbox image are ready")
-    else:
-        say(f"  note  Docker runs; build the sandbox image once with:\n        {_sandbox_hint()}")
-    say("")
-    if online and offline:
-        say("Ready, online and offline. In a project folder, type: localagent   (/model switches)")
-    elif online:
-        say("Ready (online only). For offline work, run localagent setup again later.")
-    elif offline:
-        say("Ready (offline only). In a project folder, type: localagent --offline")
-    else:
-        say("No model is ready yet. Run localagent setup again (a Gemini key is the quickest start).")
-    say("Check everything at any time with: localagent --doctor")
-    return 0 if online or offline else 1
-
-
-def _setup_gemini(config: Config, secret: Callable[[str], str], say: Say,
-                  settings_file: Path) -> bool:
-    """Step 1: check the Gemini key, or ask for one and save it. True when online can work."""
-    if config.gemini_api_key:
-        state = check_gemini_key(config, config.gemini_api_key)
-        say({"ok": "  ok    your GEMINI_API_KEY works",
-             "rejected": f"  FAIL  your GEMINI_API_KEY was rejected; create a new one at {KEY_PAGE}",
-             "unreachable": "  note  a key is set, but Google cannot be reached right now (offline?)"}[state])
-        return state != "rejected"
-    say(f"  Get a free key at {KEY_PAGE} (sign in with Google, then 'Create API key').")
-    try:
-        key = secret("  Paste the key (it stays hidden; Enter skips): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        key = ""
-    if not key:
-        say("  skipped: without a key the agent works offline only")
-        return False
-    state = check_gemini_key(config, key)
-    if state == "rejected":
-        say("  FAIL  Google rejected that key; nothing was saved. Run setup again with a new key.")
-        return False
-    path = save_user_env("GEMINI_API_KEY", key, settings_file)
-    os.environ["GEMINI_API_KEY"] = key
-    say(f"  ok    key saved in {path} (only your user account can read that folder)"
-        + ("" if state == "ok" else "; not checked, Google cannot be reached right now"))
-    return True
-
-
-def _setup_local(config: Config, yes: Callable[[str], bool], say: Say, progress: Progress) -> bool:
-    """Step 2: find or fetch llama.cpp and a model sized for this computer. True when ready."""
-    memory = total_memory_gb()
-    pick = recommend(memory)
-    size = f"{memory:.1f} GB of memory" if memory else "an unknown amount of memory"
-    say(f"  This computer has {size}: the suggested model is {pick.name} "
-        f"({pick.size / GiB:.1f} GB download) - {pick.note}")
-    program = find_llama_server(config)
-    if program is not None:
-        say(f"  ok    llama.cpp found: {program}")
-    elif yes("  llama.cpp, the program that runs the model (25-40 MB), is missing. Download it? [Y/n] "):
-        try:
-            say(f"  ok    llama.cpp installed in {install_llama(progress)}")
-            program = find_llama_server(config)
-        except DownloadError as exc:
-            say(f"  FAIL  {exc}")
-    model = find_model_file(config)
-    if model is not None:
-        say(f"  ok    model found: {model}")
-    elif yes(f"  No model yet. Download {pick.name} ({pick.size / GiB:.1f} GB; it can be stopped and "
-             "continued later)? [Y/n] "):
-        try:
-            model = install_model(pick, progress)
-            say(f"  ok    model saved: {model}")
-        except DownloadError as exc:
-            say(f"  FAIL  {exc}")
-    return program is not None and model is not None
 
 
 def run_models(words: list[str], config: Config, say: Say = print,

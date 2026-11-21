@@ -262,12 +262,12 @@ typo command — 0 calls; a TypeScript file — 2 calls, checked by the new Type
 **Found in a final review** (both now fixed and documented): a helper agent could reset or trigger the main agent's
 escalation (it shares the model chain); and with piped output on Windows, one emoji in an answer could crash the CLI.
 
-**The API-key decision.** You offered nine more keys from nine more Google projects, created to multiply the free
-quota. I checked Google's rules instead of assuming: limits are enforced per project; the Google APIs Terms say you
-"will not attempt to circumvent" the documented limits; and Google has restricted projects (quota set to 0) for
-"operating multiple projects as a single project". Using them could get the *main* project cut off and break the
-agent, so they were not used or stored; the project was finished on the original key (lite models) plus the free local
-model. For more quota the supported route is billing on one project — the new `paid` preset uses it.
+**One key, by design.** Spreading requests over several free keys from several Google projects would multiply
+the quota, so the question came up and Google's rules were checked: limits are enforced per project; the Google APIs
+Terms say users "will not attempt to circumvent" the documented limits; and Google has restricted projects (quota set
+to 0) for "operating multiple projects as a single project". The agent therefore works with exactly one key and makes
+the most of it (lite models first, the local model as backup). For more quota the supported route is billing on one
+project — the `paid` preset uses it.
 
 **Final verification (5 Nov 2026).** Everything was run the way a new user would, and every problem found was fixed,
 tested and documented:
@@ -383,7 +383,7 @@ What was done, with your agreement at each step:
    endings); the excluded files were removed from the commit but **kept on disk**. 261 tracked files became 112.
 2. A scan of every tracked text file for API keys, tokens, private keys, e-mail addresses and personal paths: none.
 3. The commit rewritten with a descriptive message, the author changed to GitHub's private address
-   `<id>+Aditya-Singh-Chandel@users.noreply.github.com` (set for this repository only) — the commit still shows your
+   `<id>+<github-name>@users.noreply.github.com` (set for this repository only) — the commit still shows the owner's
    account; afterwards no object in the repository mentions a Gmail address.
 4. The old objects purged: `.git` went from **727 MB to 437 KB**; the largest object left is a 142 KB docs page.
 5. The repository made **private** (at your choice). GitHub's free secret scanning only covers public repositories,
@@ -416,6 +416,69 @@ adds a third. Pushing to GitHub was **blocked by Claude Code's safety system** (
 your own action), so the push is yours: `git push -u origin main` and `git push -u origin release-0.6`, then open a pull
 request (or `gh pr create`).
 
+## 6i. Phase 12: going public — CI on real machines, any brain you like, a website
+
+**The first CI run on GitHub's machines found four problems** that no local run could have shown:
+1. *Windows:* `/undo` left a changed file as it was. The checkpoint's speed-up trusted "same size and same time stamp
+   = same content", and Windows' coarse clock gave a second same-size edit the same time stamp. Git calls such files
+   "racily clean" and re-reads them; the checkpoint now does the same for files changed in the two seconds before a
+   scan. The new test fails with that rule switched off and passes with it.
+2. *Windows:* a folder can have two names (`C:\Users\RUNNER~1` and `C:\Users\runneradmin`); `project_files` resolved
+   one, the caller kept the other, and `relative_to` failed. Paths now keep the form they were given in.
+3. *Linux:* the Docker test ran (Docker is installed on GitHub's Linux machines) but the sandbox image was not built.
+   The test is now skipped without the image, and a new CI job builds the image and runs the container tests for real.
+   Preparing that job showed a real bug: on Linux a shared folder keeps the host's file owners, so the image's own user
+   could not read a workspace belonging to another user id. The container now runs as the caller's own user id (never
+   root) on Linux and macOS.
+4. *Python 3.10:* a test expected a TOML check that only exists from Python 3.11 (`tomllib`).
+The second run passed on all six jobs (Linux with Python 3.10, 3.12, 3.13 and 3.14, Windows with 3.14, and the real
+Docker sandbox) in 1 min 36 s.
+
+**Any brain you like (`providers.py`, `wizard.py`).** Gemini stays the default — its key is free — but people already
+have other keys and other models. Every common online service speaks the same "OpenAI-compatible" API that the agent
+already used for Gemini and llama.cpp, so supporting them took a table, not new clients: OpenAI, Anthropic,
+OpenRouter, Groq, Mistral, DeepSeek, and any address you type. Keys are read from each service's usual variable
+(`OPENAI_API_KEY`...), so a key you already have just works. The differences between services are data: Anthropic
+wants the key in a second header and an explicit answer length. Everything else a service refuses is handled by the
+client itself — OpenAI's newest models refuse any temperature but their default, strict services refuse fields they
+do not know — by leaving that optional field out once and remembering it (`refused_field`). This keeps one code path
+for everything instead of a list of special cases that would age with every model release.
+
+Offline, the setup looks for model servers people already run — Ollama, LM Studio, llama.cpp, vLLM, Jan — and offers
+them first with their models; then the free model it downloads itself; then "a server at another address" (a GPU box
+on the network). A chosen server is used **alone** (`local_server`): otherwise a different model that happened to be
+running could answer instead of the one you picked.
+
+**Plug and play.** The first `localagent` with nothing set up now offers the setup at once instead of printing an
+error; the Windows installer runs it right after adding the folder to PATH. Keys are checked by listing the
+service's models — free on every service — and nothing is saved until a key is accepted and a model chosen. On Linux
+and macOS the settings file holding the keys is now readable by its owner only.
+
+**Tested for real (21 Nov 2026), in a throw-away home folder so no real setting was touched.** A llama.cpp server was
+started by hand on port 8181, like a user's own; the setup was driven by piped answers: Gemini chosen (the real key
+was checked: 65 models offered), offline = "another address" → the server and its model `qwen3-8b-mine` were found and
+saved. Then `--offline -p` answered `ready` from that server (1 call, 2 202 prompt tokens, 16.4 s), and a `custom`
+service pointed at Gemini's OpenAI-compatible address answered `51` to "17*3" (1 call, 1.5 s). The run found three
+bugs, each fixed with a test: Windows PowerShell 5.1 puts a byte-order mark before piped text, so the first answer
+`1` arrived as `\ufeff1` and was refused; with piped answers Windows' `getpass` waited for the keyboard forever (keys
+are now read like any answer when no person is typing); and `--doctor` called Gemini's model "not offered" because
+Gemini lists its models as `models/<name>`. The other services were tested against a local stand-in that answers the
+way they do (`tests/test_providers.py`) — no paid keys were used.
+
+**A website you host yourself (`tools/build_site.py`).** The download site is not on GitHub Pages: its address would
+show the GitHub account, and the site was to show no user name at all. Instead the build makes one folder of plain
+files for any host — the landing page, all 41 documentation pages rendered from Markdown by a small renderer written
+for exactly the syntax these docs use, and the downloads themselves. No fonts, scripts or images come from other
+sites. The build reads the repository owner's name from the git address and refuses to finish if any page shows it —
+it caught one on its first run (an example commit address in this log, now written as `<github-name>`). Every link
+and every tag is checked too. Tested like a visitor: the site was served locally and crawled — 44 pages, no broken
+link, and the three downloads byte for byte identical to `dist\` — and screenshotted on a desktop and at a true phone
+width (390 px, inside a frame: headless Edge refuses windows narrower than 504 px, which first made the phone layout
+look broken when it was not). The screenshots found three real problems: documentation pages were wider than a phone
+(a grid column grew to fit the longest code line), long headings did not wrap, and the contents box dropped the
+underscores of names like `read_secret`. The Windows zip lost mypy, which only `--type-check` uses: 35.7 MB became
+22.8 MB, which also fits hosts that refuse files over 25 MB.
+
 ## 7. Errors met and how each was fixed
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -440,6 +503,15 @@ request (or `gh pr create`).
 | (0.6) mypy: a variable used first as a list, then as a number, in `context._overview` | one name reused for two meanings | renamed the second (`needed`) |
 | (0.6) After the history-fitting change, the compaction test returned the summary as the answer | the test used a 1 000-token window, smaller than the system prompt itself, so trimming dropped the older turns before compaction could run | the test now uses a realistic 3 000-token window; the behaviour is correct |
 | (0.6) A live `@file` request still read the attached file (2 calls) | nothing told the model attached files were current | one sentence in prompt rule 1: 1 call, half the tokens |
+| (0.6, CI) `/undo` left a file changed on Windows | same size and same coarse time stamp looked unchanged | files changed in the last 2 s are re-read ("racily clean", like git) |
+| (0.6, CI) `relative_to` failed on Windows | `RUNNER~1` and `runneradmin` are one folder; one side was resolved | `project_files` keeps the form it was given |
+| (0.6, CI) the Docker test failed on Linux | Docker runs there, the sandbox image was not built | skipped without the image; a CI job builds it and runs the container tests |
+| (0.6, CI) a TOML test failed on Python 3.10 | `tomllib` only exists from 3.11 | the check is expected only where `tomllib` exists |
+| (0.6) piped setup answers: the first one was refused | Windows PowerShell 5.1 puts a byte-order mark before piped text | answers drop `﻿` |
+| (0.6) a scripted setup hung asking for a key | Windows' `getpass` reads the keyboard only | `input` when no person is typing |
+| (0.6) `--doctor` said Gemini's model was not offered (custom service) | Gemini lists `models/<name>` | the prefix is removed before comparing |
+| (0.6) edit scripts wrote a real line break into a string | `
+` in a Python string inside a shell heredoc is a line break | edits are written as JSON files or with the editor tool |
 
 ## 8. How to reproduce everything (commands)
 ```
@@ -452,11 +524,12 @@ request (or `gh pr create`).
 ```
 
 ## 9. Status and honest limits
-* **Now (version 0.6, 20 Nov 2026):** 216 unit tests pass (real Docker when running, a fake MCP server, fake model and
-  llama.cpp servers, local web servers, every installed language checker); ruff and mypy clean; docs audit passes (35
-  pages, every code line documented exactly once). The local model was run for real through the new automatic start,
-  in auto and offline mode (section 6g). Not yet measured on 0.6: the full eval suite. The CI workflow (Linux +
-  Windows) runs on the first push.
+* **Now (version 0.6, 21 Nov 2026):** 254 unit tests pass (real Docker when running, a fake MCP server, fake model,
+  llama.cpp and online-service servers, local web servers, every installed language checker); ruff and mypy clean;
+  docs audit passes (41 pages, every code line documented exactly once); CI is green on Linux (Python 3.10-3.14),
+  Windows and the real Docker sandbox. Checked live: the local model through the automatic start (section 6g), and
+  the setup, a hand-started llama.cpp server and the generic online-service path (section 6i). Not checked live:
+  the paid services (no keys were used) and the full eval suite on 0.6.
 * The bullets below are the history of earlier versions, kept as they were written.
 * (0.5) 136 unit tests passed; ruff and mypy clean; docs audit passed.
 * **Final eval on the real model (Qwen3-8B, 9 GPU layers, temperature 0): 4/4 tasks passed** -

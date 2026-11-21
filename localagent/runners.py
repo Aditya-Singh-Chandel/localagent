@@ -172,6 +172,10 @@ class DockerRunner:
                 "-v", f"{self._root}:{CONTAINER_WORKDIR}", "-w", CONTAINER_WORKDIR]
         if not self._cfg.sandbox_network:
             argv += ["--network", "none"]
+        if sys.platform != "win32":
+            uid, gid = os.getuid(), os.getgid()
+            if uid != 0:                           # Linux/macOS: the files stay yours (see docs)
+                argv += ["--user", f"{uid}:{gid}", "-e", "HOME=/tmp"]
         code, out = self._docker(*argv, self._cfg.sandbox_image)
         if code != 0:
             raise RuntimeError(f"Could not start the sandbox container: {out.strip()[:300]}\n"

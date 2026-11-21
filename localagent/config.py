@@ -11,6 +11,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from .providers import CUSTOM_KEY, GEMINI_BASE, PROVIDERS, find_provider, key_help
+
 
 def _normalize_host(raw: str) -> str:
     """Turn ``127.0.0.1:11434`` (Ollama's own style) into a full URL."""
@@ -21,6 +23,7 @@ def _normalize_host(raw: str) -> str:
 
 PAID_RPM, PAID_RPD, PAID_TPM = 1000, 10_000, 1_000_000   # paid-tier presets (well under Tier 1)
 MODES = ("auto", "online", "offline")
+LOCAL_SERVERS = ("", "openai", "ollama")      # which local model: any that answers, or one kind
 
 
 def _split(raw: str) -> tuple[str, ...]:
@@ -74,8 +77,10 @@ class Config:
     helper_turns: int = 8                    # model calls a helper may use
     request_timeout: int = 900               # seconds to wait for an answer (local CPUs are slow)
     # ---- online / offline ------------------------------------------------------------
-    mode: str = "auto"                       # "auto": Gemini, local model when offline/out of quota
-    #                                          "online": Gemini only; "offline": local model only
+    mode: str = "auto"                       # "auto": the online model, the local one when it fails
+    #                                          "online": online model only; "offline": local only
+    local_server: str = ""                   # "": any local model that answers; "openai": only
+    #                                          the server at api_base; "ollama": only Ollama
     local_ctx: int = 8192                    # context window of the local model (tokens)
     llama_server: str = ""                   # path of llama.cpp's llama-server ("" = look for it)
     model_file: str = ""                     # the local model, a .gguf file ("" = look for it)
@@ -84,12 +89,12 @@ class Config:
     # ---- Gemini (hosted) -----------------------------------------------------------
     gemini_api_key: str = ""                 # from the GEMINI_API_KEY environment variable
     gemini_tier: str = "free"                # "free" or "paid" (billing on: higher limits)
-    gemini_base: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    gemini_base: str = GEMINI_BASE
     gemini_models: tuple[str, ...] = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
     # ^ everyday chain, tried in order: fast "lite" models with large daily quotas
     gemini_strong_models: tuple[str, ...] = ("gemini-3.5-flash", "gemini-2.5-flash")
     # ^ reserve: small daily quota (~20 on a free key), used first only after an escalation
-    gemini_timeout: int = 120                # seconds before a stalled Gemini request fails
+    gemini_timeout: int = 120                # seconds before a stalled online request fails
     escalate_after: int = 2                  # failed tool results in one request before escalating
     rpm: int = 12                            # requests per minute allowed per model
     tpm: int = 250_000                       # tokens per minute allowed per model
@@ -97,6 +102,11 @@ class Config:
     gemini_limits: tuple[str, ...] = ()      # per-model overrides "model=rpm/rpd", e.g. "m=5/20"
     max_retries: int = 3                     # retries of one model on 429/5xx/network errors
     fallback_backend: str = ""               # "local", "openai" or "ollama": used when Gemini fails
+    # ---- the online model: Gemini (above) or another service (see providers.py) ----
+    provider: str = "gemini"                 # gemini, openai, anthropic, openrouter, groq, ...
+    provider_model: str = ""                 # its model (Gemini uses its own chain instead)
+    provider_base: str = GEMINI_BASE         # its address (from the table; "custom": yours)
+    provider_key: str = ""                   # your key, from the service's own variable
     # ---- where code runs --------------------------------------------------------------
     sandbox: str = "local"                   # "local" (this machine) or "docker" (container)
     sandbox_image: str = "localagent-sandbox:latest"
@@ -113,7 +123,11 @@ class Config:
         mode = os.environ.get("LOCALAGENT_MODE", base.mode).strip().lower()
         if mode not in MODES:
             raise ValueError(f"LOCALAGENT_MODE must be one of {', '.join(MODES)} (it is '{mode}')")
-        return replace(
+        local_server = os.environ.get("LOCALAGENT_LOCAL_SERVER", base.local_server).strip().lower()
+        if local_server not in LOCAL_SERVERS:
+            raise ValueError("LOCALAGENT_LOCAL_SERVER must be openai, ollama or empty "
+                             f"(it is '{local_server}')")
+        config = replace(
             base,
             backend=os.environ.get("LOCALAGENT_BACKEND", base.backend),
             model=os.environ.get("LOCALAGENT_MODEL", base.model),
@@ -123,6 +137,7 @@ class Config:
             workspace=Path(os.environ.get("LOCALAGENT_WORKSPACE", str(base.workspace))),
             num_ctx=_int("LOCALAGENT_NUM_CTX", base.num_ctx),
             mode=mode,
+            local_server=local_server,
             local_ctx=_int("LOCALAGENT_LOCAL_CTX", base.local_ctx),
             llama_server=os.environ.get("LOCALAGENT_LLAMA_SERVER", base.llama_server),
             model_file=os.environ.get("LOCALAGENT_MODEL_FILE", base.model_file),
@@ -143,6 +158,38 @@ class Config:
             sandbox=os.environ.get("LOCALAGENT_SANDBOX", base.sandbox),
             usage_file=Path(os.environ.get("LOCALAGENT_USAGE_FILE", str(base.usage_file))),
         )
+        return with_provider(config, os.environ.get("LOCALAGENT_PROVIDER", base.provider),
+                             os.environ.get("LOCALAGENT_PROVIDER_MODEL", ""))
+
+
+def with_provider(config: Config, name: str, model: str = "") -> Config:
+    """``config`` with ``name`` as the online model's service: its address (the table's, or
+    LOCALAGENT_PROVIDER_BASE) and your key (read from the service's own variable)."""
+    provider = find_provider(name)
+    if provider is None:
+        names = ", ".join(known.name for known in PROVIDERS)
+        raise ValueError(f"unknown provider '{name}': choose one of {names}")
+    base = os.environ.get("LOCALAGENT_PROVIDER_BASE", "").strip() or provider.base
+    return replace(config, provider=provider.name, provider_model=model.strip(),
+                   provider_base=base.rstrip("/"),
+                   provider_key=os.environ.get(provider.key_env, "").strip())
+
+
+def online_problem(config: Config) -> str:
+    """What stops the online model from working, in words ("" = nothing): no key, no model
+    chosen, or (for "custom") no address."""
+    provider = find_provider(config.provider) or PROVIDERS[0]
+    if provider.name == "gemini":
+        return "" if config.gemini_api_key else key_help(provider)
+    if not config.provider_base:
+        return "the custom service needs its address: localagent setup asks for it (or set " \
+               "LOCALAGENT_PROVIDER_BASE)"
+    if not config.provider_key and provider.key_env != CUSTOM_KEY:   # a custom one may need none
+        return key_help(provider)
+    if not config.provider_model:
+        return (f"no {provider.title} model is chosen: localagent setup offers them "
+                "(or set LOCALAGENT_PROVIDER_MODEL)")
+    return ""
 
 
 GEMINI_CONTEXT = 32_768   # history budget for Gemini (built for long prompts; 8K suits local models)
@@ -154,8 +201,9 @@ def overlay(config: Config, **given: Any) -> Config:
 
 
 def gemini_history(config: Config, chosen: bool = False) -> Config:
-    """Give Gemini the 32K history budget, unless a size was chosen (flag or environment)."""
+    """Give an online model (Gemini or another service) the 32K history budget, unless a size
+    was chosen (flag or environment)."""
     chosen = chosen or "LOCALAGENT_NUM_CTX" in os.environ
-    if config.backend == "gemini" and not chosen and config.num_ctx < GEMINI_CONTEXT:
+    if config.backend in ("gemini", "hosted") and not chosen and config.num_ctx < GEMINI_CONTEXT:
         return replace(config, num_ctx=GEMINI_CONTEXT)
     return config
